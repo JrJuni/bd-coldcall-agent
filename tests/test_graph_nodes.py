@@ -429,6 +429,27 @@ def test_persist_node_tolerates_partial_state_after_failure(tmp_path: Path):
     assert summary["proposal_md_path"] is None
 
 
+def test_persist_node_tolerates_missing_output_dir(tmp_path: Path, caplog):
+    # State with no output_dir at all — e.g. orchestrator bug, or state
+    # reconstructed from a checkpoint that predates output_dir.
+    state = {
+        "company": "NVIDIA",
+        "industry": "semiconductor",
+        "lang": "en",
+        "stages_completed": [nodes.STAGE_SEARCH],
+    }
+    import logging as _logging
+    with caplog.at_level(_logging.ERROR, logger="src.graph.nodes"):
+        patch = nodes.persist_node(state)
+    # No exception raised, stage still marked done
+    assert nodes.STAGE_PERSIST in patch["stages_completed"]
+    assert nodes.STAGE_SEARCH in patch["stages_completed"]
+    # Nothing written to tmp_path
+    assert not (tmp_path / "proposal.md").exists()
+    assert not (tmp_path / "intermediate").exists()
+    assert any("output_dir missing" in r.message for r in caplog.records)
+
+
 # ---------------------------------------------------------------------------
 # route_after_stage
 # ---------------------------------------------------------------------------

@@ -238,7 +238,14 @@ def persist_node(state: AgentState) -> dict:
     state is always on disk for post-mortem. Not wrapped by `@_stage`
     because its own failures shouldn't trigger another stage transition.
     """
-    output_dir = Path(state["output_dir"])
+    out_raw = state.get("output_dir")
+    if out_raw is None:
+        _LOGGER.error("persist_node: output_dir missing from state; skipping persist")
+        stages = list(state.get("stages_completed") or [])
+        if STAGE_PERSIST not in stages:
+            stages.append(STAGE_PERSIST)
+        return {"stages_completed": stages}
+    output_dir = Path(out_raw)
     intermediate = output_dir / "intermediate"
     intermediate.mkdir(parents=True, exist_ok=True)
 
