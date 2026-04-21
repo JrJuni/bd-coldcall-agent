@@ -29,6 +29,8 @@ config/targets.yaml
 data/vectorstore/
 data/company_docs/*
 !data/company_docs/README.md
+data/checkpoints.db
+data/checkpoints.db-*
 outputs/
 logs/
 

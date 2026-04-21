@@ -171,6 +171,49 @@ START → search ─┬─[continue]→ fetch ─┬─[continue]→ preprocess 
 - `intermediate/points.json` — 검증된 ProposalPoint 리스트
 - `intermediate/run_summary.json` — `{run_id, company, industry, lang, status, duration_s, started_at, ended_at, usage, errors, failed_stage, current_stage, stages_completed, proposal_md_path, generated_at}`
 
+### 7. Web API (`src/api/` — Phase 7)
+
+FastAPI 프로세스가 Exaone + bge-m3 싱글턴을 warm-stay 시키고, CLI 와 **같은 `orchestrator`** 를 백그라운드에서 돌리면서 SSE 로 진행을 스트림하는 얇은 레이어.
+
+**Lifespan (`app.py::lifespan`):**
+- `anyio.to_thread.run_sync(local_exaone.load)` + `embeddings.get_embedder()` 로 첫 요청 지연을 제거 (~30s → 0). `API_SKIP_WARMUP=1` 로 테스트·개발시 skip
+- `build_sqlite_checkpointer(API_CHECKPOINT_DB)` 가 `sqlite3.connect(..., check_same_thread=False)` 로 커넥션을 열고 `SqliteSaver` 로 감싸 `app.state.checkpointer` 에 보관 — BackgroundTasks(worker thread) 와 SSE(event loop) 가 같은 커넥션 공유, 프로세스 재시작 후에도 `run_id` 로 재개 가능
+- CORS 허용 origin 은 `API_CORS_ORIGINS` (기본 `http://localhost:3000`)
+
+**Orchestrator 이중 entry:**
+- `run(...)` — 기존 `graph.invoke()` (CLI 용). 최종 `AgentState` 반환
+- `run_streaming(...)` — `graph.stream(state, config, stream_mode="values")` 로 각 super-step state 를 yield. FastAPI `execute_run` 이 이걸 소비해 `RunRecord` 를 갱신 + 이벤트 append
+
+**RunStore / IngestStore (인메모리, `src/api/store.py`):**
+- `RunRecord` — 상태(`queued|running|completed|failed`) + `current_stage` + `stages_completed` + `article_counts{searched,fetched,processed}` + `usage` + `proposal_md` + append-only `events: list[RunEvent{seq,kind,ts,payload}]`. `threading.Lock` 으로 shared-state 가드
+- SSE 엔드포인트는 `since_seq` 폴링(150ms) 방식 — 큐 / coroutine-threadsafe plumbing 없이, 증분만 yield 후 종결 상태 감지 시 stream close
+
+**라우트 (`src/api/routes/`):**
+```
+GET  /healthz
+POST /runs                     → 202 {run_id, status=queued, created_at}
+GET  /runs                     → 최신순
+GET  /runs/{run_id}            → 전체 summary + proposal_md
+GET  /runs/{run_id}/events     → EventSourceResponse (SSE)
+GET  /ingest/status            → manifest.json 집계
+POST /ingest                   → 202 {task_id}
+GET  /ingest/tasks/{task_id}   → 상태
+```
+
+**DO NOT 룰 실전:** `src/api/routes/runs.py` 는 `from src.api import runner as _runner` + `_runner.execute_run(...)` 로 모듈 경유 접근, 이렇게 해야 테스트에서 `monkeypatch.setattr("src.api.runner.execute_run", fake)` 가 먹어 실제 Exaone/Sonnet 호출을 회피할 수 있음. 초기에 `from src.api.runner import execute_run` 로 바인딩했다가 false-green (실제 LLM 가 호출됨) 을 맞고 수정. `ingest.py` 의 `get_settings` 도 동일 이유로 `from src.config import loader as _config_loader` 로 변경.
+
+**산출물:**
+- API 는 `RunRecord` 인메모리에만 보관 (프로세스 재시작 시 소멸). LangGraph 체크포인트만 `API_CHECKPOINT_DB` 에 영속화 — 실행 이력 전용 테이블은 장기 과제
+- 프로토콜별 레이아웃은 백엔드가 `outputs/{company}_{YYYYMMDD}/` 로 그대로 쓰며, `/runs/{run_id}` 응답의 `output_dir` 필드로 노출
+
+### 8. Web UI (`web/` — Phase 7, Next.js 15 App Router)
+
+- `/` 폼 → `POST /runs` → `/runs/[id]` 리다이렉트
+- `/runs/[id]` — `EventSource(/runs/{id}/events)` SSE. 이벤트마다 `GET /runs/{id}` 재조회로 권위 있는 상태 반영. `StageProgress` 컴포넌트가 7 stage 진행 뱃지, `react-markdown + remark-gfm` 이 `proposal_md` 렌더
+- `/rag` — `GET /ingest/status` 조회 + `POST /ingest` 트리거 (notion/force/dry_run 토글). 업로드/삭제 UI 는 장기 과제
+
+프론트는 `NEXT_PUBLIC_API_BASE_URL` 만 읽고 자체 state 는 없음 — 쉽게 교체/확장 가능.
+
 ---
 
 ## 설정 흐름

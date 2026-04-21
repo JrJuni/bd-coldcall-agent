@@ -128,6 +128,31 @@
   - `persist_node` 가 종료 시 `status` 결정 (`failed_stage` 있으면 `"failed"`, 없으면 `"completed"`) + `ended_at = time.perf_counter()` 스탬프 + `current_stage` 를 완료면 `None`, 실패면 raising stage 로 고정
   - `run_summary.json` 에 `status` / `started_at` / `ended_at` / `current_stage` 추가 (기존 `duration_s` 유지)
   - 테스트 2건 신규 + 기존 assert 보강 (state: status 초기화, nodes: 실패 시 current_stage 세팅, pipeline: status 전이). **218 → 220 passed**
+- **Phase 7 ✅** — Web UI MVP (FastAPI backend + Next.js 15 frontend)
+  - **백엔드 (`src/api/`)** — FastAPI + lifespan 기반
+    - `src/api/app.py::create_app()` — `lifespan` 에서 Exaone (`local_exaone.load()`) + bge-m3 (`embeddings.get_embedder()`) 를 `anyio.to_thread.run_sync` 로 warm-load. `API_SKIP_WARMUP=1` 로 스킵(테스트용). CORS 미들웨어 (`API_CORS_ORIGINS`, 기본 `http://localhost:3000`)
+    - `src/api/checkpoint.py::build_sqlite_checkpointer()` — `SqliteSaver(sqlite3.connect(..., check_same_thread=False))` 을 `app.state.checkpointer` 로 유지. `/runs` POST 시 BackgroundTasks 로 dispatch 되는 anyio worker thread 와 이벤트 루프가 같은 커넥션을 공유
+    - `src/api/config.py::ApiSettings` — env-driven 런타임 설정 (`API_SKIP_WARMUP` / `API_CHECKPOINT_DB` / `API_CORS_ORIGINS`). `settings.yaml` 과 분리 — 배포/테스트 knob 용
+    - `src/api/store.py::RunStore` / `IngestStore` — 인메모리 레지스트리. `RunRecord.events` 는 append-only 이벤트 로그 (seq / kind / ts / payload). 스레드 공유는 `threading.Lock` 으로 가드. 실행 이력 영속화(별도 DB 테이블)는 장기 과제
+    - `src/api/runner.py::execute_run()` — `orchestrator.run_streaming()` 을 소비해 각 super-step 마다 RunStore 업데이트 + 이벤트 append. `execute_ingest()` 는 `src.rag.indexer.main()` 포워딩
+  - **Orchestrator 리팩터 (`src/core/orchestrator.py`)** — 공통 셋업 `_prepare_run()` 분리 + `run()` / `run_streaming()` 두 entry 노출. `run_streaming(...)` 는 `graph.stream(state, config, stream_mode="values")` 로 스테이지별 state yield. CLI 는 기존 `run()` 유지, 테스트도 그대로
+  - **`build_graph(checkpointer=...)`** — 타입 힌트를 `Any | None` 으로 일반화 (SqliteSaver / MemorySaver 양쪽 수용). CLI / 테스트는 MemorySaver default, API 는 SqliteSaver 주입
+  - **라우트:**
+    - `GET /healthz` — `warmup_skipped` / `exaone_loaded` / `embedder_loaded` 플래그
+    - `POST /runs` (202) → `run_id` 반환 + BackgroundTasks 큐잉
+    - `GET /runs` (최신순) / `GET /runs/{run_id}` (summary + proposal_md)
+    - `GET /runs/{run_id}/events` — sse-starlette `EventSourceResponse`. 레코드 이벤트 로그를 `since_seq` 기반 폴링(150ms) 으로 증분 전송. 완료/실패 후 잔여 이벤트까지 flush 하고 종료
+    - `GET /ingest/status` — `data/vectorstore/manifest.json` 파싱해서 document/chunk/source_type 집계
+    - `POST /ingest` (202) + `GET /ingest/tasks/{task_id}` — 인덱서 트리거 + 상태 폴링
+  - **프론트엔드 (`web/` — Next.js 15 App Router + TypeScript + Tailwind v3)**
+    - `/` (`src/app/page.tsx`) — company/industry/lang/top_k 폼 → `POST /runs` → `/runs/[id]` 리다이렉트
+    - `/runs/[id]` (`src/app/runs/[id]/page.tsx`) — 초기 `GET /runs/{id}` 스냅샷 + `EventSource(/runs/{id}/events)` SSE 바인딩. 이벤트 수신 시마다 권위 있는 전체 summary 재조회. `StageProgress` 컴포넌트로 7-단계 상태 뱃지 + `react-markdown + remark-gfm` 으로 완료된 proposal 렌더
+    - `/rag` (`src/app/rag/page.tsx`) — 최소 RAG 관리. 매니페스트 상태 + dry-run/re-index 버튼(notion/force 토글). 업로드/삭제는 의도적으로 제외
+    - `web/README.md` — 로컬 개발 플로우 (uvicorn 서버 + `npm run dev`)
+  - **테스트 (12건 신규, `tests/test_api_runs.py` + `tests/test_api_ingest.py`)** — `TestClient` 기반. `src.api.runner.execute_run` / `execute_ingest` 를 module-attr 로 monkeypatch (DO NOT 룰 준수) 해서 Brave/Exaone/Sonnet/Chroma 없이 라우트 로직만 검증. **235 passed all green** (223 → +12)
+  - **DO NOT 룰 실전 강화** — Stream 6 테스트 중 `from src.api.runner import execute_run` 바인딩이 `monkeypatch.setattr("src.api.runner.execute_run", ...)` 와 충돌해 실제 Exaone 이 로딩되는 false-green 발생. `src.api.routes.{runs,ingest}` 및 `src.api.routes.ingest` 의 `from src.config.loader import get_settings` 모두 모듈-경유 접근으로 전환 (`from src.api import runner as _runner` / `from src.config import loader as _config_loader`)
+  - **장기 과제로 분리** — 인증, 백그라운드 워커(Celery/RQ), 풀 RAG 관리 UI(업로드/삭제/Notion 페이지별 토글/인덱싱 이력 타임라인), 실행 이력 전용 DB 는 `docs/status.md` 장기 과제 섹션에 기록
+
 - **Phase 5 보강 ✅ (Step 5)** — articles 스테이지 분리
   - `AgentState.articles` 단일 키를 **`searched_articles` / `fetched_articles` / `processed_articles`** 3개로 분할 — 실패 경로에서 어느 단계까지 진행됐는지 state 만 보고 판단 가능
   - 노드별 read/write 재배선: search_node → searched / fetch_node reads searched → writes fetched / preprocess_node reads fetched → writes processed / synthesize·draft 는 processed 를 참조
@@ -144,6 +169,13 @@
 ---
 
 ## 장기 과제 (MVP 범위 외)
+
+### Web UI 확장 (Phase 7 MVP 이후)
+Phase 7 MVP 는 로컬 전용·인덱싱 상태 조회만. 배포 단계에서 다음을 추가.
+- **인증/권한** — FastAPI OAuth2/JWT + 프론트 세션 관리. 멀티 유저 분리, API 키 발급.
+- **백그라운드 워커** — FastAPI `BackgroundTasks` 대신 Celery/RQ + Redis 큐. 프로세스 재시작·수평 확장 대응.
+- **풀 RAG 관리 UI** — 문서 업로드(파일/드래그), 선택 삭제, reindex, Notion 페이지 개별 토글, 인덱싱 이력 타임라인.
+- **실행 이력 영속화** — 현재 SqliteSaver 체크포인터 외에 실행 메타(run_id/company/status/created_at) 전용 테이블 + 목록/검색 UI.
 
 ### 무료 웹 스크래퍼
 Brave Search 구독이 없는 사용자를 위한 대체 소스. `SearchProvider` 인터페이스 뒤에 플러그인으로 추가.

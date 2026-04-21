@@ -21,6 +21,12 @@ pypdf>=4.0.0
 # Phase 6+ — CLI
 typer>=0.12.0
 
+# Phase 7+ — Web API
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+sse-starlette>=2.1.0
+langgraph-checkpoint-sqlite>=2.0.0
+
 # Test
 pytest>=8.0.0
 

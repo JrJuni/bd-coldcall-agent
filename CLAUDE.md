@@ -59,6 +59,13 @@ If the env doesn't exist yet, see the setup steps in `docs/lesson-learned.md` (M
 ~/miniconda3/envs/bd-coldcall/python.exe main.py run --company NVIDIA --industry semiconductor --lang en --verbose
 ~/miniconda3/envs/bd-coldcall/python.exe main.py ingest --notion --dry-run
 ~/miniconda3/envs/bd-coldcall/python.exe main.py ingest --verify
+
+# Phase 7 Web API (FastAPI, uvicorn autoreload). Skips the 30s Exaone warm-load
+# so frontend dev is fast; drop the flag when you want the real pipeline.
+API_SKIP_WARMUP=1 ~/miniconda3/envs/bd-coldcall/python.exe -m uvicorn src.api.app:app --reload
+
+# Phase 7 Web UI (Next.js 15 — runs outside the conda env)
+cd web && npm install && npm run dev    # http://localhost:3000
 ```
 
 `--save` writes JSON (+ Markdown for brave) to `outputs/search/` and `outputs/preprocess/` — prefer this over stdout-only when debugging retrieval quality.
@@ -112,7 +119,7 @@ CLI flags override `settings.yaml`, which overrides schema defaults. This split 
 `src/core/orchestrator.run(company, industry, lang, ...)` is the shared entry point. Both consumers call it:
 
 - **CLI** (`main.py`, Typer — Phase 6 done) — `main.py run` wraps `orchestrator.run()`, `main.py ingest` forwards to `src.rag.indexer.main()`.
-- **Web UI** (Phase 7 — `src/api/` FastAPI backend + `web/` Next.js frontend) — Exaone loaded once in the FastAPI `lifespan` event and reused; long pipelines stream progress via SSE using the `status` / `current_stage` fields on `AgentState`.
+- **Web UI** (Phase 7 done — `src/api/` FastAPI backend + `web/` Next.js 15 frontend) — Exaone + bge-m3 loaded once in the FastAPI `lifespan` event, `SqliteSaver` checkpointer persists runs across restarts, and the API exposes `orchestrator.run_streaming()` to drive SSE progress via the `status` / `current_stage` fields on `AgentState`. Frontend binds `EventSource` to `/runs/{id}/events` and refetches `/runs/{id}` on each tick for authoritative state.
 
 When adding a new pipeline stage, wire it in `src/graph/` so both entry points get it for free. Don't duplicate orchestration logic in the CLI or API routes.
 

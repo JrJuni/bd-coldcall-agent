@@ -105,6 +105,26 @@ conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/ms
 **결과**: retrieve 에서 실패하면 state.articles 는 "preprocess 후" 상태라 OK 지만, fetch 에서 실패하면 articles 가 "search 원본" 인지 "fetch 중간" 인지 state 만 봐선 구분 불가. run_summary 에 `articles_after_preprocess.json` 으로 저장되지만 이름이 거짓말이 됨. 외부 어드바이저도 같은 지적.
 **배운 점**: 파이프라인의 **각 변환 스테이지는 자기 전용 출력 키** 를 가짐 — `searched_articles` / `fetched_articles` / `processed_articles` 3개로 분리. 다음 노드는 이전 스테이지 키를 **읽기 전용**으로 consume. persist 는 `latest_articles(state)` (processed > fetched > searched 폴백) 로 캐노니컬 출력을 만들고, 실패 경로에선 단계별 덤프도 같이. 원칙: "노드는 입력을 덮어쓰지 않는다, 자기 출력만 추가한다". LangGraph 뿐 아니라 어떤 DAG 파이프라인이든 후행 단계가 선행 단계 아티팩트를 관찰할 수 있어야 post-mortem 이 성립.
 
+## [2026-04-22] FastAPI 라우트에서도 DO NOT 룰이 그대로 깨진다
+**시도**: Phase 7 `src/api/routes/runs.py` 에 `from src.api.runner import execute_run` 으로 심볼을 bind 해 BackgroundTasks 에 넘김. 테스트는 `monkeypatch.setattr("src.api.runner.execute_run", fake)` 로 가짜 러너를 주입해 Exaone·Sonnet 호출을 피하려 했음.
+**결과**: 첫 실행에서 테스트가 실제 Exaone 7.8B (4bit) 를 로드하고 Sonnet 까지 호출해 150+ 초 지연 + proposal_md 실측값 반환. routes 모듈이 자기 로컬 `execute_run` 이름을 이미 원본 함수에 바인딩했기 때문에 monkeypatch 가 `src.api.runner.execute_run` 속성만 바꿔도 라우트는 원본을 계속 부름 — **DO NOT 룰 2026-04-21 섹션과 정확히 같은 실수**. `src/api/routes/ingest.py::_manifest_path` 의 `from src.config.loader import get_settings` 도 동일한 이유로 테스트의 settings 오버라이드가 먹지 않아 실제 vectorstore 경로를 읽는 false-green 이 났음.
+**배운 점**: DO NOT 룰은 graph/pipeline 뿐 아니라 **FastAPI 라우트처럼 외부 호출을 트리거하는 모든 orchestration 계층** 에 동일하게 적용. `from src.api import runner as _runner` + `_runner.execute_run(...)`, `from src.config import loader as _config_loader` + `_config_loader.get_settings()` 패턴 일관 사용. 테스트 경로가 "구동" 직전에 반드시 거치는 얇은 어댑터 레이어는 모두 이 규칙 대상 — 단순 schema/const import 는 예외. 후속: 이미 CLAUDE.md 에 승격된 DO NOT 룰의 적용 범위가 충분히 넓다는 확인 (추가 승격 불필요).
+
+## [2026-04-22] SSE 에 코루틴-thread-safe 큐를 안 쓴 이유
+**시도**: Phase 7 백엔드가 BackgroundTasks(anyio worker thread) 에서 돌리는 `orchestrator.run_streaming()` 의 각 super-step 을 SSE(event loop) 로 전달할 방법이 필요. 초안에서는 `asyncio.Queue` 를 `RunRecord` 에 달고 worker 가 `asyncio.run_coroutine_threadsafe(queue.put, loop)` 로 푸시하는 구조를 고려.
+**결과**: 이 설계는 현재 MVP 에는 과도. `asyncio.Queue` 는 thread-safe 가 아니라 `put_nowait` 을 worker thread 에서 직접 호출하면 깨질 수 있고, `run_coroutine_threadsafe` 는 메인 루프를 caller 에서 알아야 해서 엉켜듬. SSE 세션별 구독자 관리·백프레셔·큐 메모리 바운드까지 고려하면 코드가 불필요하게 커짐.
+**배운 점**: 이벤트 수가 **작고 append-only** (7 stage + ~5 meta = ≤~15 이벤트/run) 일 때는 `RunRecord.events: list[RunEvent]` + `threading.Lock` + SSE 쪽 **150ms 폴링** 이 가장 단순하고 틀릴 여지가 적음. `last_seq` 커서로 증분만 yield, 종결 상태 감지 후 stream close. "이벤트가 드물고 끝이 있는 스트림" 에서는 queue 기반 pub/sub 대신 poll-log 패턴이 더 알맞음. Celery/RQ + Redis 큐로 넘어갈 때 (장기 과제) 이 구조를 자연스럽게 pub/sub 으로 교체 가능.
+
+## [2026-04-22] SqliteSaver 는 `check_same_thread=False` 가 필수
+**시도**: Phase 7 `build_sqlite_checkpointer()` 초안에서 `sqlite3.connect(db_path)` 로 default 로 커넥션을 열고 `SqliteSaver(conn)` 을 lifespan 에 저장.
+**결과**: `/runs` POST 가 BackgroundTasks 로 dispatch 되면 anyio worker thread 가 checkpointer 를 쓰는데, 같은 커넥션을 event loop(다른 스레드) 도 참조 → `ProgrammingError: SQLite objects created in a thread can only be used in that same thread`.
+**배운 점**: FastAPI + BackgroundTasks + `SqliteSaver` 조합에서는 커넥션을 `sqlite3.connect(path, check_same_thread=False)` 로 열고 `SqliteSaver(conn)` 에 넘겨야 한다. 병행 write 보호는 langgraph-checkpoint-sqlite 내부 락이 담당. `close_checkpointer()` 헬퍼로 lifespan 종료 시 conn 명시 close. 장기적으로 SqliteSaver 의 context-manager 기반 `from_conn_string()` 관용 패턴과 충돌하므로, 추후 `async with` 기반 re-architecture 시 다시 검토 필요.
+
+## [2026-04-22] Next.js 15 + React 19 GA 는 Next 15.0.x 와 peer 충돌
+**시도**: Phase 7 `web/package.json` 에 `next@15.0.3` + `react@19.0.0` 고정 조합 사용.
+**결과**: `npm install` 이 `peer react@"^18.2.0 || 19.0.0-rc-66855b96-20241106" from next@15.0.3` ERESOLVE 로 거절. Next 15.0.x 는 React 19 **RC 특정 해시** 만 인식하고 GA 19 를 받아들이지 못함.
+**배운 점**: React 19 GA 는 **Next.js 15.1+** 부터 지원. 새 프로젝트 시작 시 `next@^15.1.0` + `react@^19.0.0` 를 caret 으로 지정해 npm 이 자연히 호환 버전 선택하게 두는 게 깔끔. `--legacy-peer-deps` 우회는 표면적 해결이며 downstream 에서 subtle한 hydration bug 가 날 수 있어 지양.
+
 ## [2026-04-21] Notion MCP `update_content` 의 `new_str` 크기 경계
 **시도**: `/patchnotes` 스킬로 v0.5.0 패치노트 엔트리를 Notion 페이지에 삽입. 엔트리 전체를 단일 `update_content` 요청의 `new_str` 에 포함.
 **결과**: 첫 시도에서 `~10KB+` 페이로드가 Cloudflare WAF 에 걸려 실패한 적이 있었음 (v0.3.0 배치 때). 이번엔 섹션당 3~5 bullet 로 깎아서 ~3KB 로 통과.

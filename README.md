@@ -60,6 +60,8 @@ The local **Exaone 7.8B (4-bit, 6–12 GB VRAM)** handles only deterministic pre
 | Vector store | ChromaDB (persistent) |
 | Search | Brave Search API |
 | Doc connectors | Local PDF / MD / TXT, Notion API |
+| Web backend | FastAPI + SSE (uvicorn, SqliteSaver checkpointer) |
+| Web frontend | Next.js 15 + Tailwind CSS + TypeScript |
 | Language | Python 3.11+ |
 
 ## Requirements
@@ -90,8 +92,12 @@ cp .env.example .env
 #    then index them
 python main.py ingest
 
-# 6. Run against a target
-python main.py run --company "NVIDIA" --industry "semiconductor" --days 30 --lang en
+# 6. Run against a target — either CLI or the Web UI
+python main.py run --company "NVIDIA" --industry "semiconductor" --lang en
+
+# or start the API + Next.js frontend:
+python -m uvicorn src.api.app:app --reload    # http://localhost:8000
+cd web && npm install && npm run dev          # http://localhost:3000
 ```
 
 The proposal lands in `outputs/{company}_{YYYYMMDD}.md`. Language is controlled by `--lang en|ko` (default `en`).

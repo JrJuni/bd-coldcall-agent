@@ -11,11 +11,15 @@ single-target runs and `synthesize_proposal_points` already retries once
 internally with a temperature bump. Phase 7 can add RetryPolicy when we
 need resumable background runs.
 
-The graph takes a `MemorySaver` checkpointer so `graph.invoke(..., config=
-{"configurable": {"thread_id": run_id}})` stamps each step — useful for
-debugging and a seed for the SqliteSaver swap in Phase 7.
+The graph takes a checkpointer so `graph.invoke(..., config=
+{"configurable": {"thread_id": run_id}})` stamps each step. Default is
+`MemorySaver` for CLI / tests; the FastAPI backend (Phase 7) injects a
+`SqliteSaver` so runs survive process restarts and can be resumed by
+`run_id`.
 """
 from __future__ import annotations
+
+from typing import Any
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
@@ -36,7 +40,7 @@ STAGES = (
 )
 
 
-def build_graph(*, checkpointer: MemorySaver | None = None):
+def build_graph(*, checkpointer: Any | None = None):
     """Compile the full 6-stage + persist pipeline.
 
     Returns a compiled LangGraph ready for `.invoke(state, config)`. The
