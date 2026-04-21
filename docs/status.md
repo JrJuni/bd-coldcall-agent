@@ -151,7 +151,7 @@
     - `web/README.md` — 로컬 개발 플로우 (uvicorn 서버 + `npm run dev`)
   - **테스트 (12건 신규, `tests/test_api_runs.py` + `tests/test_api_ingest.py`)** — `TestClient` 기반. `src.api.runner.execute_run` / `execute_ingest` 를 module-attr 로 monkeypatch (DO NOT 룰 준수) 해서 Brave/Exaone/Sonnet/Chroma 없이 라우트 로직만 검증. **235 passed all green** (223 → +12)
   - **DO NOT 룰 실전 강화** — Stream 6 테스트 중 `from src.api.runner import execute_run` 바인딩이 `monkeypatch.setattr("src.api.runner.execute_run", ...)` 와 충돌해 실제 Exaone 이 로딩되는 false-green 발생. `src.api.routes.{runs,ingest}` 및 `src.api.routes.ingest` 의 `from src.config.loader import get_settings` 모두 모듈-경유 접근으로 전환 (`from src.api import runner as _runner` / `from src.config import loader as _config_loader`)
-  - **장기 과제로 분리** — 인증, 백그라운드 워커(Celery/RQ), 풀 RAG 관리 UI(업로드/삭제/Notion 페이지별 토글/인덱싱 이력 타임라인), 실행 이력 전용 DB 는 `docs/status.md` 장기 과제 섹션에 기록
+  - **장기 과제로 분리** — 인증, 백그라운드 워커(Celery/RQ), 풀 RAG 관리 UI(업로드/삭제/Notion 페이지별 토글/인덱싱 이력 타임라인), 실행 이력 전용 DB 는 `docs/backlog.md` 에 기록
 
 - **Phase 5 보강 ✅ (Step 5)** — articles 스테이지 분리
   - `AgentState.articles` 단일 키를 **`searched_articles` / `fetched_articles` / `processed_articles`** 3개로 분할 — 실패 경로에서 어느 단계까지 진행됐는지 state 만 보고 판단 가능
@@ -168,30 +168,6 @@
 
 ---
 
-## 장기 과제 (MVP 범위 외)
+---
 
-### Web UI 확장 (Phase 7 MVP 이후)
-Phase 7 MVP 는 로컬 전용·인덱싱 상태 조회만. 배포 단계에서 다음을 추가.
-- **인증/권한** — FastAPI OAuth2/JWT + 프론트 세션 관리. 멀티 유저 분리, API 키 발급.
-- **백그라운드 워커** — FastAPI `BackgroundTasks` 대신 Celery/RQ + Redis 큐. 프로세스 재시작·수평 확장 대응.
-- **풀 RAG 관리 UI** — 문서 업로드(파일/드래그), 선택 삭제, reindex, Notion 페이지 개별 토글, 인덱싱 이력 타임라인.
-- **실행 이력 영속화** — 현재 SqliteSaver 체크포인터 외에 실행 메타(run_id/company/status/created_at) 전용 테이블 + 목록/검색 UI.
-
-### 무료 웹 스크래퍼
-Brave Search 구독이 없는 사용자를 위한 대체 소스. `SearchProvider` 인터페이스 뒤에 플러그인으로 추가.
-- Google News RSS (en/ko)
-- 네이버 뉴스 검색 (BeautifulSoup 정적 파싱)
-- Playwright 기반 동적 렌더링 (JS 필요 사이트)
-- robots.txt / rate limit 정책 준수
-
-### CRM / 팔로업 관리
-콜 이후 단계 지원.
-- 콜 로그(수기 메모 또는 음성 전사) → 요약
-- 다음 액션 추천 (재시도 시점, 제공 자료, 후속 이메일 초안)
-- 외부 CRM 연동 (Salesforce, HubSpot 등)
-
-### 멀티 에이전트 협업
-현재 단일 파이프라인을 research / writing / review 역할 분리로 개선. LangGraph 서브그래프 + 상호 리뷰 루프.
-
-### 모델 스왑 실험
-Exaone 요약 품질이 충분치 않으면 Qwen / Gemma / Llama 계열로 벤치마크 → 교체.
+*장기 계획·향후 아이디어·스코프 밖 과제는 [docs/backlog.md](backlog.md) 를 참고하세요.*

@@ -145,11 +145,13 @@ CLI entry points must reconfigure stdout/stderr to UTF-8 before printing non-ASC
 
 ## Project docs convention
 
-`docs/` has four standing files — keep them current, don't let them rot:
+`docs/` has six standing files — keep them current, don't let them rot:
 
-- **`status.md`** — single source of truth for phase progress and long-term backlog. README stays focused on project description; roadmap lives here.
-- **`architecture.md`** — updated when the pipeline shape, node boundaries, or data flow change.
-- **`lesson-learned.md`** — append-only. Record failed approaches + why, and non-obvious successes. The Windows setup gotchas, conda ToS issue, and requirements split rationale all live here.
+- **`status.md`** — progress snapshot of what's **in flight or recently done**. Long-term plans live in `backlog.md`, not here.
+- **`backlog.md`** — long-term plan / big-picture / out-of-scope ideas. `/projectrecord` promotes items to status on start, drops them on completion.
+- **`architecture.md`** — pipeline shape, node boundaries, data flow. Updated when structure changes.
+- **`lesson-learned.md`** — append-only, **failures only**. "Tried X, broke Y, here's why" entries so we don't repeat the same mistake.
+- **`playbook.md`** — append-only, **successes only**. Patterns that survived a hard problem and are reusable elsewhere. Each entry has a Problem / Solution / Why-it-works / Reusable-in structure. **Check first when you hit an error or are stuck** — grep the keyword index at the top.
 - **`security-audit.md`** — checklist + audit history. Review before release milestones.
 
 Before a significant commit, update whichever of these are affected. `README.md` should only describe what already works, not roadmap.
