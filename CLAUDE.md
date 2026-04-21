@@ -95,6 +95,10 @@ Why this split: 7.8B-class models hallucinate on BD reasoning tasks, and funneli
 - Sending all articles at full length to Sonnet regardless of tag — defeats the tier-based token savings.
 - Changing the prompt-cache key on the tech-docs context — defeats the per-target amortization.
 
+## DO NOT
+
+- **테스트에서 monkeypatch 해야 하는 의존성**(부수효과 있는 외부 호출·네트워크·LLM·I/O 클라이언트 등)을 `from X import Y` 형태로 직접 바인딩하지 마라. import 시점에 참조가 고정되어 patch 가 안 먹을 수 있고, 테스트가 원본 구현을 조용히 호출해 false green 이 난다. 대신 모듈 자체를 import 한 뒤 (`from src import foo as _foo`) 런타임에 `_foo.Y` 로 접근하라. graph / pipeline / orchestrator 계층은 이 규칙을 기본값으로 삼는다. 단, 상수·타입·예외 클래스 등 patch 대상이 아닌 심볼은 적용 대상이 아니다. (출처: `docs/lesson-learned.md` 2026-04-21 LangGraph monkeypatch 섹션)
+
 ### Config is 3-tier — do not collapse
 
 - **`.env`** → secrets only (API keys). Gitignored. `.env.example` is the committed template.
@@ -105,10 +109,10 @@ CLI flags override `settings.yaml`, which overrides schema defaults. This split 
 
 ### Shared core, multiple entry points
 
-`src/core/` (to be built) holds `orchestrator.run(target, ...)`. Both entry points consume it:
+`src/core/orchestrator.run(company, industry, lang, ...)` is the shared entry point. Both consumers call it:
 
-- **CLI** (`src/cli/`, Typer) — for scripted use, `main.py ingest` / `main.py run`.
-- **Web UI** (Phase 7 — `src/api/` FastAPI backend + `web/` Next.js frontend) — Exaone is loaded once in the FastAPI `lifespan` event and reused; long pipelines stream progress via SSE.
+- **CLI** (`main.py`, Typer — Phase 6 done) — `main.py run` wraps `orchestrator.run()`, `main.py ingest` forwards to `src.rag.indexer.main()`.
+- **Web UI** (Phase 7 — `src/api/` FastAPI backend + `web/` Next.js frontend) — Exaone loaded once in the FastAPI `lifespan` event and reused; long pipelines stream progress via SSE using the `status` / `current_stage` fields on `AgentState`.
 
 When adding a new pipeline stage, wire it in `src/graph/` so both entry points get it for free. Don't duplicate orchestration logic in the CLI or API routes.
 
@@ -127,7 +131,10 @@ Do not merge these back into one file. A CI or user without CUDA should be able 
 
 ## Windows-specific: stdout encoding
 
-CLI entry points must call `sys.stdout.reconfigure(encoding="utf-8")` before printing non-ASCII. Windows consoles default to cp949/cp1252 and silently mojibake Korean output. Copy the pattern from `src/search/brave.py`'s `__main__` block when writing new CLIs.
+CLI entry points must reconfigure stdout/stderr to UTF-8 before printing non-ASCII **or before a framework (Rich/Typer) renders help text at import time**. Windows consoles default to cp949/cp1252 and silently mojibake Korean output; Rich fails loudly on em-dash.
+
+- Command-body printing only: call `sys.stdout.reconfigure(encoding="utf-8")` inside the entrypoint function, like `src/search/brave.py`'s `__main__`.
+- Typer CLIs that render `--help` before any command runs: reconfigure at **module load**, like `main.py` (top-level `for _stream in (sys.stdout, sys.stderr): _stream.reconfigure(encoding="utf-8")`). Inside-command reconfigure is too late for Rich's help renderer.
 
 ## Project docs convention
 

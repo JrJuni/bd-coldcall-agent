@@ -78,6 +78,38 @@ conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/ms
 **결과**: 초기 플랜이 구조는 맞지만 운영 디테일(원자성·해시 안정화·Notion title 규칙·PDF 페이지 경계 등) 7개 부족 지적받아 반려. 동시에 한 세션에 전체 구현 시 후반부로 갈수록 컨텍스트 압박 + 초기 결정 파편화 리스크가 큰 사이즈임을 체감.
 **배운 점**: Phase 를 레이어 기준 **3~5개 work stream** 으로 쪼개고 각 스트림마다 **TO-BE / DONE 체크박스**를 플랜 파일(`~/.claude/plans/*.md`) 에 유지. 스트림 경계를 `/compact` 지점과 정렬 (보통 2번 정도). 세션이 단절돼도 다음 세션은 `status.md` 의 "진행 중" + 플랜 파일 체크박스만 읽고 정확히 재개 가능. Phase 3 를 스키마·정규화·청킹 / 저장소·검색 / 커넥터 / 인덱서·CLI 4축으로 쪼개 적용. 향후 Phase 4, 5, 7 도 동일 패턴 예상.
 
+## [2026-04-21] LangGraph `TypedDict(total=False)` + 선택 키 assert 순서
+**시도**: Phase 5 happy-path 테스트에서 `assert result["failed_stage"] is None or "failed_stage" not in result` 로 실패 없음 확인.
+**결과**: `KeyError: 'failed_stage'` — `or` 단락 평가로 첫 피연산자가 먼저 evaluate 되는데, 키 자체가 없으면 `result["failed_stage"]` 접근에서 터짐.
+**배운 점**: `total=False` TypedDict 에서 선택 키를 단언할 때는 **존재 검사 먼저**: `assert "failed_stage" not in result or result["failed_stage"] is None`. 패턴은 단순하지만 LangGraph 는 부분 state 머지를 기본으로 하기 때문에 모든 happy-path 테스트에 반복 적용됨.
+
+## [2026-04-21] `langgraph.__version__` 없음 — 버전 확인은 `pip show`
+**시도**: 설치된 LangGraph 버전을 확인하려고 `python -c "import langgraph; print(langgraph.__version__)"`.
+**결과**: `AttributeError`. LangGraph 패키지는 module-level `__version__` 을 노출하지 않음 (얇은 네임스페이스 래퍼).
+**배운 점**: Python 패키지 버전 확인은 `~/miniconda3/envs/bd-coldcall/python.exe -m pip show langgraph` 또는 `importlib.metadata.version("langgraph")` 로. `__version__` 관례는 패키지마다 제각각이라 신뢰 금지.
+
+## [2026-04-21] LangGraph monkeypatch 는 pipeline.py 안에서 모듈 경로로 해석돼야 함
+**시도**: `src/graph/nodes.py` 에 `from src.search.brave import BraveSearch` 모듈-수준 import 를 놓고, `tests/test_pipeline.py` 에서 `monkeypatch.setattr(nodes, "BraveSearch", _FakeBrave)` 로 교체.
+**결과**: 노드가 `build_graph()` 로 compile 된 후 invoke 할 때 test double 이 아닌 원래 클래스가 호출됨. `pipeline.py` 가 `from src.graph.nodes import search_node` 로 심볼을 가져가면 참조가 고정되어 monkeypatch 가 뚫지 못함.
+**배운 점**: `pipeline.py` 에서는 개별 함수가 아니라 **모듈 자체를 import** (`from src.graph import nodes as _nodes`) 하고 `_nodes.search_node` 처럼 런타임 속성 조회. 이러면 테스트에서 `nodes.search_node` 속성을 바꾸면 그래프 실행 시점에도 새 참조가 보임. 일반화: monkeypatch 대상이 될 수 있는 의존성은 **from-import 대신 module-import + attribute access** 로.
+
+**2026-04-22 후속**: 이 교훈은 단순 스타일 취향이 아니라 테스트 신뢰성 근간이라는 판단 — 특히 graph/pipeline 계층은 monkeypatch 기반 테스트가 많아 심볼 바인딩 실수 시 **원본 의존성이 조용히 호출되며 false green 이 난다** (네트워크·API·LLM 호출이 테스트에서 몰래 나갈 수 있음). 재발성·중대성·발견 난이도 모두 높다는 합의로 CLAUDE.md 의 `## DO NOT` 섹션에 승격. 문구는 스코프 한정(patch 대상 + 부수효과 있는 외부 호출 + orchestration 계층) + "왜 금지인지 + 허용 패턴" 을 함께 적어 일반화. 상수·타입·예외 클래스 등 patch 대상이 아닌 심볼은 규칙 적용 대상 아님 — 모든 import 를 강제하면 코드가 지저분해져 현실성 떨어짐.
+
+## [2026-04-21] Typer + Rich 의 `--help` 는 모듈 로드 시점에 한글 렌더링
+**시도**: `main.py` Typer 앱에서 커맨드 내부에 `sys.stdout.reconfigure(encoding="utf-8")` 를 호출하고 실행: `main.py --help`.
+**결과**: `UnicodeEncodeError: 'cp949' codec can't encode character '\u2014'` — docstring 의 em-dash 가 cp949 콘솔에 쏟아짐. Rich 의 help 렌더러가 사용자 커맨드 본문이 돌기 **전에** 렌더하기 때문에, 커맨드 안의 reconfigure 는 이미 늦음.
+**배운 점**: Typer 진입 스크립트는 **모듈 로드 시점**에 stdout/stderr 를 UTF-8 로 강제해야 함. `main.py` 최상단에 `for _stream in (sys.stdout, sys.stderr): _stream.reconfigure(encoding="utf-8")` 블록 배치. 일반 CLI (argparse 수동 파싱) 와 달리 선언적 프레임워크는 import 시점에 help 스트링을 포매팅한다는 점을 기억.
+
+## [2026-04-21] 단일 state 키를 여러 노드가 덮어쓰면 실패 post-mortem 정보가 사라짐
+**시도**: 초기 `AgentState.articles` 를 search_node → fetch_node → preprocess_node 가 차례로 덮어쓰는 단일 키로 구성. 각 노드는 이전 값을 읽어 풍부화한 새 리스트로 교체.
+**결과**: retrieve 에서 실패하면 state.articles 는 "preprocess 후" 상태라 OK 지만, fetch 에서 실패하면 articles 가 "search 원본" 인지 "fetch 중간" 인지 state 만 봐선 구분 불가. run_summary 에 `articles_after_preprocess.json` 으로 저장되지만 이름이 거짓말이 됨. 외부 어드바이저도 같은 지적.
+**배운 점**: 파이프라인의 **각 변환 스테이지는 자기 전용 출력 키** 를 가짐 — `searched_articles` / `fetched_articles` / `processed_articles` 3개로 분리. 다음 노드는 이전 스테이지 키를 **읽기 전용**으로 consume. persist 는 `latest_articles(state)` (processed > fetched > searched 폴백) 로 캐노니컬 출력을 만들고, 실패 경로에선 단계별 덤프도 같이. 원칙: "노드는 입력을 덮어쓰지 않는다, 자기 출력만 추가한다". LangGraph 뿐 아니라 어떤 DAG 파이프라인이든 후행 단계가 선행 단계 아티팩트를 관찰할 수 있어야 post-mortem 이 성립.
+
+## [2026-04-21] Notion MCP `update_content` 의 `new_str` 크기 경계
+**시도**: `/patchnotes` 스킬로 v0.5.0 패치노트 엔트리를 Notion 페이지에 삽입. 엔트리 전체를 단일 `update_content` 요청의 `new_str` 에 포함.
+**결과**: 첫 시도에서 `~10KB+` 페이로드가 Cloudflare WAF 에 걸려 실패한 적이 있었음 (v0.3.0 배치 때). 이번엔 섹션당 3~5 bullet 로 깎아서 ~3KB 로 통과.
+**배운 점**: Notion MCP `update_content` 는 단일 요청 페이로드가 커지면 외부 WAF/reverse-proxy 에 막힐 수 있음. 패치노트 엔트리는 **섹션당 3~5 bullet** 를 soft limit 으로. 더 큰 업데이트가 필요하면 여러 번의 작은 `update_content` 로 분할하거나, 섹션 기준 분할. 재발 방지: 이미 메모리(`feedback_patchnotes_payload.md`)에 규칙화돼 있으나 lesson 으로도 남겨 다음 유지보수 세션이 읽을 수 있게.
+
 ## [2026-04-20] RAG 청킹은 문자 기준이 아니라 문장 단위 greedy + 문장 단위 overlap
 **시도**: 초안에서 `chunk_size=500`, `chunk_overlap=50` 을 단순 문자 슬라이딩 윈도우로 구현 (많은 RAG 튜토리얼의 기본 패턴).
 **결과**: 플랜 리뷰에서 "문장 중간이 잘리거나 문단 의미가 부자연스럽게 중복"될 수 있다는 지적. 특히 한글은 종결어미가 뒤에 오는 구조라 문자 중간 cut 시 의미 단위 파손이 더 큼. bge-m3 retrieval 품질이 chunker 에서 크게 갈린다는 관찰.

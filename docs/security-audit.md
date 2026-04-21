@@ -35,6 +35,7 @@
 - [ ] 생성된 제안서에 내부 전용(NDA) 기술 상세 / 가격 등이 의도치 않게 노출되지 않는가
 - [ ] `outputs/` 가 `.gitignore` 처리되어 있는가
 - [ ] 중간 산출물(logs, intermediate/)에 비밀이 기록되지 않는가
+- [ ] Phase 5 `StageError.from_exception()` 이 `str(exc)` 를 그대로 `run_summary.json` 에 저장 — Anthropic SDK 나 HTTP 라이브러리가 에러 메시지에 API 키를 포함하지 않는가 주기 점검 (현재 anthropic-python 은 key 를 마스킹하나, 사용자 정의 exception 클래스에선 방어적 코드 필요)
 
 ### 의존성
 - [ ] `requirements.txt` 버전 하한 고정, 주기적 CVE 스캔 (`pip-audit` 등)
