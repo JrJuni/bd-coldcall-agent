@@ -128,6 +128,13 @@
   - `persist_node` 가 종료 시 `status` 결정 (`failed_stage` 있으면 `"failed"`, 없으면 `"completed"`) + `ended_at = time.perf_counter()` 스탬프 + `current_stage` 를 완료면 `None`, 실패면 raising stage 로 고정
   - `run_summary.json` 에 `status` / `started_at` / `ended_at` / `current_stage` 추가 (기존 `duration_s` 유지)
   - 테스트 2건 신규 + 기존 assert 보강 (state: status 초기화, nodes: 실패 시 current_stage 세팅, pipeline: status 전이). **218 → 220 passed**
+- **Phase 5 보강 ✅ (Step 5)** — articles 스테이지 분리
+  - `AgentState.articles` 단일 키를 **`searched_articles` / `fetched_articles` / `processed_articles`** 3개로 분할 — 실패 경로에서 어느 단계까지 진행됐는지 state 만 보고 판단 가능
+  - 노드별 read/write 재배선: search_node → searched / fetch_node reads searched → writes fetched / preprocess_node reads fetched → writes processed / synthesize·draft 는 processed 를 참조
+  - `persist_node`: 캐노니컬 `articles_after_preprocess.json` 에는 `latest_articles(state)` (processed > fetched > searched 폴백) 를, 실패 경로에선 추가로 `articles_searched.json` / `articles_fetched.json` 단계별 덤프
+  - 새 헬퍼 `src/graph/state.py::latest_articles(state)` — CLI 요약 출력과 persist 양쪽에서 재사용
+  - `main.py run` / `scripts/smoke_phase5.py` 요약 출력이 `searched=N fetched=N processed=N` 3개 카운트 표시로 변경
+  - 테스트 3건 신규 (`latest_articles` 우선순위 / persist 가 fetch 실패 시 searched 폴백 + per-stage 덤프 / preprocess 실패 시 fetched 덤프 + searched 덤프 동시) + 기존 테스트 전부 새 키로 재배선. **220 → 223 passed**
 
 ## 다음 MVP 범위 (Phase 7 ~ 9)
 - **Phase 7** — Web UI (FastAPI + Next.js — 타겟 CRUD, 실행 + SSE 진행 스트림, 결과 뷰어, RAG 관리)

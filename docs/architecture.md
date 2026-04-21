@@ -133,7 +133,7 @@
 
 **State (`state.py`):** `AgentState` TypedDict (`total=False`)
 - inputs: `company, industry, lang, top_k`
-- 아티팩트: `articles, tech_chunks, proposal_points, proposal_md`
+- 아티팩트: `searched_articles` (search_node), `fetched_articles` (fetch_node), `processed_articles` (preprocess_node), `tech_chunks`, `proposal_points`, `proposal_md` — article 리스트가 스테이지별로 분리돼 실패 경로에서도 어느 단계 출력이 남아있는지 구분 가능
 - 메타: `errors` (list[dict]), `usage` (Anthropic 4-token 누적), `stages_completed` (append-only), `failed_stage` (None | str), `status` (`"running" | "failed" | "completed"`), `current_stage` (None | str), `run_id`, `output_dir`, `started_at`, `ended_at`
 - `new_state()` 시드 팩토리 + `merge_usage()` 순수 리듀서. `USAGE_KEYS` 단일 소스는 `src/llm/claude_client.py`
 
@@ -145,7 +145,7 @@
 - `fetch_node` / `preprocess_node` — 빈 articles 면 no-op passthrough
 - `retrieve_node` — `top_k = state.top_k or settings.llm.claude_rag_top_k`
 - `synthesize_node` / `draft_node` — 각 Sonnet 호출의 usage 를 `merge_usage(state.usage, call_usage)` 로 상태에 누적
-- `persist_node` — 항상 실행 (실패 경로에서도). 부분 state 로 `intermediate/*.json` + `run_summary.json` 작성. 최종적으로 `status` (`failed` / `completed`), `ended_at`, `current_stage` (완료면 None, 실패면 raising stage) 를 확정. `_to_jsonable` 재귀 직렬화(dataclass/pydantic/datetime/Path)
+- `persist_node` — 항상 실행 (실패 경로에서도). 부분 state 로 `intermediate/*.json` + `run_summary.json` 작성. `articles_after_preprocess.json` 에는 `processed > fetched > searched` 우선순위의 최신 스테이지 articles 를 기록 (헬퍼 `latest_articles()`), 실패 경로에선 `articles_searched.json` / `articles_fetched.json` 보조 덤프로 단계별 스냅샷도 보존. 최종적으로 `status` (`failed` / `completed`), `ended_at`, `current_stage` (완료면 None, 실패면 raising stage) 를 확정. `_to_jsonable` 재귀 직렬화(dataclass/pydantic/datetime/Path)
 - `route_after_stage` 라우터 — `failed_stage` 있으면 `"persist"` (모든 하위 스테이지 스킵), 없으면 `"continue"`
 
 **Pipeline (`pipeline.py::build_graph()`):** `StateGraph(AgentState)` 컴파일
@@ -165,7 +165,8 @@ START → search ─┬─[continue]→ fetch ─┬─[continue]→ preprocess 
 
 **산출물:** `outputs/{company}_{YYYYMMDD}/`
 - `proposal.md` — 최종 draft (실패 시 생략)
-- `intermediate/articles_after_preprocess.json` — 번역·태그·dedup 후 state
+- `intermediate/articles_after_preprocess.json` — 최신 스테이지 articles (보통 번역·태그·dedup 후, 실패 경로에선 이전 단계 스냅샷)
+- `intermediate/articles_{searched,fetched}.json` — 실패 경로에서만. 단계별 차분 분석용
 - `intermediate/tech_chunks.json` — retrieve top-k
 - `intermediate/points.json` — 검증된 ProposalPoint 리스트
 - `intermediate/run_summary.json` — `{run_id, company, industry, lang, status, duration_s, started_at, ended_at, usage, errors, failed_stage, current_stage, stages_completed, proposal_md_path, generated_at}`

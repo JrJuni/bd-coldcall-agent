@@ -118,7 +118,9 @@ def test_happy_path_produces_full_output(monkeypatch, tmp_path: Path):
     # Every successful stage recorded (including persist).
     done = set(result["stages_completed"])
     assert done == set(STAGES)
-    assert len(result["articles"]) == 1
+    assert len(result["searched_articles"]) == 1
+    assert len(result["fetched_articles"]) == 1
+    assert len(result["processed_articles"]) == 1
     assert len(result["tech_chunks"]) == 1
     assert len(result["proposal_points"]) == 1
     assert "## Overview" in result["proposal_md"]

@@ -78,15 +78,15 @@ def _mk_retrieved(doc_id: str = "local:doc:p", idx: int = 0) -> RetrievedChunk:
 
 
 def test_stage_decorator_appends_to_stages_completed(tmp_path: Path):
-    state = _seed_state(tmp_path, articles=[])
+    state = _seed_state(tmp_path, searched_articles=[])
 
     @nodes._stage("dummy")
     def noop(_state):
-        return {"articles": [_mk_article()]}
+        return {"searched_articles": [_mk_article()]}
 
     patch = noop(state)
     assert "dummy" in patch["stages_completed"]
-    assert len(patch["articles"]) == 1
+    assert len(patch["searched_articles"]) == 1
     assert "failed_stage" not in patch
     # current_stage advances on success so checkpoint observers can track progress
     assert patch["current_stage"] == "dummy"
@@ -173,7 +173,7 @@ def test_search_node_en_lang_uses_monolingual_search(monkeypatch, tmp_path: Path
 
     state = _seed_state(tmp_path, lang="en")
     patch = nodes.search_node(state)
-    assert len(patch["articles"]) == 1
+    assert len(patch["searched_articles"]) == 1
     assert nodes.STAGE_SEARCH in patch["stages_completed"]
     assert len(fake_client.search_calls) == 1
     assert fake_client.search_calls[0]["lang"] == "en"
@@ -199,7 +199,7 @@ def test_search_node_ko_lang_uses_bilingual(monkeypatch, tmp_path: Path):
     patch = nodes.search_node(state)
     assert recorded["primary_lang"] == "ko"
     assert recorded["query"] == "엔비디아"
-    assert len(patch["articles"]) == 1
+    assert len(patch["searched_articles"]) == 1
 
 
 def test_search_node_missing_api_key_records_failed_stage(monkeypatch, tmp_path: Path):
@@ -227,10 +227,10 @@ def test_fetch_node_delegates_to_fetch_bodies_parallel(monkeypatch, tmp_path: Pa
 
     monkeypatch.setattr(nodes, "fetch_bodies_parallel", _mock)
 
-    state = _seed_state(tmp_path, articles=[_mk_article("https://ex.com/a")])
+    state = _seed_state(tmp_path, searched_articles=[_mk_article("https://ex.com/a")])
     patch = nodes.fetch_node(state)
     assert len(seen) == 1
-    assert len(patch["articles"]) == 1
+    assert len(patch["fetched_articles"]) == 1
     assert nodes.STAGE_FETCH in patch["stages_completed"]
 
 
@@ -239,9 +239,9 @@ def test_fetch_node_passthrough_when_no_articles(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(
         nodes, "fetch_bodies_parallel", lambda a: called.append(a) or a
     )
-    state = _seed_state(tmp_path, articles=[])
+    state = _seed_state(tmp_path, searched_articles=[])
     patch = nodes.fetch_node(state)
-    assert patch["articles"] == []
+    assert patch["fetched_articles"] == []
     assert called == []
 
 
@@ -259,10 +259,11 @@ def test_preprocess_node_delegates_and_propagates_kept(monkeypatch, tmp_path: Pa
     monkeypatch.setattr(nodes, "preprocess_articles", _mock)
 
     state = _seed_state(
-        tmp_path, articles=[_mk_article("https://ex.com/a"), _mk_article("https://ex.com/b")]
+        tmp_path,
+        fetched_articles=[_mk_article("https://ex.com/a"), _mk_article("https://ex.com/b")],
     )
     patch = nodes.preprocess_node(state)
-    assert patch["articles"] == kept
+    assert patch["processed_articles"] == kept
     assert nodes.STAGE_PREPROCESS in patch["stages_completed"]
 
 
@@ -334,7 +335,7 @@ def test_synthesize_node_merges_usage_into_state(monkeypatch, tmp_path: Path):
     existing_usage = {k: 1 for k in USAGE_KEYS}
     state = _seed_state(
         tmp_path,
-        articles=[_mk_article()],
+        processed_articles=[_mk_article()],
         tech_chunks=[_mk_retrieved()],
         usage=existing_usage,
     )
@@ -370,7 +371,7 @@ def test_draft_node_writes_proposal_md_and_merges_usage(monkeypatch, tmp_path: P
 
     state = _seed_state(
         tmp_path,
-        articles=[_mk_article()],
+        processed_articles=[_mk_article()],
         proposal_points=draft.points,
         usage=empty_usage(),
     )
@@ -396,7 +397,7 @@ def test_persist_node_writes_proposal_and_intermediates(tmp_path: Path):
     ]
     state = _seed_state(
         tmp_path,
-        articles=[_mk_article("https://ex.com/a")],
+        processed_articles=[_mk_article("https://ex.com/a")],
         tech_chunks=[_mk_retrieved()],
         proposal_points=pp,
         proposal_md="## Overview\n\nhi\n",
@@ -430,17 +431,21 @@ def test_persist_node_writes_proposal_and_intermediates(tmp_path: Path):
 
 
 def test_persist_node_tolerates_partial_state_after_failure(tmp_path: Path):
-    # Only articles present — no tech_chunks, no points, no markdown.
+    # Retrieve failed → preprocess succeeded → processed_articles populated,
+    # but no tech_chunks / points / markdown.
     state = _seed_state(
         tmp_path,
-        articles=[_mk_article("https://ex.com/a")],
+        processed_articles=[_mk_article("https://ex.com/a")],
         failed_stage=nodes.STAGE_RETRIEVE,
         errors=[{"stage": "retrieve", "error_type": "RuntimeError", "message": "x", "ts": "t"}],
     )
     nodes.persist_node(state)
     inter = tmp_path / "intermediate"
-    # articles still written
+    # articles still written — processed_articles is the latest stage's output
     assert (inter / "articles_after_preprocess.json").exists()
+    # No per-stage dumps because only processed_articles was present
+    assert not (inter / "articles_searched.json").exists()
+    assert not (inter / "articles_fetched.json").exists()
     # but no proposal.md — nothing to write
     assert not (tmp_path / "proposal.md").exists()
     # summary captures failure
@@ -451,6 +456,50 @@ def test_persist_node_tolerates_partial_state_after_failure(tmp_path: Path):
     assert summary["status"] == "failed"
     # On failure, current_stage pins to the stage that raised
     assert summary["current_stage"] == nodes.STAGE_RETRIEVE
+
+
+def test_persist_node_dumps_earlier_stage_when_fetch_failed(tmp_path: Path):
+    # Fetch failed → only searched_articles survived. persist should write
+    # the searched list as the canonical articles file AND a per-stage dump.
+    searched = [_mk_article("https://ex.com/searched")]
+    state = _seed_state(
+        tmp_path,
+        searched_articles=searched,
+        failed_stage=nodes.STAGE_FETCH,
+        errors=[{"stage": "fetch", "error_type": "Timeout", "message": "t", "ts": "t"}],
+    )
+    nodes.persist_node(state)
+    inter = tmp_path / "intermediate"
+    # Canonical file has the searched list (no later stage produced articles)
+    canonical = json.loads((inter / "articles_after_preprocess.json").read_text(encoding="utf-8"))
+    assert len(canonical) == 1
+    assert canonical[0]["url"] == "https://ex.com/searched"
+    # Per-stage dump is written for post-mortem
+    assert (inter / "articles_searched.json").exists()
+    # No fetched_articles in state, so no fetched dump
+    assert not (inter / "articles_fetched.json").exists()
+
+
+def test_persist_node_dumps_fetched_when_preprocess_failed(tmp_path: Path):
+    # Preprocess failed → fetched_articles is the latest. searched_articles
+    # (strict superset of earlier stage) may also be populated — still
+    # dumped separately for diff analysis.
+    fetched = [_mk_article("https://ex.com/fetched")]
+    state = _seed_state(
+        tmp_path,
+        searched_articles=[_mk_article("https://ex.com/searched1"), _mk_article("https://ex.com/searched2")],
+        fetched_articles=fetched,
+        failed_stage=nodes.STAGE_PREPROCESS,
+        errors=[{"stage": "preprocess", "error_type": "CudaOOM", "message": "oom", "ts": "t"}],
+    )
+    nodes.persist_node(state)
+    inter = tmp_path / "intermediate"
+    canonical = json.loads((inter / "articles_after_preprocess.json").read_text(encoding="utf-8"))
+    assert len(canonical) == 1
+    assert canonical[0]["url"] == "https://ex.com/fetched"
+    # Both earlier stages dumped
+    assert (inter / "articles_searched.json").exists()
+    assert (inter / "articles_fetched.json").exists()
 
 
 def test_persist_node_tolerates_missing_output_dir(tmp_path: Path, caplog):

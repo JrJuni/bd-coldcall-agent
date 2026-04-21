@@ -77,7 +77,11 @@ def main(argv: list[str] | None = None) -> int:
     print("=" * 60)
     print(f"stages completed : {', '.join(result.get('stages_completed') or [])}")
     print(f"failed_stage     : {result.get('failed_stage')}")
-    print(f"articles         : {len(result.get('articles') or [])}")
+    print(
+        f"articles         : searched={len(result.get('searched_articles') or [])} "
+        f"fetched={len(result.get('fetched_articles') or [])} "
+        f"processed={len(result.get('processed_articles') or [])}"
+    )
     print(f"tech chunks      : {len(result.get('tech_chunks') or [])}")
     print(f"proposal points  : {len(result.get('proposal_points') or [])}")
     usage = result.get("usage") or {}

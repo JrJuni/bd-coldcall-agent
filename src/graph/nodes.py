@@ -26,7 +26,7 @@ from typing import Any, Callable
 
 from src.config.loader import get_secrets, get_settings
 from src.graph.errors import StageError
-from src.graph.state import AgentState, merge_usage
+from src.graph.state import AgentState, latest_articles, merge_usage
 from src.llm.draft import draft_proposal
 from src.llm.preprocess import preprocess_articles
 from src.llm.synthesize import synthesize_proposal_points
@@ -120,15 +120,15 @@ def search_node(state: AgentState) -> dict:
             )
 
     _LOGGER.info("[search] company=%s lang=%s → %d articles", company, lang, len(articles))
-    return {"articles": articles}
+    return {"searched_articles": articles}
 
 
 @_stage(STAGE_FETCH)
 def fetch_node(state: AgentState) -> dict:
     """Fill article bodies via trafilatura + ThreadPool."""
-    articles = list(state.get("articles") or [])
+    articles = list(state.get("searched_articles") or [])
     if not articles:
-        return {"articles": articles}
+        return {"fetched_articles": articles}
     enriched = fetch_bodies_parallel(articles)
     full = sum(1 for a in enriched if a.body_source == "full")
     snippet = sum(1 for a in enriched if a.body_source == "snippet")
@@ -136,15 +136,15 @@ def fetch_node(state: AgentState) -> dict:
         "[fetch] total=%d full=%d snippet_fallback=%d",
         len(enriched), full, snippet,
     )
-    return {"articles": enriched}
+    return {"fetched_articles": enriched}
 
 
 @_stage(STAGE_PREPROCESS)
 def preprocess_node(state: AgentState) -> dict:
     """Translate → tag → dedup via local Exaone + bge-m3."""
-    articles = list(state.get("articles") or [])
+    articles = list(state.get("fetched_articles") or [])
     if not articles:
-        return {"articles": articles}
+        return {"processed_articles": articles}
     lang = state.get("lang")
     kept, meta = preprocess_articles(articles, target_lang=lang)
     _LOGGER.info(
@@ -154,7 +154,7 @@ def preprocess_node(state: AgentState) -> dict:
         meta.get("n_tagged", 0),
         meta.get("n_output", 0),
     )
-    return {"articles": kept}
+    return {"processed_articles": kept}
 
 
 @_stage(STAGE_RETRIEVE)
@@ -172,7 +172,7 @@ def retrieve_node(state: AgentState) -> dict:
 def synthesize_node(state: AgentState) -> dict:
     """Sonnet synthesis of ProposalPoint list; merges usage into state."""
     points, call_usage = synthesize_proposal_points(
-        list(state.get("articles") or []),
+        list(state.get("processed_articles") or []),
         list(state.get("tech_chunks") or []),
         target_company=state["company"],
         industry=state.get("industry", ""),
@@ -187,7 +187,7 @@ def synthesize_node(state: AgentState) -> dict:
 def draft_node(state: AgentState) -> dict:
     """Sonnet draft of the Markdown brief; merges usage into state."""
     points = list(state.get("proposal_points") or [])
-    articles = list(state.get("articles") or [])
+    articles = list(state.get("processed_articles") or [])
     draft, call_usage = draft_proposal(
         points,
         articles,
@@ -260,10 +260,21 @@ def persist_node(state: AgentState) -> dict:
     intermediate = output_dir / "intermediate"
     intermediate.mkdir(parents=True, exist_ok=True)
 
-    # Always write what we have — even partial.
-    articles = state.get("articles") or []
-    if articles:
-        _write_json(intermediate / "articles_after_preprocess.json", articles)
+    # Always write what we have — even partial. The canonical
+    # `articles_after_preprocess.json` holds the most advanced stage's
+    # output (processed > fetched > searched). On failure we also dump
+    # earlier-stage snapshots so post-mortem can see the progression.
+    processed = state.get("processed_articles") or []
+    fetched = state.get("fetched_articles") or []
+    searched = state.get("searched_articles") or []
+    latest = processed or fetched or searched
+    if latest:
+        _write_json(intermediate / "articles_after_preprocess.json", latest)
+    if failed_stage:
+        if searched and not processed:
+            _write_json(intermediate / "articles_searched.json", searched)
+        if fetched and not processed:
+            _write_json(intermediate / "articles_fetched.json", fetched)
 
     tech_chunks = state.get("tech_chunks") or []
     if tech_chunks:

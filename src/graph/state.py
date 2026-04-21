@@ -1,10 +1,11 @@
 """Phase 5 — AgentState TypedDict carried through the LangGraph pipeline.
 
 `total=False` because most fields accumulate as the graph progresses —
-`search_node` writes `articles`, `preprocess_node` overwrites them with
-translated/tagged versions, etc. The initial state only needs the three
-user-facing inputs (company, industry, lang) plus a run_id/output_dir
-stamped by the orchestrator.
+article lists live under three stage-specific keys (`searched_articles`,
+`fetched_articles`, `processed_articles`) so a failed run always preserves
+the last successful stage's output for post-mortem. The initial state only
+needs the three user-facing inputs (company, industry, lang) plus a
+run_id/output_dir stamped by the orchestrator.
 
 Usage accounting is intentionally flat — four Anthropic token counters
 summed across synthesize + draft — so `merge_usage` is a pure reducer and
@@ -26,6 +27,7 @@ __all__ = [
     "RunStatus",
     "USAGE_KEYS",
     "empty_usage",
+    "latest_articles",
     "merge_usage",
     "new_state",
 ]
@@ -41,8 +43,11 @@ class AgentState(TypedDict, total=False):
     lang: Literal["en", "ko"]
     top_k: int
 
-    # per-stage artifacts
-    articles: list[Article]
+    # per-stage article artifacts — each node writes to its own key so
+    # failure post-mortem can see exactly where the pipeline stopped.
+    searched_articles: list[Article]
+    fetched_articles: list[Article]
+    processed_articles: list[Article]
     tech_chunks: list[RetrievedChunk]
     proposal_points: list[ProposalPoint]
     proposal_md: str
@@ -78,6 +83,20 @@ def merge_usage(
     return out
 
 
+def latest_articles(state: "AgentState") -> list[Article]:
+    """Return the most recent article list seen — processed > fetched > searched.
+
+    Used by `persist_node` to serialize whatever survived (the later stages
+    are strict supersets of the earlier ones) and by CLI summaries that
+    want to report "the articles we ended up with."
+    """
+    for key in ("processed_articles", "fetched_articles", "searched_articles"):
+        value = state.get(key)  # type: ignore[call-overload]
+        if value:
+            return list(value)
+    return []
+
+
 def new_state(
     *,
     company: str,
@@ -93,7 +112,9 @@ def new_state(
         "company": company,
         "industry": industry,
         "lang": lang,
-        "articles": [],
+        "searched_articles": [],
+        "fetched_articles": [],
+        "processed_articles": [],
         "tech_chunks": [],
         "proposal_points": [],
         "proposal_md": "",

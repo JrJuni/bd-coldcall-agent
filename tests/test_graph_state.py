@@ -6,7 +6,13 @@ from pathlib import Path
 import pytest
 
 from src.graph.errors import FatalError, StageError, TransientError
-from src.graph.state import USAGE_KEYS, empty_usage, merge_usage, new_state
+from src.graph.state import (
+    USAGE_KEYS,
+    empty_usage,
+    latest_articles,
+    merge_usage,
+    new_state,
+)
 
 
 def test_empty_usage_has_all_keys_zero():
@@ -64,7 +70,9 @@ def test_new_state_initializes_required_fields(tmp_path: Path):
     assert s["top_k"] == 8
     assert s["output_dir"] == tmp_path
     assert s["run_id"] == "20260421-NVIDIA"
-    assert s["articles"] == []
+    assert s["searched_articles"] == []
+    assert s["fetched_articles"] == []
+    assert s["processed_articles"] == []
     assert s["proposal_points"] == []
     assert s["errors"] == []
     assert s["stages_completed"] == []
@@ -81,6 +89,20 @@ def test_new_state_omits_top_k_when_not_given(tmp_path: Path):
     )
     assert "top_k" not in s
     assert "started_at" not in s
+
+
+def test_latest_articles_prefers_processed_over_fetched_over_searched():
+    # processed takes priority
+    s = {"searched_articles": ["a"], "fetched_articles": ["b"], "processed_articles": ["c"]}
+    assert latest_articles(s) == ["c"]  # type: ignore[arg-type]
+    # fall back to fetched if processed is empty
+    s = {"searched_articles": ["a"], "fetched_articles": ["b"], "processed_articles": []}
+    assert latest_articles(s) == ["b"]  # type: ignore[arg-type]
+    # fall back to searched if both later stages empty
+    s = {"searched_articles": ["a"], "fetched_articles": [], "processed_articles": []}
+    assert latest_articles(s) == ["a"]  # type: ignore[arg-type]
+    # nothing anywhere → empty list
+    assert latest_articles({}) == []  # type: ignore[arg-type]
 
 
 def test_new_state_initializes_status_running_and_no_current_stage(tmp_path: Path):
