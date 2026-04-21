@@ -122,3 +122,58 @@ def chat_cached(
         "stop_reason": getattr(resp, "stop_reason", None),
         "model": getattr(resp, "model", chosen_model),
     }
+
+
+def chat_once(
+    *,
+    system: str,
+    user: str,
+    max_tokens: int,
+    temperature: float | None = None,
+    model: str | None = None,
+    client: Any | None = None,
+) -> dict[str, Any]:
+    """Single uncached Sonnet call — used where the prompt is unique per call.
+
+    Draft generation falls into this bucket: every target produces its own
+    ProposalPoint list, so there's no prefix worth caching across calls.
+    Same return shape as `chat_cached`.
+    """
+    settings = get_settings()
+    chosen_model = model or settings.llm.claude_model
+    temp = (
+        temperature
+        if temperature is not None
+        else settings.llm.claude_temperature
+    )
+    c = client if client is not None else get_claude()
+
+    resp = c.messages.create(
+        model=chosen_model,
+        max_tokens=max_tokens,
+        temperature=temp,
+        system=system,
+        messages=[{"role": "user", "content": user}],
+    )
+
+    text = "".join(
+        getattr(block, "text", "") for block in resp.content
+    ) if resp.content else ""
+
+    usage = {
+        "input_tokens": getattr(resp.usage, "input_tokens", 0),
+        "output_tokens": getattr(resp.usage, "output_tokens", 0),
+        "cache_read_input_tokens": getattr(
+            resp.usage, "cache_read_input_tokens", 0
+        ),
+        "cache_creation_input_tokens": getattr(
+            resp.usage, "cache_creation_input_tokens", 0
+        ),
+    }
+
+    return {
+        "text": text,
+        "usage": usage,
+        "stop_reason": getattr(resp, "stop_reason", None),
+        "model": getattr(resp, "model", chosen_model),
+    }

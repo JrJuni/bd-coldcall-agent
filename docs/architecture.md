@@ -106,12 +106,28 @@
 
 **임베딩:** `BAAI/bge-m3` (Preprocess dedup 과 모델 공유 — `embeddings.get_embedder()` 싱글턴)
 
-### 5. Claude Agent (`src/llm/claude_client.py`)
-- `model="claude-sonnet-4-6"`, Anthropic SDK
-- **Prompt caching**: tech chunks 를 `cache_control: {type: "ephemeral"}` 로 전달 → 여러 타겟사 실행 시 동일 컨텍스트 캐시 히트
-- **Tag tier (입력 토큰 ~35% 절감)**: high-value 7개(earnings, m_and_a, partnership, funding, regulatory, product_launch, tech_launch) 는 `translated_body` 전체, low-value 2개(leadership, other) 는 snippet 만
-- `synthesize_proposal_points(articles, tech_chunks, lang)` → pydantic 검증된 포인트 리스트
-- `draft_proposal(points, articles, lang)` → Markdown + source 각주
+### 5. Claude Agent (`src/llm/{claude_client,synthesize,draft}.py`)
+
+**클라이언트 (`claude_client.py`):**
+- `get_claude()` — Anthropic SDK 싱글턴 (lazy load, `ANTHROPIC_API_KEY` 검증)
+- `chat_cached(system, cached_context, volatile_context, task, max_tokens, temperature, model, client)` — user content 를 3블록으로 분할, **첫 블록(tech_docs) 에만 `cache_control: ephemeral` 부착**. 반환 dict 에 `usage.cache_read_input_tokens` / `cache_creation_input_tokens` 포함
+- `chat_once(system, user, max_tokens, temperature, model, client)` — 비캐시 단일 호출 (draft 용, 타겟별 고유 프롬프트라 캐싱 이득 없음)
+
+**합성 (`synthesize.py`):**
+- `synthesize_proposal_points(articles, tech_chunks, *, target_company, industry, lang, client=None) -> list[ProposalPoint]`
+- 프롬프트: `<tech_docs>` (캐시됨) + `<articles>` (tag-tier 적용 body/snippet) + `<target>` + task
+- **Tag tier (입력 토큰 ~35% 절감)**: high-value 7개(earnings, m_and_a, partnership, funding, regulatory, product_launch, tech_launch) 는 `translated_body` 전체, low-value 2개(leadership, other) 는 snippet 만. `src/llm/tag_tier.py::select_body_or_snippet` / `has_high_value_tag`
+- article id 는 `art_i` attribute, URL 도 element attribute 로 노출 → 모델이 `evidence_article_urls` 에 URL 그대로 넣음
+- JSON parse 실패 시 `temperature +0.1` (cap 1.0) 로 1회 재시도, 두 번째도 실패하면 `ValueError`
+- pydantic `ProposalPoint` 검증: angle Literal 5종 (pain_point/growth_signal/tech_fit/risk_flag/intro), intro 외 evidence URL ≥1 필수
+
+**초안 (`draft.py`):**
+- `draft_proposal(points, articles, *, target_company, lang, client=None) -> ProposalDraft`
+- 4섹션 Markdown (Overview / Key Points / Why Our Product / Next Steps)
+- **Footnote 파이프라인**: 코드에서 인용 URL 을 첫 등장 순서로 `[^1]..[^N]` 사전 할당 → Sonnet 에 citation_map 전달 → 응답의 `[^N]` 관대 재번호 (map hit 우선, 미스는 unused_pool fallback, 풀 비면 drop) → Sonnet 이 실수로 쓴 `[^N]: URL` 정의 블록 strip → 시스템이 정확한 URL 로 footnote 정의 재생성
+- `>1200 words` 초과 시 warn log 후 그대로 반환 (Phase 5 재시도 엣지에서 처리)
+
+**스키마 (`proposal_schemas.py`):** `ProposalPoint` + `ProposalDraft` + `_extract_json` (raw → 코드펜스 → array regex → object regex 4단 fallback) + `parse_proposal_points` (`{"points": [...]}` 래핑도 수용)
 
 ### 6. LangGraph (`src/graph/`)
 - `AgentState` TypedDict: `company, industry, lang, articles, tech_chunks, proposal_points, proposal_md, errors`

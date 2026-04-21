@@ -69,12 +69,34 @@
     - retrieve 스모크 (3개 쿼리): "Korean-native tokenization for enterprise" → `product_overview.md::2` @ 0.790, "on-premise air-gapped compliance" → `pricing.md::1` @ 0.763, "pricing for 50 seats" → `pricing.md::1` @ 0.807. similarity_score 내림차순 유지
   - 플랜 파일(세션 휘발성): `~/.claude/plans/phase-3-swirling-codd.md` 체크박스 추적
 
+- **Phase 4** — Claude Sonnet 4.6 합성 에이전트 (synthesize + draft + 실제 스모크)
+  - **Stream 0 ✅** — 설정·클라이언트·스키마 먼저 잠금
+    - `LLMSettings` 에 `claude_max_tokens_synthesize=2000` / `claude_max_tokens_draft=4000` / `claude_temperature=0.3` / `claude_rag_top_k=8` 추가 + `config/settings.yaml` 반영
+    - `src/llm/claude_client.py` — `get_claude()` 싱글턴 + `chat_cached()` (tech_docs 블록에만 `cache_control: ephemeral`, usage 에 cache_read/creation 토큰 포함) + 이후 Stream 2 에서 `chat_once()` 비캐시 헬퍼 추가
+    - `src/llm/proposal_schemas.py` — `ProposalPoint` (angle Literal 5종, intro 외 evidence 필수) + `ProposalDraft` + `_extract_json` 4단 fallback (raw → 코드펜스 → array regex → object regex) + `parse_proposal_points` (`{"points": [...]}` 래핑 수용)
+    - `src/llm/tag_tier.py` — `HIGH_VALUE_TAGS` frozenset 7종 + `select_body_or_snippet()` + `has_high_value_tag()` (low-value=leadership/other → snippet 만)
+    - `tests/{test_proposal_schemas,test_tag_tier}.py` — 28건 신규, 총 **155건 all green**
+  - **Stream 1 ✅** — `synthesize_proposal_points`
+    - `src/llm/synthesize.py` — 프롬프트 조립: `<tech_docs>` 캐시 블록 + `<articles>` (tag-tier 로 high=translated_body / low=snippet) + `<target>` + task. article id 는 `art_i`, URL 은 element attribute 로 노출. JSON parse 실패 시 temperature +0.1 로 1회 재시도, 두 번 실패면 `ValueError`
+    - `src/prompts/{en,ko}/synthesize.txt` — `---TASK---` 구분자로 system/task 분리 (단일 파일)
+    - `tests/test_synthesize.py` — FakeClient 10건 (정상/펜스/프로즈/retry/2회실패/tier high·low/cache_control/chunk id/ko 로드), 총 **165건 all green**
+  - **Stream 2 ✅** — `draft_proposal` + footnote 파이프라인
+    - `src/llm/draft.py` — 인용된 URL 을 첫 등장 순서로 `[^1]..[^N]` 사전 할당 → Sonnet 에 citation_map 전달 → 응답에서 `[^N]` 관대 재번호 (map hit 아니면 unused_pool fallback, 풀 비면 drop) → Sonnet 수제 footnote 정의 블록 strip → 시스템이 정확한 URL 로 `[^N]: URL` 블록 재생성. `>1200 words` 는 warn log 후 그대로 반환
+    - `src/llm/claude_client.py::chat_once` — 비캐시 단일 호출 헬퍼 추가 (draft 는 타겟별로 고유하므로 캐싱 불필요)
+    - `src/prompts/{en,ko}/draft.txt` — Overview / Key Points / Why Our Product / Next Steps 4섹션 계약, Sonnet 의 자체 footnote 블록 작성 금지 명시
+    - `tests/test_draft.py` — 14건 (순수 헬퍼 6 + E2E 8: 4섹션 / off-by-one 재번호 / 수제 footnote strip / citation_map 프롬프트 주입 / 길이 warn / 한글 ratio / 빈 입력 가드), 총 **179건 all green**
+  - **Stream 3 ✅** — end-to-end 스모크 + 산출물
+    - `scripts/smoke_phase4.py` — preprocess JSON 재로드 → retriever top-k → synthesize → draft → `outputs/{company}_{YYYYMMDD}.md` + `outputs/intermediate/{company}_{YYYYMMDD}_points.json`. retrieval / synth / draft 각 레이턴시 출력
+    - 실측 (NVIDIA / semiconductor / en, `outputs/preprocess/20260420-163433_en.json` 20건 + tech chunks top-8): retrieve 14.5s (bge-m3 초회 로드 포함) / synthesize 27.2s → 5 points (intro/pain_point/growth_signal/risk_flag/tech_fit 각 1) / draft 16.5s → 592 단어 / 총 58.2s
+    - 산출물: `outputs/NVIDIA_20260421.md` — 4섹션 구조 무결 + 6개 고유 footnote 자동 번호링 + 인용 URL ↔ `[^N]` 맵핑 정확 + 기사 본문·제품 docs 모두 반영됨
+    - 플랜 파일(세션 휘발성): `~/.claude/plans/phase-4-sonnet-agent.md` 체크박스 전부 완료
+    - 추후 보강 후보: Sonnet 호출의 `usage.cache_read/creation` 숫자를 smoke CLI 에 surface (현재는 함수 시그니처상 리턴 X — Phase 5 오케스트레이터에서 state 로 모아 리포팅)
+
 ## 진행 중
 
-- (Phase 4 준비) Claude Sonnet 4.6 합성 노드. 현재 RAG 인덱스·retriever API 준비 완료.
+- (Phase 5 준비) LangGraph StateGraph 로 Phase 1~4 노드 정식 오케스트레이션. 재시도 엣지 / 중간 state 저장 / usage 집계.
 
-## 다음 MVP 범위 (Phase 4 ~ 9)
-- **Phase 4** — Claude Sonnet 4.6 에이전트 (제안 포인트 종합 + 제안서 초안, prompt caching)
+## 다음 MVP 범위 (Phase 5 ~ 9)
 - **Phase 5** — LangGraph StateGraph 오케스트레이션
 - **Phase 6** — CLI 통합 (`main.py ingest`, `main.py run --company ... --lang en|ko`)
 - **Phase 7** — Web UI (FastAPI + Next.js — 타겟 CRUD, 실행 + SSE 진행 스트림, 결과 뷰어, RAG 관리)

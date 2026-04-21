@@ -41,6 +41,12 @@ If the env doesn't exist yet, see the setup steps in `docs/lesson-learned.md` (M
 ~/miniconda3/envs/bd-coldcall/python.exe -m src.rag.indexer --dry-run       # report-only, no mutation
 ~/miniconda3/envs/bd-coldcall/python.exe -m src.rag.indexer --verify        # manifest ↔ store drift check
 ~/miniconda3/envs/bd-coldcall/python.exe -m src.rag.indexer --notion        # include Notion pages + DBs
+
+# Phase 4 end-to-end smoke (retrieve → synthesize → draft; 2 Sonnet calls, ~$0.10-0.50)
+~/miniconda3/envs/bd-coldcall/python.exe -m scripts.smoke_phase4 \
+    --preprocess-json outputs/preprocess/<timestamp>_en.json \
+    --company NVIDIA --industry semiconductor --lang en
+# Writes outputs/{company}_{YYYYMMDD}.md + outputs/intermediate/{company}_{YYYYMMDD}_points.json
 ```
 
 `--save` writes JSON (+ Markdown for brave) to `outputs/search/` and `outputs/preprocess/` — prefer this over stdout-only when debugging retrieval quality.
