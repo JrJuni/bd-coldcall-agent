@@ -68,12 +68,14 @@ def _stage(name: str) -> Callable[[Callable[[AgentState], dict]], Callable[[Agen
                 return {
                     "errors": existing_errors,
                     "failed_stage": name,
+                    "current_stage": name,
                 }
             # Bookkeeping: stages_completed is append-only, deduped.
             stages = list(state.get("stages_completed") or [])
             if name not in stages:
                 stages.append(name)
             patch.setdefault("stages_completed", stages)
+            patch.setdefault("current_stage", name)
             return patch
         wrapped.__name__ = fn.__name__
         wrapped.__doc__ = fn.__doc__
@@ -238,13 +240,22 @@ def persist_node(state: AgentState) -> dict:
     state is always on disk for post-mortem. Not wrapped by `@_stage`
     because its own failures shouldn't trigger another stage transition.
     """
+    failed_stage = state.get("failed_stage")
+    status = "failed" if failed_stage else "completed"
+    ended_at = time.perf_counter()
+
     out_raw = state.get("output_dir")
     if out_raw is None:
         _LOGGER.error("persist_node: output_dir missing from state; skipping persist")
         stages = list(state.get("stages_completed") or [])
         if STAGE_PERSIST not in stages:
             stages.append(STAGE_PERSIST)
-        return {"stages_completed": stages}
+        return {
+            "stages_completed": stages,
+            "status": status,
+            "ended_at": ended_at,
+            "current_stage": None,
+        }
     output_dir = Path(out_raw)
     intermediate = output_dir / "intermediate"
     intermediate.mkdir(parents=True, exist_ok=True)
@@ -273,23 +284,32 @@ def persist_node(state: AgentState) -> dict:
         stages.append(STAGE_PERSIST)
 
     started = state.get("started_at")
-    duration_s = (time.perf_counter() - started) if started is not None else None
+    duration_s = (ended_at - started) if started is not None else None
     summary = {
         "run_id": state.get("run_id"),
         "company": state.get("company"),
         "industry": state.get("industry"),
         "lang": state.get("lang"),
+        "status": status,
         "duration_s": duration_s,
+        "started_at": started,
+        "ended_at": ended_at,
         "usage": state.get("usage") or {},
         "errors": state.get("errors") or [],
-        "failed_stage": state.get("failed_stage"),
+        "failed_stage": failed_stage,
+        "current_stage": None if status == "completed" else failed_stage,
         "stages_completed": stages,
         "proposal_md_path": str(md_path) if md_path else None,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
     _write_json(intermediate / "run_summary.json", summary)
 
-    return {"stages_completed": stages}
+    return {
+        "stages_completed": stages,
+        "status": status,
+        "ended_at": ended_at,
+        "current_stage": None if status == "completed" else failed_stage,
+    }
 
 
 def route_after_stage(state: AgentState) -> str:

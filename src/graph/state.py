@@ -23,11 +23,15 @@ from src.search.base import Article
 
 __all__ = [
     "AgentState",
+    "RunStatus",
     "USAGE_KEYS",
     "empty_usage",
     "merge_usage",
     "new_state",
 ]
+
+
+RunStatus = Literal["running", "failed", "completed"]
 
 
 class AgentState(TypedDict, total=False):
@@ -48,9 +52,12 @@ class AgentState(TypedDict, total=False):
     usage: dict[str, int]
     stages_completed: list[str]
     failed_stage: str | None
+    current_stage: str | None
+    status: RunStatus
     run_id: str
     output_dir: Path
     started_at: float
+    ended_at: float
 
 
 def empty_usage() -> dict[str, int]:
@@ -93,6 +100,8 @@ def new_state(
         "errors": [],
         "usage": empty_usage(),
         "stages_completed": [],
+        "status": "running",
+        "current_stage": None,
         "run_id": run_id,
         "output_dir": output_dir,
     }

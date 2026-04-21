@@ -129,6 +129,11 @@ def test_happy_path_produces_full_output(monkeypatch, tmp_path: Path):
     summary = json.loads((tmp_path / "intermediate" / "run_summary.json").read_text(encoding="utf-8"))
     assert summary["failed_stage"] is None
     assert "persist" in summary["stages_completed"]
+    # Status transitions running → completed, current_stage cleared
+    assert result["status"] == "completed"
+    assert result["current_stage"] is None
+    assert result.get("ended_at") is not None
+    assert summary["status"] == "completed"
 
 
 def test_mid_pipeline_failure_routes_to_persist(monkeypatch, tmp_path: Path):
@@ -174,6 +179,10 @@ def test_mid_pipeline_failure_routes_to_persist(monkeypatch, tmp_path: Path):
     summary = json.loads((tmp_path / "intermediate" / "run_summary.json").read_text(encoding="utf-8"))
     assert summary["failed_stage"] == nodes.STAGE_RETRIEVE
     assert summary["proposal_md_path"] is None
+    # Failure state pins current_stage to the raising stage
+    assert summary["status"] == "failed"
+    assert summary["current_stage"] == nodes.STAGE_RETRIEVE
+    assert result["status"] == "failed"
 
 
 def test_search_failure_still_produces_run_summary(monkeypatch, tmp_path: Path):

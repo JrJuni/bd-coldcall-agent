@@ -88,6 +88,20 @@ def test_stage_decorator_appends_to_stages_completed(tmp_path: Path):
     assert "dummy" in patch["stages_completed"]
     assert len(patch["articles"]) == 1
     assert "failed_stage" not in patch
+    # current_stage advances on success so checkpoint observers can track progress
+    assert patch["current_stage"] == "dummy"
+
+
+def test_stage_decorator_sets_current_stage_on_failure(tmp_path: Path):
+    state = _seed_state(tmp_path)
+
+    @nodes._stage("boom_stage")
+    def exploder(_state):
+        raise ValueError("v")
+
+    patch = exploder(state)
+    assert patch["failed_stage"] == "boom_stage"
+    assert patch["current_stage"] == "boom_stage"
 
 
 def test_stage_decorator_records_failed_stage_on_exception(tmp_path: Path):
@@ -404,8 +418,15 @@ def test_persist_node_writes_proposal_and_intermediates(tmp_path: Path):
     assert summary["company"] == "NVIDIA"
     assert summary["usage"]["input_tokens"] == 5
     assert summary["failed_stage"] is None
+    assert summary["status"] == "completed"
+    assert summary["current_stage"] is None
+    assert summary["ended_at"] is not None
     assert "proposal_md_path" in summary
     assert nodes.STAGE_PERSIST in patch["stages_completed"]
+    # Returned patch also exposes the finalized fields for checkpoint observers
+    assert patch["status"] == "completed"
+    assert patch["current_stage"] is None
+    assert patch["ended_at"] is not None
 
 
 def test_persist_node_tolerates_partial_state_after_failure(tmp_path: Path):
@@ -427,6 +448,9 @@ def test_persist_node_tolerates_partial_state_after_failure(tmp_path: Path):
     assert summary["failed_stage"] == nodes.STAGE_RETRIEVE
     assert len(summary["errors"]) == 1
     assert summary["proposal_md_path"] is None
+    assert summary["status"] == "failed"
+    # On failure, current_stage pins to the stage that raised
+    assert summary["current_stage"] == nodes.STAGE_RETRIEVE
 
 
 def test_persist_node_tolerates_missing_output_dir(tmp_path: Path, caplog):

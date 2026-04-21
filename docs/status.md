@@ -122,6 +122,12 @@
   - `main.py ingest [--local-dir PATH] [--no-local] [--notion] [--force] [--dry-run] [--verify]` → `src.rag.indexer.main()` 에 argv 포워딩
   - 모듈 로드 시점에 `sys.stdout.reconfigure(encoding="utf-8")` — Windows cp949 에서 em-dash/한글 help 렌더링 실패 방지
   - 테스트 6건 신규 (`tests/test_cli.py`): run 필수 인자 / lang override + top_k / 잘못된 lang 거부 / failed_stage 시 exit 1 / ingest flag 포워딩 / indexer exit code 전파. **212 → 218 passed**
+- **Phase 5 보강 ✅ (Step 4)** — AgentState 계약 강화
+  - `AgentState` 에 `status` (`Literal["running", "failed", "completed"]`), `current_stage` (`str | None`), `ended_at` (`float | None`) 필드 추가. `new_state()` 는 `status="running"` + `current_stage=None` 로 시드
+  - `@_stage` 데코레이터가 성공/실패 양쪽에서 `current_stage = name` 을 patch 에 포함 — 체크포인터로 실시간 관찰 시 현재 진행 스테이지 추적 가능 (Phase 7 SSE 대비)
+  - `persist_node` 가 종료 시 `status` 결정 (`failed_stage` 있으면 `"failed"`, 없으면 `"completed"`) + `ended_at = time.perf_counter()` 스탬프 + `current_stage` 를 완료면 `None`, 실패면 raising stage 로 고정
+  - `run_summary.json` 에 `status` / `started_at` / `ended_at` / `current_stage` 추가 (기존 `duration_s` 유지)
+  - 테스트 2건 신규 + 기존 assert 보강 (state: status 초기화, nodes: 실패 시 current_stage 세팅, pipeline: status 전이). **218 → 220 passed**
 
 ## 다음 MVP 범위 (Phase 7 ~ 9)
 - **Phase 7** — Web UI (FastAPI + Next.js — 타겟 CRUD, 실행 + SSE 진행 스트림, 결과 뷰어, RAG 관리)

@@ -134,18 +134,18 @@
 **State (`state.py`):** `AgentState` TypedDict (`total=False`)
 - inputs: `company, industry, lang, top_k`
 - 아티팩트: `articles, tech_chunks, proposal_points, proposal_md`
-- 메타: `errors` (list[dict]), `usage` (Anthropic 4-token 누적), `stages_completed` (append-only), `failed_stage` (None | str), `run_id`, `output_dir`, `started_at`
+- 메타: `errors` (list[dict]), `usage` (Anthropic 4-token 누적), `stages_completed` (append-only), `failed_stage` (None | str), `status` (`"running" | "failed" | "completed"`), `current_stage` (None | str), `run_id`, `output_dir`, `started_at`, `ended_at`
 - `new_state()` 시드 팩토리 + `merge_usage()` 순수 리듀서. `USAGE_KEYS` 단일 소스는 `src/llm/claude_client.py`
 
 **Errors (`errors.py`):** `TransientError` / `FatalError` 엑셉션 + `StageError` dataclass (`{stage, error_type, message, ts}`) — `from_exception(stage, exc)` 로 직렬화 가능한 레코드 생성
 
 **Nodes (`nodes.py`):** 7개 얇은 어댑터. 실제 로직은 Phase 1~4 함수(`bilingual_news_search`, `fetch_bodies_parallel`, `preprocess_articles`, `retrieve`, `synthesize_proposal_points`, `draft_proposal`) 그대로 재사용
-- `@_stage(name)` 데코레이터 — 예외를 잡아 `failed_stage` + `errors` 에 기록, 성공 시 `stages_completed` 에 append. TransientError 미분리 (Phase 5 는 RetryPolicy 생략)
+- `@_stage(name)` 데코레이터 — 예외를 잡아 `failed_stage` + `errors` 에 기록, 성공/실패 양쪽에서 `current_stage = name` 세팅, 성공 시 `stages_completed` 에 append. TransientError 미분리 (Phase 5 는 RetryPolicy 생략)
 - `search_node` — ko 기본은 bilingual blend, en 은 monolingual. `BraveSearch` 를 context manager 로 운용 (세션 끝나면 close)
 - `fetch_node` / `preprocess_node` — 빈 articles 면 no-op passthrough
 - `retrieve_node` — `top_k = state.top_k or settings.llm.claude_rag_top_k`
 - `synthesize_node` / `draft_node` — 각 Sonnet 호출의 usage 를 `merge_usage(state.usage, call_usage)` 로 상태에 누적
-- `persist_node` — 항상 실행 (실패 경로에서도). 부분 state 로 `intermediate/*.json` + `run_summary.json` 작성. `_to_jsonable` 재귀 직렬화(dataclass/pydantic/datetime/Path)
+- `persist_node` — 항상 실행 (실패 경로에서도). 부분 state 로 `intermediate/*.json` + `run_summary.json` 작성. 최종적으로 `status` (`failed` / `completed`), `ended_at`, `current_stage` (완료면 None, 실패면 raising stage) 를 확정. `_to_jsonable` 재귀 직렬화(dataclass/pydantic/datetime/Path)
 - `route_after_stage` 라우터 — `failed_stage` 있으면 `"persist"` (모든 하위 스테이지 스킵), 없으면 `"continue"`
 
 **Pipeline (`pipeline.py::build_graph()`):** `StateGraph(AgentState)` 컴파일
@@ -168,7 +168,7 @@ START → search ─┬─[continue]→ fetch ─┬─[continue]→ preprocess 
 - `intermediate/articles_after_preprocess.json` — 번역·태그·dedup 후 state
 - `intermediate/tech_chunks.json` — retrieve top-k
 - `intermediate/points.json` — 검증된 ProposalPoint 리스트
-- `intermediate/run_summary.json` — `{run_id, company, duration_s, usage, errors, failed_stage, stages_completed, proposal_md_path, generated_at}`
+- `intermediate/run_summary.json` — `{run_id, company, industry, lang, status, duration_s, started_at, ended_at, usage, errors, failed_stage, current_stage, stages_completed, proposal_md_path, generated_at}`
 
 ---
 

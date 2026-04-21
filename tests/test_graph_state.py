@@ -83,6 +83,20 @@ def test_new_state_omits_top_k_when_not_given(tmp_path: Path):
     assert "started_at" not in s
 
 
+def test_new_state_initializes_status_running_and_no_current_stage(tmp_path: Path):
+    s = new_state(
+        company="X",
+        industry="y",
+        lang="en",
+        output_dir=tmp_path,
+        run_id="r",
+    )
+    assert s["status"] == "running"
+    assert s["current_stage"] is None
+    # ended_at is not stamped until persist
+    assert "ended_at" not in s
+
+
 def test_stage_error_from_exception_captures_type_and_message():
     try:
         raise ValueError("boom")
