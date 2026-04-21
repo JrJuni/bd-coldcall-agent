@@ -1,0 +1,9 @@
+[project]
+name = "bd-coldcall-agent"
+version = "0.1.0"
+description = "BD cold-call preparation agent with dual-model pipeline"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

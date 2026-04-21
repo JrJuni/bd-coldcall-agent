@@ -1,0 +1,60 @@
+# bd-coldcall-agent — runtime defaults (committed to repo)
+# Secrets (API keys) live in .env
+# User data (target companies, Notion IDs) lives in config/targets.yaml
+
+llm:
+  local_model: LGAI-EXAONE/EXAONE-3.5-7.8B-Instruct
+  quantization: 4bit          # 4bit | fp16
+  claude_model: claude-sonnet-4-6
+  claude_max_tokens_synthesize: 2000
+  claude_max_tokens_draft: 4000
+  claude_temperature: 0.3
+  claude_rag_top_k: 8
+
+search:
+  default_lang: en             # en | ko
+  days: 30
+  max_results_per_query: 10
+  max_articles: 20             # upper bound after dedup/tag-tier before Sonnet
+  min_article_length: 200
+  # Bilingual search: when primary query is Korean, also fetch English
+  # results with a translated query and keep ≥ min_foreign_ratio foreign.
+  bilingual_on_ko: true
+  min_foreign_ratio: 0.5
+  # Dedup: conservative defaults — only remove near-exact reprints.
+  dedup_similarity_threshold: 0.90
+  min_articles_after_dedup: 10
+  translations_ko_to_en:
+    # Phrases (checked exact first)
+    "AI 산업": "AI industry"
+    "반도체 산업": "semiconductor industry"
+    "AI 가속기": "AI accelerator"
+    "자율주행 산업": "autonomous driving industry"
+    "배터리 산업": "battery industry"
+    "생성 AI": "generative AI"
+    # Individual tokens (word-level fallback)
+    "인공지능": "artificial intelligence"
+    "반도체": "semiconductor"
+    "파운드리": "foundry"
+    "웨이퍼": "wafer"
+    "전기차": "EV"
+    "자율주행": "autonomous driving"
+    "배터리": "battery"
+    "산업": "industry"
+    "시장": "market"
+    "기술": "technology"
+    "투자": "investment"
+    "규제": "regulation"
+
+rag:
+  embedding_model: BAAI/bge-m3
+  chunk_size: 500
+  chunk_overlap: 50
+  top_k: 5
+  vectorstore_path: data/vectorstore
+  collection_name: bd_tech_docs
+  min_document_chars: 40
+
+output:
+  dir: outputs
+  intermediate: true           # save per-node intermediate artifacts

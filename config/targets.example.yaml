@@ -1,0 +1,38 @@
+# Copy this file to `targets.yaml` and fill in your own data.
+# targets.yaml is gitignored (contains your BD targets and Notion sources).
+
+industries:
+  semiconductor:
+    keywords_en: [semiconductor, foundry, wafer, AI accelerator, chip]
+    keywords_ko: [반도체, 파운드리, AI 가속기]
+  automotive:
+    keywords_en: [EV, autonomous driving, battery]
+    keywords_ko: [전기차, 자율주행, 배터리]
+  # Example per-industry override: Korean public-sector searches rarely
+  # have meaningful English coverage, so disable bilingual blending.
+  public_sector_kr:
+    keywords_ko: [공공기관 AI, 디지털정부, 전자정부]
+    collection:
+      bilingual: false
+      foreign_ratio: 0.0
+
+targets:
+  - name: NVIDIA
+    industry: semiconductor
+    aliases: [엔비디아]
+    notes: "Reference target for pipeline testing"
+  - name: Samsung Electronics
+    industry: semiconductor
+    aliases: [삼성전자, Samsung]
+    notes: ""
+
+collection:
+  # Overrides for search defaults in settings.yaml (all fields optional)
+  days: 30
+  max_results_per_query: 10
+  exclude_domains: []
+
+rag:
+  # Notion page / database IDs to index into the vector store
+  notion_page_ids: []
+  notion_database_ids: []

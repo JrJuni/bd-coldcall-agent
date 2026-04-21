@@ -1,0 +1,13 @@
+# Phase 2+ — local LLM (Exaone 7.8B)
+# IMPORTANT: install torch from the correct PyTorch index BEFORE this file.
+#   CUDA 12.1:  pip install torch --index-url https://download.pytorch.org/whl/cu121
+#   CPU only :  pip install torch --index-url https://download.pytorch.org/whl/cpu
+# On Windows, bitsandbytes requires a working CUDA runtime.
+
+transformers>=4.44.0
+accelerate>=0.33.0
+bitsandbytes>=0.43.0
+
+# Phase 3+ — RAG embeddings + vectorstore
+chromadb>=0.5.0
+sentence-transformers>=3.0.0
