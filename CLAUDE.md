@@ -47,6 +47,12 @@ If the env doesn't exist yet, see the setup steps in `docs/lesson-learned.md` (M
     --preprocess-json outputs/preprocess/<timestamp>_en.json \
     --company NVIDIA --industry semiconductor --lang en
 # Writes outputs/{company}_{YYYYMMDD}.md + outputs/intermediate/{company}_{YYYYMMDD}_points.json
+
+# Phase 5 full pipeline smoke (search → fetch → preprocess → retrieve → synthesize → draft → persist)
+# ~180s end-to-end (Brave + Exaone 4bit + bge-m3 + 2 Sonnet calls), ~$0.30-0.60
+~/miniconda3/envs/bd-coldcall/python.exe -m scripts.smoke_phase5 \
+    --company NVIDIA --industry semiconductor --lang en --verbose
+# Writes outputs/{company}_{YYYYMMDD}/proposal.md + intermediate/{articles_after_preprocess,tech_chunks,points,run_summary}.json
 ```
 
 `--save` writes JSON (+ Markdown for brave) to `outputs/search/` and `outputs/preprocess/` — prefer this over stdout-only when debugging retrieval quality.

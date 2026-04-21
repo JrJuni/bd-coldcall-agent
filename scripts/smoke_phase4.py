@@ -108,7 +108,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print("→ synthesizing proposal points (Sonnet call #1)")
     t0 = time.perf_counter()
-    points = synthesize_proposal_points(
+    points, synth_usage = synthesize_proposal_points(
         articles,
         chunks,
         target_company=args.company,
@@ -122,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print("→ drafting proposal (Sonnet call #2)")
     t0 = time.perf_counter()
-    draft = draft_proposal(
+    draft, draft_usage = draft_proposal(
         points,
         articles,
         target_company=args.company,
@@ -130,6 +130,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     draft_ms = (time.perf_counter() - t0) * 1000
     print(f"  drafted {len(draft.markdown.split())} words in {draft_ms:.0f}ms")
+    total_in = synth_usage["input_tokens"] + draft_usage["input_tokens"]
+    total_out = synth_usage["output_tokens"] + draft_usage["output_tokens"]
+    cache_read = (
+        synth_usage["cache_read_input_tokens"]
+        + draft_usage["cache_read_input_tokens"]
+    )
+    print(
+        f"  sonnet usage: in={total_in} out={total_out} cache_read={cache_read}"
+    )
 
     # ---- persist -----------------------------------------------------
     args.output_dir.mkdir(parents=True, exist_ok=True)

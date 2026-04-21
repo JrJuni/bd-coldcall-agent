@@ -120,7 +120,7 @@ _VALID_POINTS_JSON = (
 def test_returns_parsed_points_on_clean_json():
     fake = _FakeClient([_VALID_POINTS_JSON])
     arts = [_article(tags=["earnings"])]
-    points = synthesize_proposal_points(
+    points, usage = synthesize_proposal_points(
         arts,
         [_retrieved()],
         target_company="NVIDIA",
@@ -133,12 +133,16 @@ def test_returns_parsed_points_on_clean_json():
     assert points[1].angle == "intro"
     # exactly one Sonnet call on clean json
     assert len(fake.messages.calls) == 1
+    # usage dict reports all four token keys from the one call
+    assert usage["input_tokens"] == 100
+    assert usage["output_tokens"] == 50
+    assert usage["cache_creation_input_tokens"] == 100
 
 
 def test_handles_json_inside_code_fence():
     fenced = f"Here is the output:\n```json\n{_VALID_POINTS_JSON}\n```\nDone."
     fake = _FakeClient([fenced])
-    points = synthesize_proposal_points(
+    points, _usage = synthesize_proposal_points(
         [_article(tags=["partnership"])],
         [_retrieved()],
         target_company="NVIDIA",
@@ -152,7 +156,7 @@ def test_handles_json_inside_code_fence():
 def test_handles_prose_wrapped_json():
     prose = f"Sure! Here are the points: {_VALID_POINTS_JSON} — enjoy."
     fake = _FakeClient([prose])
-    points = synthesize_proposal_points(
+    points, _usage = synthesize_proposal_points(
         [_article(tags=["funding"])],
         [_retrieved()],
         target_company="NVIDIA",
@@ -174,7 +178,7 @@ def test_retries_once_on_schema_violation_then_succeeds():
         ' "evidence_article_urls": ["https://x.com"]}]'
     )
     fake = _FakeClient([bad, _VALID_POINTS_JSON])
-    points = synthesize_proposal_points(
+    points, usage = synthesize_proposal_points(
         [_article(tags=["other"])],
         [_retrieved()],
         target_company="NVIDIA",
@@ -190,6 +194,9 @@ def test_retries_once_on_schema_violation_then_succeeds():
     t2 = fake.messages.calls[1]["temperature"]
     assert t2 > t1
     assert t2 == pytest.approx(t1 + 0.1, abs=1e-6)
+    # Usage sums across both attempts (each call contributes input=100, output=50)
+    assert usage["input_tokens"] == 200
+    assert usage["output_tokens"] == 100
 
 
 def test_raises_valueerror_after_two_failures():
@@ -217,7 +224,7 @@ def test_high_value_article_uses_translated_body_in_prompt():
         translated_body="FULL_BODY_MARKER translated long text",
         snippet="SNIPPET_MARKER short",
     )
-    synthesize_proposal_points(
+    _points, _usage = synthesize_proposal_points(
         [art],
         [_retrieved()],
         target_company="NVIDIA",
@@ -241,7 +248,7 @@ def test_low_value_article_uses_snippet_in_prompt():
         translated_body="FULL_BODY_MARKER translated long text",
         snippet="SNIPPET_MARKER short",
     )
-    synthesize_proposal_points(
+    _points, _usage = synthesize_proposal_points(
         [art],
         [_retrieved()],
         target_company="NVIDIA",
@@ -261,7 +268,7 @@ def test_low_value_article_uses_snippet_in_prompt():
 
 def test_cache_control_attached_only_to_tech_docs_block():
     fake = _FakeClient([_VALID_POINTS_JSON])
-    synthesize_proposal_points(
+    _points, _usage = synthesize_proposal_points(
         [_article(tags=["earnings"])],
         [_retrieved()],
         target_company="NVIDIA",
@@ -280,7 +287,7 @@ def test_cache_control_attached_only_to_tech_docs_block():
 def test_tech_chunks_referenced_ids_visible_in_prompt():
     fake = _FakeClient([_VALID_POINTS_JSON])
     rc = _retrieved(doc_id="local:doc:pricing", idx=2)
-    synthesize_proposal_points(
+    _points, _usage = synthesize_proposal_points(
         [_article(tags=["earnings"])],
         [rc],
         target_company="NVIDIA",
@@ -298,7 +305,7 @@ def test_tech_chunks_referenced_ids_visible_in_prompt():
 
 def test_ko_lang_loads_korean_prompt():
     fake = _FakeClient([_VALID_POINTS_JSON])
-    synthesize_proposal_points(
+    _points, _usage = synthesize_proposal_points(
         [_article(tags=["earnings"])],
         [_retrieved()],
         target_company="NVIDIA",

@@ -92,12 +92,36 @@
     - 플랜 파일(세션 휘발성): `~/.claude/plans/phase-4-sonnet-agent.md` 체크박스 전부 완료
     - 추후 보강 후보: Sonnet 호출의 `usage.cache_read/creation` 숫자를 smoke CLI 에 surface (현재는 함수 시그니처상 리턴 X — Phase 5 오케스트레이터에서 state 로 모아 리포팅)
 
+- **Phase 5** — LangGraph StateGraph 오케스트레이션 (6 스테이지 + persist, fail-fast 라우팅, usage 집계)
+  - **Stream 0 ✅** — `src/graph/{__init__,state,errors}.py` + `tests/test_graph_state.py`
+    - `AgentState` TypedDict (`total=False`) — inputs(company/industry/lang/top_k) + 아티팩트(articles/tech_chunks/proposal_points/proposal_md) + 메타(errors/usage/stages_completed/failed_stage/run_id/output_dir/started_at)
+    - `TransientError` / `FatalError` 엑셉션 taxonomy (Phase 7 에서 RetryPolicy `retry_on` 으로 쓸 자리)
+    - `StageError` dataclass — `{stage, error_type, message, ts}` 로 직렬화. 테스트 10건 신규
+  - **Stream 1 ✅** — `src/graph/nodes.py` 7개 어댑터 + `src/llm/{synthesize,draft}.py` 시그니처 확장
+    - `@_stage(name)` 데코레이터 — 노드 예외를 잡아 `failed_stage` + `errors` state 에 기록, 성공 시 `stages_completed` 추가
+    - 7 노드: `search / fetch / preprocess / retrieve / synthesize / draft / persist` — 각각 기존 Phase 1~4 함수에 대한 얇은 state ↔ args 어댑터
+    - `synthesize_proposal_points` / `draft_proposal` 시그니처 `-> tuple[Result, usage_dict]` 로 확장. `scripts/smoke_phase4.py` 및 기존 테스트(24건)도 unpack 으로 업데이트
+    - `USAGE_KEYS` 는 `src/llm/claude_client.py` 가 단일 소스. `merge_usage` 가 state.usage 누적
+    - `persist_node` — `outputs/{company}_{YYYYMMDD}/proposal.md` + `intermediate/{articles_after_preprocess,tech_chunks,points,run_summary}.json`. 실패해도 부분 state 로 항상 디스크에 흔적 남김. `_to_jsonable` 재귀 직렬화(dataclass·pydantic·datetime·Path)
+    - `route_after_stage` 라우터 — `failed_stage` 있으면 `"persist"`, 없으면 `"continue"`
+    - 테스트 18건 신규 (데코레이터 / 7개 노드 / 라우터 / 직렬화 helper)
+  - **Stream 2 ✅** — `src/graph/pipeline.py::build_graph()` + `tests/test_pipeline.py`
+    - `StateGraph(AgentState)` 컴파일 — 7 노드 등록, 스테이지 1~5 는 `add_conditional_edges(..., route_after_stage, {"continue": next, "persist": persist})` 로 fail-fast 라우팅, `draft → persist` 는 무조건, `persist → END`
+    - `MemorySaver` 체크포인터 (Phase 7 에서 `SqliteSaver` 로 스왑)
+    - 의도적 단순화: `RetryPolicy` 생략. synthesize/draft 가 이미 내부에서 temp +0.1 으로 1회 재시도 — 네트워크 전이 실패는 Phase 7 에서 필요하면 추가
+    - 테스트 4건 신규 — happy path / 중간 실패 라우팅 / search 실패 run_summary 작성 / 노드 등록 확인
+  - **Stream 3 ✅** — `src/core/orchestrator.py::run()` + `scripts/smoke_phase5.py` + 실제 end-to-end
+    - `run(company, industry, lang, *, output_root, top_k, run_id)` — CLI(Phase 6) / FastAPI(Phase 7) 공통 진입점. `run_id` 자동 생성, `output_dir = {root}/{company}_{YYYYMMDD}`, `started_at=time.perf_counter()` 스탬프
+    - `scripts/smoke_phase5.py` — 전체 6단 + persist 단일 CLI. `--verbose` 플래그로 stage-by-stage INFO 로그 출력
+    - 실측 (NVIDIA / semiconductor / en, Brave 20개 + Exaone 4bit + bge-m3 + Sonnet 2회): **7/7 stages_completed**, articles 20 → tech_chunks 8 → proposal_points 5 (intro/pain_point/growth_signal/risk_flag/tech_fit 각 1) → 588-word draft, footnote 6개 정확, 총 **182.7s** (모델 로딩 포함). usage `input=18533 / output=2415 / cache_write=3493 / cache_read=0` (첫 실행이라 캐시 쓰기만 발생, 동일 tech_docs 로 다음 타겟 돌리면 cache_read 가 대체)
+    - 산출물: `outputs/NVIDIA_20260421/proposal.md` + `intermediate/{articles_after_preprocess,tech_chunks,points,run_summary}.json`
+    - 회귀: **179 → 211 passed all green** (Stream 0 +10, Stream 1 +18, Stream 2 +4)
+
 ## 진행 중
 
-- (Phase 5 준비) LangGraph StateGraph 로 Phase 1~4 노드 정식 오케스트레이션. 재시도 엣지 / 중간 state 저장 / usage 집계.
+- (Phase 6 준비) Typer 기반 CLI 통합 — `main.py run --company ... --industry ... --lang en|ko` + `main.py ingest` (Phase 3 `rag.indexer` 위임). 본체 로직은 `src/core/orchestrator.run()` 호출만.
 
-## 다음 MVP 범위 (Phase 5 ~ 9)
-- **Phase 5** — LangGraph StateGraph 오케스트레이션
+## 다음 MVP 범위 (Phase 6 ~ 9)
 - **Phase 6** — CLI 통합 (`main.py ingest`, `main.py run --company ... --lang en|ko`)
 - **Phase 7** — Web UI (FastAPI + Next.js — 타겟 CRUD, 실행 + SSE 진행 스트림, 결과 뷰어, RAG 관리)
 - **Phase 8** — 평가·회고 (타겟사 3~5건 스모크 테스트, 결과는 `lesson-learned.md` 에 누적)

@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 
 from src.config.loader import PROJECT_ROOT, get_settings
-from src.llm.claude_client import chat_once
+from src.llm.claude_client import USAGE_KEYS, chat_once
 from src.llm.proposal_schemas import ProposalDraft, ProposalPoint
 from src.search.base import Article
 
@@ -157,8 +157,13 @@ def draft_proposal(
     target_company: str,
     lang: Literal["en", "ko"],
     client: Any | None = None,
-) -> ProposalDraft:
-    """Generate the final Markdown cold-call brief from validated points."""
+) -> tuple[ProposalDraft, dict[str, int]]:
+    """Generate the final Markdown brief + the Anthropic usage for this call.
+
+    Returns `(draft, usage)`. The usage dict has the same four token keys as
+    `src.llm.claude_client.USAGE_KEYS` so the orchestrator can fold it into
+    the run-level total via `src.graph.state.merge_usage`.
+    """
     if not points:
         raise ValueError("draft_proposal requires at least one ProposalPoint")
 
@@ -201,10 +206,16 @@ def draft_proposal(
             _LENGTH_WARN_THRESHOLD_WORDS,
         )
 
-    return ProposalDraft(
+    resp_usage = resp.get("usage", {}) or {}
+    usage: dict[str, int] = {
+        k: int(resp_usage.get(k, 0) or 0) for k in USAGE_KEYS
+    }
+
+    draft = ProposalDraft(
         language=lang,
         target_company=target_company,
         generated_at=datetime.now(timezone.utc),
         points=points,
         markdown=markdown,
     )
+    return draft, usage

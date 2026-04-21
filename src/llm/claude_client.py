@@ -24,6 +24,14 @@ from typing import Any
 from src.config.loader import get_secrets, get_settings
 
 
+USAGE_KEYS: tuple[str, ...] = (
+    "input_tokens",
+    "output_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+)
+
+
 _LOCK = threading.Lock()
 _CLIENT = None
 

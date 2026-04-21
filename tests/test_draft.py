@@ -191,7 +191,7 @@ def test_draft_proposal_produces_all_four_section_headers():
         _point(urls=["https://ex.com/earnings"]),
         _point(title="opener", angle="intro", rationale="i", urls=[]),
     ]
-    draft = draft_proposal(
+    draft, usage = draft_proposal(
         points,
         [_article("https://ex.com/earnings", "Earnings")],
         target_company="NVIDIA",
@@ -208,6 +208,9 @@ def test_draft_proposal_produces_all_four_section_headers():
     assert draft.language == "en"
     assert draft.target_company == "NVIDIA"
     assert len(draft.points) == 2
+    # Usage surfaced for the single Sonnet call
+    assert usage["input_tokens"] == 200
+    assert usage["output_tokens"] == 150
 
 
 def test_draft_proposal_renumbers_off_by_one_footnotes():
@@ -222,7 +225,7 @@ def test_draft_proposal_renumbers_off_by_one_footnotes():
     )
     fake = _FakeClient([brief])
     points = [_point(urls=["https://ex.com/only"])]
-    draft = draft_proposal(
+    draft, _usage = draft_proposal(
         points,
         [_article("https://ex.com/only")],
         target_company="X",
@@ -244,7 +247,7 @@ def test_draft_proposal_strips_sonnet_written_footnote_block():
     )
     fake = _FakeClient([brief])
     points = [_point(urls=["https://real.com/ok"])]
-    draft = draft_proposal(
+    draft, _usage = draft_proposal(
         points,
         [_article("https://real.com/ok")],
         target_company="X",
@@ -258,7 +261,7 @@ def test_draft_proposal_strips_sonnet_written_footnote_block():
 def test_draft_proposal_citation_map_sent_to_sonnet():
     fake = _FakeClient([_FULL_BRIEF_EN])
     points = [_point(urls=["https://ex.com/earnings"])]
-    draft_proposal(
+    _draft, _usage = draft_proposal(
         points,
         [_article("https://ex.com/earnings", "Earnings Q4")],
         target_company="NVIDIA",
@@ -285,7 +288,7 @@ def test_draft_proposal_warn_log_when_over_word_threshold(caplog):
     fake = _FakeClient([brief])
     points = [_point(urls=["https://ex.com/a"])]
     with caplog.at_level(logging.WARNING, logger="src.llm.draft"):
-        draft = draft_proposal(
+        draft, _usage = draft_proposal(
             points,
             [_article("https://ex.com/a")],
             target_company="X",
@@ -303,7 +306,7 @@ def test_draft_proposal_warn_log_when_over_word_threshold(caplog):
 def test_draft_proposal_korean_ratio_at_least_half():
     fake = _FakeClient([_FULL_BRIEF_KO])
     points = [_point(urls=["https://ex.com/a"])]
-    draft = draft_proposal(
+    draft, _usage = draft_proposal(
         points,
         [_article("https://ex.com/a")],
         target_company="엔비디아",
@@ -348,7 +351,7 @@ def test_draft_proposal_empty_response_raises():
 def test_draft_proposal_ko_loads_korean_system_prompt():
     fake = _FakeClient([_FULL_BRIEF_KO])
     points = [_point(urls=["https://ex.com/a"])]
-    draft_proposal(
+    _draft, _usage = draft_proposal(
         points,
         [_article("https://ex.com/a")],
         target_company="X",

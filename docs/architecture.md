@@ -129,11 +129,46 @@
 
 **스키마 (`proposal_schemas.py`):** `ProposalPoint` + `ProposalDraft` + `_extract_json` (raw → 코드펜스 → array regex → object regex 4단 fallback) + `parse_proposal_points` (`{"points": [...]}` 래핑도 수용)
 
-### 6. LangGraph (`src/graph/`)
-- `AgentState` TypedDict: `company, industry, lang, articles, tech_chunks, proposal_points, proposal_md, errors`
-- 노드: `search_node → fetch_bodies_node → preprocess_node → retrieve_node → synthesize_node → draft_node`
-- 단계별 실패 시 1회 재시도 엣지
-- 중간 산출물을 `outputs/{company}_{date}/intermediate/` 에 저장 — `articles_after_preprocess.json` 에서 번역·태그·dedup 결과 검증 가능
+### 6. LangGraph (`src/graph/` — Phase 5 완료)
+
+**State (`state.py`):** `AgentState` TypedDict (`total=False`)
+- inputs: `company, industry, lang, top_k`
+- 아티팩트: `articles, tech_chunks, proposal_points, proposal_md`
+- 메타: `errors` (list[dict]), `usage` (Anthropic 4-token 누적), `stages_completed` (append-only), `failed_stage` (None | str), `run_id`, `output_dir`, `started_at`
+- `new_state()` 시드 팩토리 + `merge_usage()` 순수 리듀서. `USAGE_KEYS` 단일 소스는 `src/llm/claude_client.py`
+
+**Errors (`errors.py`):** `TransientError` / `FatalError` 엑셉션 + `StageError` dataclass (`{stage, error_type, message, ts}`) — `from_exception(stage, exc)` 로 직렬화 가능한 레코드 생성
+
+**Nodes (`nodes.py`):** 7개 얇은 어댑터. 실제 로직은 Phase 1~4 함수(`bilingual_news_search`, `fetch_bodies_parallel`, `preprocess_articles`, `retrieve`, `synthesize_proposal_points`, `draft_proposal`) 그대로 재사용
+- `@_stage(name)` 데코레이터 — 예외를 잡아 `failed_stage` + `errors` 에 기록, 성공 시 `stages_completed` 에 append. TransientError 미분리 (Phase 5 는 RetryPolicy 생략)
+- `search_node` — ko 기본은 bilingual blend, en 은 monolingual. `BraveSearch` 를 context manager 로 운용 (세션 끝나면 close)
+- `fetch_node` / `preprocess_node` — 빈 articles 면 no-op passthrough
+- `retrieve_node` — `top_k = state.top_k or settings.llm.claude_rag_top_k`
+- `synthesize_node` / `draft_node` — 각 Sonnet 호출의 usage 를 `merge_usage(state.usage, call_usage)` 로 상태에 누적
+- `persist_node` — 항상 실행 (실패 경로에서도). 부분 state 로 `intermediate/*.json` + `run_summary.json` 작성. `_to_jsonable` 재귀 직렬화(dataclass/pydantic/datetime/Path)
+- `route_after_stage` 라우터 — `failed_stage` 있으면 `"persist"` (모든 하위 스테이지 스킵), 없으면 `"continue"`
+
+**Pipeline (`pipeline.py::build_graph()`):** `StateGraph(AgentState)` 컴파일
+```
+START → search ─┬─[continue]→ fetch ─┬─[continue]→ preprocess ─┬─[continue]→ retrieve ─┬─[continue]→ synthesize ─┬─[continue]→ draft → persist → END
+                │                     │                         │                       │                         │                          ↑
+                └───────[persist]─────┴───────[persist]──────────┴─────[persist]─────────┴────[persist]────────────┴────[persist]─────────────┘
+```
+- 스테이지 1~5 는 모두 `add_conditional_edges(stage, route_after_stage, {"continue": next, "persist": persist})`. draft → persist 는 무조건
+- `MemorySaver` 체크포인터 (Phase 7 에서 `SqliteSaver` 로 스왑, 재개 가능 실행 대응)
+- **RetryPolicy 생략** (Phase 5 결정): synthesize/draft 내부가 이미 temperature +0.1 로 1회 재시도. 네트워크 전이 실패는 드물어서 현재 비용으로 감당. Phase 7 에서 SSE 장기 실행 시 재검토
+
+**Orchestrator (`src/core/orchestrator.py::run()`):** CLI(Phase 6) / FastAPI(Phase 7) 공용 진입점
+- `run(company, industry, lang, *, output_root=None, top_k=None, run_id=None) -> AgentState`
+- `run_id` 자동 생성 (`{YYYYMMDD-HHMMSS}-{company}`), `output_dir = {root}/{company}_{YYYYMMDD}`
+- `graph.invoke(state, config={"configurable": {"thread_id": run_id}})` — 체크포인터가 step 별 state 스냅샷
+
+**산출물:** `outputs/{company}_{YYYYMMDD}/`
+- `proposal.md` — 최종 draft (실패 시 생략)
+- `intermediate/articles_after_preprocess.json` — 번역·태그·dedup 후 state
+- `intermediate/tech_chunks.json` — retrieve top-k
+- `intermediate/points.json` — 검증된 ProposalPoint 리스트
+- `intermediate/run_summary.json` — `{run_id, company, duration_s, usage, errors, failed_stage, stages_completed, proposal_md_path, generated_at}`
 
 ---
 

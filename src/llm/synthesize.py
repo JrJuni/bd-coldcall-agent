@@ -18,7 +18,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from src.config.loader import PROJECT_ROOT, get_settings
-from src.llm.claude_client import chat_cached
+from src.llm.claude_client import USAGE_KEYS, chat_cached
 from src.llm.proposal_schemas import ProposalPoint, parse_proposal_points
 from src.llm.tag_tier import has_high_value_tag, select_body_or_snippet
 from src.rag.types import RetrievedChunk
@@ -94,8 +94,12 @@ def synthesize_proposal_points(
     industry: str,
     lang: Literal["en", "ko"],
     client: Any | None = None,
-) -> list[ProposalPoint]:
-    """Produce 3~5 validated ProposalPoints for a target.
+) -> tuple[list[ProposalPoint], dict[str, int]]:
+    """Produce 3~5 validated ProposalPoints + the accumulated Anthropic usage.
+
+    Returns `(points, usage)` where `usage` sums token counts across all
+    attempts (initial + retry) so the orchestrator's run_summary reflects
+    actual spend, not just the successful call.
 
     On JSON parse or schema validation failure, retries exactly once with
     temperature bumped by +0.1 (capped at 1.0). A second failure raises
@@ -115,6 +119,7 @@ def synthesize_proposal_points(
     base_temp = settings.llm.claude_temperature
     temperatures = [base_temp, min(base_temp + 0.1, 1.0)]
 
+    total_usage: dict[str, int] = {k: 0 for k in USAGE_KEYS}
     last_error: Exception | None = None
     for temp in temperatures:
         resp = chat_cached(
@@ -126,8 +131,11 @@ def synthesize_proposal_points(
             temperature=temp,
             client=client,
         )
+        resp_usage = resp.get("usage", {}) or {}
+        for k in USAGE_KEYS:
+            total_usage[k] += int(resp_usage.get(k, 0) or 0)
         try:
-            return parse_proposal_points(resp["text"])
+            return parse_proposal_points(resp["text"]), total_usage
         except Exception as e:
             last_error = e
             continue
