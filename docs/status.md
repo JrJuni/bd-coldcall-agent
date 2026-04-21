@@ -116,13 +116,14 @@
     - 실측 (NVIDIA / semiconductor / en, Brave 20개 + Exaone 4bit + bge-m3 + Sonnet 2회): **7/7 stages_completed**, articles 20 → tech_chunks 8 → proposal_points 5 (intro/pain_point/growth_signal/risk_flag/tech_fit 각 1) → 588-word draft, footnote 6개 정확, 총 **182.7s** (모델 로딩 포함). usage `input=18533 / output=2415 / cache_write=3493 / cache_read=0` (첫 실행이라 캐시 쓰기만 발생, 동일 tech_docs 로 다음 타겟 돌리면 cache_read 가 대체)
     - 산출물: `outputs/NVIDIA_20260421/proposal.md` + `intermediate/{articles_after_preprocess,tech_chunks,points,run_summary}.json`
     - 회귀: **179 → 211 passed all green** (Stream 0 +10, Stream 1 +18, Stream 2 +4)
+  - **후속 ✅** — `persist_node` 에 `output_dir` 결측 방어 추가 (KeyError → 에러 로그 + stage completed 처리), 테스트 +1 → **212 passed**
+- **Phase 6 ✅** — Typer 기반 단일 진입점 `main.py`
+  - `main.py run --company <X> --industry <Y> --lang en|ko [--top-k N] [--output-root PATH] [--verbose]` → `src.core.orchestrator.run()` 위임 + 결과 요약/실패 시 exit 1
+  - `main.py ingest [--local-dir PATH] [--no-local] [--notion] [--force] [--dry-run] [--verify]` → `src.rag.indexer.main()` 에 argv 포워딩
+  - 모듈 로드 시점에 `sys.stdout.reconfigure(encoding="utf-8")` — Windows cp949 에서 em-dash/한글 help 렌더링 실패 방지
+  - 테스트 6건 신규 (`tests/test_cli.py`): run 필수 인자 / lang override + top_k / 잘못된 lang 거부 / failed_stage 시 exit 1 / ingest flag 포워딩 / indexer exit code 전파. **212 → 218 passed**
 
-## 진행 중
-
-- (Phase 6 준비) Typer 기반 CLI 통합 — `main.py run --company ... --industry ... --lang en|ko` + `main.py ingest` (Phase 3 `rag.indexer` 위임). 본체 로직은 `src/core/orchestrator.run()` 호출만.
-
-## 다음 MVP 범위 (Phase 6 ~ 9)
-- **Phase 6** — CLI 통합 (`main.py ingest`, `main.py run --company ... --lang en|ko`)
+## 다음 MVP 범위 (Phase 7 ~ 9)
 - **Phase 7** — Web UI (FastAPI + Next.js — 타겟 CRUD, 실행 + SSE 진행 스트림, 결과 뷰어, RAG 관리)
 - **Phase 8** — 평가·회고 (타겟사 3~5건 스모크 테스트, 결과는 `lesson-learned.md` 에 누적)
 - **Phase 9** — 문서 최종화 (status / architecture / security-audit 갱신)

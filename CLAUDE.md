@@ -53,6 +53,12 @@ If the env doesn't exist yet, see the setup steps in `docs/lesson-learned.md` (M
 ~/miniconda3/envs/bd-coldcall/python.exe -m scripts.smoke_phase5 \
     --company NVIDIA --industry semiconductor --lang en --verbose
 # Writes outputs/{company}_{YYYYMMDD}/proposal.md + intermediate/{articles_after_preprocess,tech_chunks,points,run_summary}.json
+
+# Phase 6 top-level CLI — unified entry point (wraps orchestrator + indexer)
+~/miniconda3/envs/bd-coldcall/python.exe main.py --help
+~/miniconda3/envs/bd-coldcall/python.exe main.py run --company NVIDIA --industry semiconductor --lang en --verbose
+~/miniconda3/envs/bd-coldcall/python.exe main.py ingest --notion --dry-run
+~/miniconda3/envs/bd-coldcall/python.exe main.py ingest --verify
 ```
 
 `--save` writes JSON (+ Markdown for brave) to `outputs/search/` and `outputs/preprocess/` — prefer this over stdout-only when debugging retrieval quality.
