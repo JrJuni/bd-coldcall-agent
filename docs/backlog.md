@@ -167,3 +167,39 @@ Exaone 요약·분류 품질 한계 시 Qwen / Gemma / Llama 계열 벤치마크
 - **신규 entry**: `main.py log-call --run-id <id>` (CLI) + 웹 UI 폼.
 - **장기 활용**: preference data → DPO/few-shot, 고객 클러스터링 → 톤 프리셋 자동 추천, 적합도 예측 (항목 8 발굴과 결합).
 - **의존성**: 항목 4 (피드백 루프) prerequisite — interactions 테이블이 그 확장. 항목 12 (CRM 연동) 와는 외부 sync 가 별도 과제.
+
+### 18. NVIDIA Nemotron 활용 검토 (4 sub-track, 별도 branch 실험)
+
+- **상태 (2026-04-28)**: research 완료 (NVIDIA developer blog / NIM / HuggingFace 출처 확인). 자원 소모 + 대체 리스크 때문에 즉시 main branch 통합 보류 — 별도 branch 에서 실험 후 가치 검증되면 통합.
+- **research summary**:
+  - Open weights + commercial license, ~10T 토큰 사전학습 corpus 공개
+  - Nemotron-4 340B Synthetic Data Pipeline (Base + Instruct + Reward 3 모델, 도메인별 합성 가능)
+  - Llama Nemotron Nano/Super/Ultra — base 대비 +20% reasoning, 5× inference. Llama-3_1-Nemotron-Ultra-253B HF 공개
+  - NIM API 무료 tier (build.nvidia.com), Azure AI Foundry / Accenture / Deloitte / SAP 도입
+  - 2026 H1 Nemotron 3 Super/Ultra 출시 예정
+
+#### 18a. Llama Nemotron Nano → Exaone 대체 검토 (preprocess 로컬)
+- **왜**: reasoning 향상으로 9-tag classify 정확도 + intent_label 매핑 개선. RTX 4070 16GB 4bit 적합
+- **장벽**: 한국어 native 지원 약점 (Exaone 강점). 한국 BD 비중에 따라 수용 결정
+- **의존성**: 없음. preprocess 노드만 swap. **우선순위 P3**
+
+#### 18b. Llama Nemotron Ultra (NIM) → Sonnet 부분 대체 (synthesize/draft/discover)
+- **왜**: NIM 무료 tier + open license + 253B reasoning. 비용 절감 + 벤더 락-인 완화
+- **장벽**: Anthropic prompt cache (`cache_control: ephemeral`) 호환성 미확인. schema 강제 (ProposalPoint validation, parse_discovery count enforce, scoring scores 6 dim) 에 대한 instruction following 정확도가 결정적. claude_client 추상화 강화 필요
+- **의존성**: 없음. **우선순위 P3**
+
+#### 18c. Nemotron-4 340B → 평가셋·few-shot 합성 ⭐ 추천
+- **왜**: synthetic data 가 BD 도메인에서 가장 부족한 자원. backlog P2-6 (LLM-as-judge) 평가 셋 + P2-4 (피드백 루프) cold-start 데이터 동시 해결
+- **장벽**: 340B self-host 어려움 → NIM 또는 cloud GPU rental (1회성). 도메인 specificity 검증 필요
+- **의존성**: 없음. backlog P2-4 / P2-6 와 시너지. **우선순위 P3 또는 P2**
+
+#### 18d. Multi-Nemotron 분업 (장기)
+- **왜**: 단일 Sonnet 의 reasoning 을 여러 작은 모델 (Nano/Super) 분업 → cost·latency 분산
+- **장벽**: 구조 변경 큼, ROI 불명확. orchestration overhead 가 절감 효과 상쇄 가능
+- **의존성**: 18a/18b 결과 누적 후 평가. **우선순위 P5**
+
+#### 참조
+- [NVIDIA Nemotron - Developer](https://developer.nvidia.com/nemotron)
+- [Nemotron-4 Synthetic Data Generation Pipeline](https://blogs.nvidia.com/blog/nemotron-4-synthetic-data-generation-llm-training/)
+- [Llama Nemotron Reasoning Models](https://nvidianews.nvidia.com/news/nvidia-launches-family-of-open-reasoning-ai-models-for-developers-and-enterprises-to-build-agentic-ai-platforms)
+- [Llama-3_1-Nemotron-Ultra-253B HuggingFace](https://huggingface.co/nvidia/Llama-3_1-Nemotron-Ultra-253B-v1)

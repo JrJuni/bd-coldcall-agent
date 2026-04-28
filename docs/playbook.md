@@ -26,6 +26,7 @@
 | `static-tier` `human-in-the-loop` `runtime-deterministic` | [11. AI 초안 + 사람 검수 정적 티어 = 운영 안정성](#11-ai-초안--사람-검수-정적-티어--운영-안정성) | LLM 런타임 호출 대신 빌드타임 초안 → yaml 커밋. 결정성·비용 0·검수 가능 |
 | `mvp-cut` `flat-schema` `human-review` `output-format` | [12. MVP 1-shot 산출은 flat 데이터 + grouped 리포트 페어](#12-mvp-1-shot-산출은-flat-데이터--grouped-리포트-페어) | 검증 없는 LLM 1회 산출이라도 flat yaml (편집·UI 친화) + 그룹 md (검수 친화) 두 형태로 동시 출력 |
 | `llm-output-budget` `max-tokens` `step-isolation` `truncate-failure` | [13. LLM step 별 max_tokens 별도 setting](#13-llm-step-별-max_tokens-별도-setting) | 새 step 추가 시 input 비슷해도 output 분포 별도 추정. setting 키 신설이 retry 보다 안전 |
+| `llm-judgment-decompose` `weighted-scoring` `external-yaml` `reproducibility` | [14. LLM 판단을 점수+규칙으로 분해](#14-llm-판단을-점수규칙으로-분해) | LLM hallucination 을 prompt 정교화로 누르기 전, 결정 가능한 수치를 코드로 빼낼 수 있는지 먼저 검토. weight 외부 yaml 화로 재현·재사용·재계산 0원 |
 
 항목이 늘어나면 태그 알파벳순으로 재정렬. 항목 제거는 패턴이 무효화됐을 때만 (이 경우 원인도 기록).
 
@@ -226,3 +227,28 @@
 **Why it works**: setting 키가 step 과 1:1 매핑되면 (a) 한 step 의 output 폭증이 다른 step 에 영향 없음 (b) git diff 로 어느 step 이 비싸지는지 즉시 보임 (c) retry 로 가짠 못 구하는 truncate 실패를 사전 차단. retry 는 모델 변동성 (JSON 형식 어김 / temperature) 만 흡수하지 max_tokens 같은 fixed budget 문제는 못 풉.
 
 **Reusable in**: 새 LLM step 을 추가하는 모든 프로젝트. 특히 같은 모델·같은 입력 패턴에 묶여 있을 때 무심코 setting 재사용하기 쉬움. checklist 항목으로 "이 step 의 expected output_tokens 는?" 을 plan 단계에 넣는 게 좋음. 같은 원칙은 timeout, batch_size, top_k 등 step 별 budget 키 모두에 일반화.
+
+---
+
+## 14. LLM 판단을 점수+규칙으로 분해
+
+**태그**: `llm-judgment-decompose` `weighted-scoring` `external-yaml` `reproducibility`
+
+**Problem**: LLM 결과 품질이 부족할 때 첫 본능은 prompt 정교화. 하지만 이게 비결정·비검증 — 같은 입력에도 결과 변동, 왜 그 판단인지 분해 안 되고, 다른 도메인 (다른 제품·산업) 으로 재사용 어려움. Phase 9 첫 산출 (`outputs/discovery_20260428` v1) 이 정확히 이 함정 — Sonnet 이 25 회사를 직접 S/A/B/C 로 분류, 결과는 mega-cap 편향 + 0 C tier + 같은 회사 재실행 시 결과 변동.
+
+**Solution**: LLM 한테 high-level 판단 (tier / 추천 / 분류) 시키기 전에 분해 가능한지 자문:
+1. 이 판단을 N개 차원의 0-10 점수로 분해 가능한가?
+2. 각 차원에 weight + threshold 적용으로 같은 결과 재현 가능한가?
+3. weight·threshold 를 외부 yaml 로 분리하면 다른 도메인 재사용 가능한가?
+
+분해 가능하면 LLM 은 점수만 매기고, final_score 와 최종 판단은 코드가 weighted sum + rule 로 결정. weight·threshold 는 yaml 외부화.
+
+Phase 9.1 적용 사례:
+- LLM: scores{6 dim 0-10} + rationale 만 출력 (tier 출력 silently dropped)
+- 코드: `final_score = sum(score[k] * weight[k])` + `decide_tier(final_score, rules)` (epsilon 1e-6)
+- yaml: `config/weights.yaml` (default + product override + auto-normalize) + `config/tier_rules.yaml` (S/A/B/C threshold)
+- 결과: Snowflake A → B 강등 (LLM 이 displacement_ease 점수 낮게 매겼고 코드가 그걸 반영), mid-cap (Stripe / Adyen / 토스) S 진입
+
+**Why it works**: 같은 LLM 응답 (`scores`) 으로 weight 만 바꿔 재계산 비용 = $0. 다른 제품 (Snowflake / Salesforce 등) 도 `products.<name>` override 추가만으로 재사용. "왜 S?" 질문에 차원별 점수 + weight 합산식 보여주면 답 끝. LLM 호출 단계가 격리돼서 hallucination 가 결정 단계로 누설되지 않음.
+
+**Reusable in**: tier 분류, 추천 엔진, 후보 우선순위, 평가·rubric 기반 채점 (LLM-as-judge backlog P2-6), 어떤 multi-criteria decision 도. 패턴 적용 가능 신호: (a) 결정이 여러 비교 가능한 차원의 합으로 표현 가능, (b) 도메인·고객별 weight 가 다를 가능성, (c) 같은 입력으로 재실행 시 결정 일관성이 가치 있음.

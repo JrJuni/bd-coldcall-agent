@@ -135,6 +135,21 @@ conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/ms
 **결과**: 플랜 리뷰에서 "문장 중간이 잘리거나 문단 의미가 부자연스럽게 중복"될 수 있다는 지적. 특히 한글은 종결어미가 뒤에 오는 구조라 문자 중간 cut 시 의미 단위 파손이 더 큼. bge-m3 retrieval 품질이 chunker 에서 크게 갈린다는 관찰.
 **배운 점**: **문장을 1차 단위로 greedy 패킹**하고, 다음 청크의 **overlap 도 문장 단위 tail** 로 구성. 단일 문장이 `chunk_size` 를 넘길 때만 예외적으로 문자 단위 hard-split + 문자 overlap fallback. 문장 경계는 `[.!?。！？]\s+` + `\n\s*\n` (단락 boundary). 구현: `src/rag/chunker.py` `chunk_document()`. 회귀: `tests/test_chunker.py` 12건 (문장 오버랩, 긴 문장 fallback, 한글 단락 분리, chunk_overlap=0, 공용 필드 전파, id 유니크). 전처리 normalize (`normalize_content`) 도 이 단계에서 통일해 해시 안정화까지 같이 잡음.
 
+## [2026-04-28] DO NOT 룰 새 모듈 (`src/core/scoring.py`) 에서도 재발 (3번째)
+**시도**: Phase 9.1 `src/core/scoring.py` 신설 시 `from src.config.loader import load_tier_rules_config, load_weights_config` 로 함수 직접 import. 테스트 (`tests/test_scoring.py`) 가 `monkeypatch.setattr(_loader, "load_weights_config", ...)` 로 yaml 로딩 가짜화 시도.
+**결과**: 13건 중 4건 fail. scoring 모듈이 import 시점에 함수 참조 고정해서 monkeypatch 가 안 먹음 — 2026-04-21 (graph/nodes), 2026-04-22 (api/routes) 에 이미 본 함정의 3번째 재발. CLAUDE.md DO NOT 룰이 graph/pipeline/api/orchestration 계층 명시했지만, 새 core 모듈 작성 시 무심코 재발.
+**배운 점**: DO NOT 룰의 적용 영역은 "patch 대상 + 부수효과 있는 외부 호출 + orchestration 계층" 에서 실은 "**테스트가 monkeypatch 하는 모든 외부 의존성**" 으로 확장. core/ 같은 신규 모듈도 yaml 로딩·외부 호출·LLM 클라이언트 등을 import 할 때마다 무조건 모듈 경유 (`from src.config import loader as _loader` + `_loader.load_X()`). 새 모듈 작성 시 첫 import 단계에서 자문: "이 함수가 테스트에서 monkeypatch 될 가능성이 있나?" — 답이 "예" 거나 모르겠으면 모듈 경유. 의식적으로 하지 않으면 또 재발할 패턴이라 새 모듈 추가 시 이 lesson grep 후 진행.
+
+## [2026-04-28] Auto-normalize 한 weight 와 정수 score 곱이 threshold 정확 비교 시 float drift
+**시도**: Phase 9.1 scoring 엔진. `weights.yaml::products.databricks` override 합 1.10 → auto-normalize → 각 weight = 사용자값 / 1.10. `decide_tier(7.0, rules)` 검증.
+**결과**: scores=[7,7,7,7,7,7] 인 후보가 final_score = 7 × sum(normalized weights) = 7 × 1.0 = 7.0 으로 나와야 하는데 실측 6.999999999999999. tier_rules 의 A 임계값이 7.0 인데 `7.0 >= 7.0` 비교가 `False` 로 떨어져 B 로 강등 (smoke test 에서 발견).
+**배운 점**: float 곱·합산이 손실 없이 라운드 트립 안 되는 일반 케이스 (0.1 + 0.1 + 0.1 != 0.3 와 같은 부류). threshold 기반 결정 함수는 **항상 epsilon 허용** — `final_score >= threshold - 1e-6` 형태. 사용자가 yaml 에 `8.0` 같은 깔끔한 정수 threshold 를 쓸 거니까 코드도 그 의도 그대로 매치되게 만들어야지, "사용자가 7.0 이라 했으니 정확히 7.0 이상" 같은 strict 비교는 normalize·weighted-sum 경로에서 거의 항상 깨짐. 일반화: 정수 입력으로 시작했어도 중간에 division / sum 이 한 번이라도 들어가면 threshold 비교 시 epsilon 필요. 단, `==` 비교는 절대 X (epsilon 도 무용지물 패턴 — `>=`/`<=` 만 안전).
+
+## [2026-04-28] Phase 9 첫 산출의 theoretical-fit 편향 → scoring 분리로 fix
+**시도**: Phase 9 RAG-only target discovery MVP 를 Sonnet 1회 호출로 25 후보 (5 산업 × 5 회사) tier 직접 판정. prompt 에 "S = direct trigger / A = strong fit / B = adjacent / C = long-shot" 추상 정의.
+**결과**: 8 S / 10 A / 7 B / 0 C. JPMorgan / Goldman / Amazon / Walmart / NVIDIA 같은 Fortune-500 mega-cap 위주 + Snowflake (직접 경쟁사) A tier + 한국 기업 0개. "이론상 데이터 핏" 으로 판정했지만 실제 영업 어려운 회사 (AWS 본체·자체 플랫폼 lock-in) 가 상위 점거. C tier 부재로 Strategic Edge 인지 안 됨. 외부 어드바이저 피드백: "콜드콜은 데이터 규모가 아니라 landability (받아줄 조직·예산·대체 가능성) 가 결정. weight.yaml 분리 강추".
+**배운 점**: prompt 정교화로 fix 시도 전에 **결정 가능한 수치를 코드로 빼낼 수 있는지** 먼저 검토. LLM 의 역할을 "tier 직접 판단" → "6 차원 0-10 점수" 로 좁히고, final_score / tier 는 코드가 weighted sum + threshold rule 로 결정. 결과 (Phase 9.1 재실행): mega-cap S 사라짐, mid-cap (Stripe / Adyen / Tempus AI) S 진입, 한국 기업 7개 진입, Snowflake → B 강등. 같은 LLM 응답을 다른 weight 로 재계산하면 비용 0. 일반 원칙: **LLM hallucination 을 prompt 로 누르려 하지 말고, 결정 가능한 부분을 격리해라**. playbook.md #14 로 재사용 패턴 등록.
+
 ## [2026-04-28] 공유 `_extract_json` 의 array-first 우선순위가 dict 호출자에서 inner list 만 잡음
 **시도**: Phase 9 `parse_discovery` 에서 Sonnet 의 `{"industry_meta": {...}, "candidates": [...]}` 응답을 파싱하려고 `proposal_schemas._extract_json` 재사용. prose 가 섞인 응답 ("Here you go: {...} Let me know.") 에 대한 회귀 테스트 추가.
 **결과**: `_extract_json` 이 4단 fallback 중 `_ARRAY_RE` (`\[.*\]`) 를 `_OBJECT_RE` (`\{.*\}`) 보다 **먼저** 시도하기 때문에, top-level 이 dict 인 응답에서도 `candidates` 의 inner list 만 매치되어 list 가 반환됨. parse_discovery 의 dict 검증에서 `expected JSON object ... got list` 로 실패. 기존 호출자 (`parse_proposal_points`) 는 top-level list 를 기대하니 문제없었지만, dict 호출자에선 의미가 정반대.

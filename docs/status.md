@@ -254,8 +254,52 @@
     - **품질 관찰**: 5 산업 (Financial Services / Retail & E-Commerce / Healthcare & Life Sciences / Technology & Software / Manufacturing & Supply Chain) × 5 회사. 모든 회사명 실재 (JPMorgan / Goldman / Visa / Pfizer / NVIDIA / Snowflake / Siemens / Bosch 등). Rationale 이 Databricks 구체 기능 (Unity Catalog / MLflow / Mosaic AI / Delta Live Tables / AI Gateway / Knowledge Assistant) 직접 인용. 티어 분포 8 S / 10 A / 7 B / 0 C — 약간 상위 편향 (C 부재). 2 카운트 검증 (5 distinct industry / 산업당 정확히 5 회사) 통과
     - **docs 갱신**: `status.md` Phase 9 섹션 / `backlog.md` 신규 항목 17 (티어리스트 편집 웹 UI: candidates.yaml → SQLite import → /discover 페이지 sortable·editable table → yaml export 또는 targets.yaml 자동 추가)
 
-## 다음 MVP 범위 (Phase 9 이후)
-- backlog 항목 17 — 티어리스트 편집 웹 UI (candidates.yaml 입력 → table 편집 → 재export / targets.yaml 자동 추가)
+- **Phase 9.1 ✅** — Discovery scoring 엔진 + sector_leaders + region (mega-cap 편향 fix)
+  - **배경**: Phase 9 첫 산출 (`outputs/discovery_20260428` v1) 사람 검수 결과 8S/10A/7B/0C 상위 편향 + Fortune-500 mega-cap 위주 (JPMorgan/Goldman/Amazon/Walmart/NVIDIA 등). LLM 이 "이론상 fit" (데이터 규모) 으로 tier 판단 → 실 영업 가능성 (landability) 과 괴리. 사용자 피드백: "무작정 prompt 재작성보다는 scoring 로직을 짜는게 좋을것 같아".
+  - **근본 fix**: LLM 의 역할을 "tier 판단" → **"6 차원 0-10 점수"** 로 좁히고 final_score / tier 는 코드가 weighted sum + threshold rule 로 결정. weight 외부 yaml 화 → 재현·재사용·재계산 0원.
+  - **Stream 0 — config 신설**
+    - `config/weights.yaml` — default + databricks override (data_complexity 0.25 / governance_need 0.20 / displacement_ease 0.10). 합 != 1.0 자동 정규화.
+    - `config/tier_rules.yaml` — S>=8.0 / A>=7.0 / B>=6.0 / C>=5.0, C 미만 clamp.
+  - **Stream 1 — `src/core/scoring.py` 신설**
+    - `WEIGHT_DIMENSIONS` 6개 잠금 (pain_severity / data_complexity / governance_need / ai_maturity / buying_trigger / displacement_ease)
+    - `load_weights(product)` — yaml 로드 + override merge + 누락 검증 + auto-normalize warn
+    - `load_tier_rules()` — descending sort + 4 tier 강제
+    - `calc_final_score` weighted sum, `decide_tier` first-match (epsilon 1e-6 으로 float drift 흡수)
+    - `src/config/{schemas,loader}.py` — WeightsConfig / TierRulesConfig / SectorLeadersConfig + 3 load 함수
+  - **Stream 2 — discover_types + discover.py 통합**
+    - `Candidate` 스키마 변경: `tier` LLM 출력 → 코드 채움. `scores: dict[str,int]` (6 dim 0-10) + `final_score: float` + `rationale: str`. `parse_discovery` 가 LLM 의 `tier`/`final_score` 응답 silently drop.
+    - `discover_targets()` 시그니처 +`product: str = "databricks"`, parse 후 scoring 단계 추가 (코드 결정).
+    - `_render_report` — Strategic Edge (C tier) 별도 섹션 분리 + Signals 컬럼 (top-2 dimension scores). yaml 에 scores+final_score+tier 모두 노출.
+  - **Stream 3 — 프롬프트 + 어댑터**
+    - `src/prompts/{en,ko}/discover.txt` 재작성 — 6 차원 의미 명시 + 0-10 정수 + "tier 출력 금지" + "rationale 1문장 ~25어 (scores 가 차원별 판단 담음)"
+    - `main.py discover` / `scripts/discover_targets.py` — `--product` 플래그 추가
+  - **Stream 4 — sector_leaders 시드 + region (mega-cap 편향 보완)**
+    - `config/sector_leaders.{example,operational}.yaml` — flat list (name/industry_hint/region/notes). 16 회사 시드 (Stripe, Adyen, 토스, KB금융, 네이버, 카카오, 셀트리온, 한화에어로 등 mid-market·local).
+    - `discover_targets(*, region: Literal["any","ko","us","eu","global"]="any", include_sector_leaders: bool = True)`. region 명시 시 해당 + global 시드만, "any" 는 모든 시드 노출.
+    - `_render_volatile` 에 `<sector_leader_seeds region="...">` + `<region_constraint>` 블록 추가. 빈 채널은 자동 생략.
+    - `scripts/draft_sector_leaders.py` — Sonnet 1회로 yaml 초안 생성 (Phase 8 `draft_intent_tiers.py` 패턴 그대로)
+    - main.py / scripts: `--region` + `--sector-leaders/--no-sector-leaders` 플래그
+  - **Stream 5 — 테스트 + 1회 재실행 + docs**
+    - `tests/test_scoring.py` 13건 (load_weights / merge / 정규화 / 누락 raise / tier_rules 정렬 / boundary 8.0 / C clamp / epsilon)
+    - `tests/test_discover.py` 6건 보강 (LLM tier silently dropped / out-of-range scores reject → retry / sector_leaders inject / no-sector-leaders skip / region 주입 / region=any 미주입)
+    - `tests/test_cli.py` +2 (discover --product/--region/--no-sector-leaders 인자 포워딩 / 잘못된 region 거부)
+    - **회귀**: 281 → **302 all green** (+21)
+    - **실제 1회 재실행** (Databricks RAG, en, region=any, sector_leaders 활성):
+      | 항목 | 첫 산출 (Phase 9 v1) | Phase 9.1 |
+      |---|---|---|
+      | Tier 분포 | 8S / 10A / 7B / 0C | **3S / 18A / 4B / 0C** |
+      | S tier 회사 | JPMorgan, Goldman, Amazon, Walmart, Pfizer, NVIDIA, UnitedHealth, Siemens (mega-cap) | **Stripe, Adyen, Tempus AI** (mid-cap, BD-friendly) |
+      | 한국 기업 | 0 | **7** (토스, KB금융, 네이버, 카카오, 한화에어로, 셀트리온, 두산 등) |
+      | Snowflake (직접 경쟁사) | A tier | **B tier** (강등 — 코드가 displacement_ease 낮은 점수 반영) |
+      | 비용 | $0.040 | **$0.081** (첫 cache_write; 다음 실행은 cache_read 로 ~$0.05) |
+      | output_tokens | 2520 | 3713 (scores 6 dim + sector_leaders 영향) |
+      | claude_max_tokens_discover | 4000 | **6000** (rationale 1문장 강제 후에도 안전 마진) |
+    - **재현성·재사용성 데모**: 같은 LLM 응답 (`scores`) 으로 weight 만 바꿔 재계산하면 추가 LLM 호출 0원으로 tier 분포 변동 가능. 다른 제품 (Snowflake/Salesforce 등) 도 `weights.yaml::products.<name>` 추가만으로 재사용 가능 — 본 phase 의 핵심 가치.
+    - **남은 한계**: C tier 가 0개. AWS/Azure/GCP 본체·Palantir 자체 lock-in 같은 Strategic Edge 케이스는 sector_leaders.yaml 시드에 안 들어가서 LLM 이 자연 배제 → C 후보 자체가 안 뜸. 후속에서 sector_leaders 에 일부 hyperscaler/lock-in 케이스 의도적 추가 또는 prompt 에 "include 1+ challenger case per industry" 룰 추가 검토.
+
+## 다음 MVP 범위 (Phase 9.1 이후)
+- backlog 항목 17 — 티어리스트 편집 웹 UI (candidates.yaml + scores 편집 → SQLite → yaml export / targets.yaml 자동 추가)
+- backlog 항목 18 — NVIDIA Nemotron 활용 검토 (4 sub-track: Exaone 대체 / Sonnet 대체 / synthetic data / multi-model 분업) — 별도 branch 실험
 - backlog P1-1 — 제안서 톤 조정 + 민감 가드 (3 톤 프리셋 + self-critique review_node)
 - backlog P1-2 — drag-drop 웹 RAG 입출력
 - 추가 discover 실행 1~2회 (다른 RAG 또는 ko 언어) 로 결과 일반화 확인

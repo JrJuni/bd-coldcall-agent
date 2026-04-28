@@ -216,59 +216,84 @@ GET  /ingest/tasks/{task_id}   → 상태
 
 ---
 
-### 9. Target Discovery (`src/core/discover.py` — Phase 9, RAG-only sibling flow)
+### 9. Target Discovery (`src/core/discover.py` — Phase 9 + 9.1, RAG-only sibling flow)
 
 타겟사가 정해지지 않은 상태에서 "우리 제품이 누구에게 팔릴까" 를 RAG 만으로 역추론하는 별도 entry. 6단 파이프라인 (search/fetch/preprocess/...) 을 거치지 않고 retrieve 만 사용 → Sonnet 1회 → flat yaml + grouped md 페어 출력.
 
+**Phase 9.1 핵심 변경**: LLM 의 역할을 "tier 판단" 에서 "6 차원 0-10 점수 매기기" 로 좁히고, `final_score` 와 `tier` 는 코드가 `config/weights.yaml` + `config/tier_rules.yaml` 로 deterministic 결정. mega-cap 편향 보완을 위해 `config/sector_leaders.yaml` 시드 + region flag.
+
 ```
-[Input: lang, n_industries=5, n_per_industry=5, seed_summary?]
+[Input: lang, n_industries=5, n_per_industry=5, seed_summary?,
+        product="databricks", region="any", include_sector_leaders=True]
         │
         ▼
   ┌──────────────────────────┐
   │  retrieve(seed_query, top_k=20)   │  ChromaDB + bge-m3 (재사용)
+  │  manifest_path_for / load_manifest │  seed_doc_count / seed_chunk_count
   └──────────────────────────┘
-        │  list[RetrievedChunk]
+        │
+        ▼
+  cached_context = <knowledge_base>     (Sonnet ephemeral cache)
+  volatile_context =
+    <product_summary>...                (선택, seed_summary)
+    <region_constraint>{region}          (region != "any" 시)
+    <sector_leader_seeds region="...">   (include_sector_leaders 시)
+        │
         ▼
   ┌──────────────────────────┐
-  │  manifest_path_for + load_manifest │  seed_doc_count / seed_chunk_count
+  │  chat_cached (Sonnet 4.6)         │  output: scores{6 dim 0-10}+rationale
+  │   + retry 1회 (temp +0.1)         │  parse_discovery 가 LLM 의 tier 응답 silently drop
   └──────────────────────────┘
         │
         ▼
   ┌──────────────────────────┐
-  │  chat_cached (Sonnet 4.6)         │  knowledge_base 블록만 ephemeral cache
-  │   + retry 1회 (temp +0.1)         │  parse_discovery 로 schema/count 검증
+  │  scoring (코드, $0)               │  weights = load_weights(product) + auto-normalize
+  │  for c in candidates:             │  rules = load_tier_rules() (S/A/B/C threshold)
+  │    c.final_score = weighted sum   │  c.tier = decide_tier(...) (epsilon 1e-6)
+  │    c.tier = first-match           │
   └──────────────────────────┘
-        │  DiscoveryResult
+        │  DiscoveryResult (scores + final_score + tier 모두 채워짐)
         ▼
   outputs/discovery_{YYYYMMDD}/
-    ├ candidates.yaml   (flat, 편집 UI / SQLite import 친화)
-    └ report.md         (산업 그루핑, Tier 정렬 table, 사람 검수)
+    ├ candidates.yaml   (flat: name/industry/scores{6}/final_score/tier/rationale)
+    └ report.md         (S/A/B 산업별 + ⚠️ Strategic Edge [C] 별도 섹션)
 ```
 
 **스키마 (`discover_types.py`):**
-- `Candidate` (pydantic, name/industry/tier/rationale, tier = `Literal["S","A","B","C"]`)
-- `DiscoveryResult` (dataclass, generated_at/seed_doc_count/seed_chunk_count/seed_summary/industry_meta/candidates/usage)
-- `parse_discovery(raw, n_industries, n_per_industry)` — JSON object-first 추출 + count 강제 + 산업 키 매핑 검증
-- 자체 `_extract_json_object` (raw → fenced → object 만) — 공유 `proposal_schemas._extract_json` 은 array regex 우선이라 dict 호출자에서 inner list 만 매치되는 함정 회피
+- `Candidate` (pydantic) — `name`/`industry`/`scores: dict[str,int]`(6 dim 0-10)/`rationale`/`final_score: float`/`tier: Tier`. LLM 은 앞 4개만 출력, 뒤 2개는 코드가 채움
+- `parse_discovery` 가 LLM 의 `tier` / `final_score` 출력을 silently drop (코드 결정권 보장)
+- `_extract_json_object` (raw → fenced → object 만) — dict 호출자 우선
+
+**스코링 (`scoring.py` — Phase 9.1 신설):**
+- `WEIGHT_DIMENSIONS` 6개 (pain_severity / data_complexity / governance_need / ai_maturity / buying_trigger / displacement_ease)
+- `load_weights(product=None)` — yaml 로드 → default + product override merge → 누락 검증 → 합 != 1.0 시 auto-normalize + warn
+- `load_tier_rules()` — descending sort + 4 tier (S/A/B/C) 강제
+- `calc_final_score(scores, weights)` — weighted sum
+- `decide_tier(final_score, rules)` — first-match descending. epsilon 1e-6 으로 normalize float drift 흡수 (e.g. 7×normalized ≈ 6.9999... 도 A 로 처리)
+- 코드 결정의 가치: **같은 LLM 응답을 다른 weight 로 재계산 = $0 추가 비용**. 다른 제품 (Snowflake/Salesforce 등) 도 weights.yaml 의 `products.<name>` override 로 재사용 가능
+
+**Sector leaders 시드 (`config/sector_leaders.yaml` — Phase 9.1 신설):**
+- flat list: `name` / `industry_hint` / `region` (ko/us/eu/global) / `notes?`
+- `_render_volatile` 의 `<sector_leader_seeds region="...">` 블록으로 LLM 에 inspiration 주입 → mega-cap 편향 완화 (Stripe/Adyen/토스/KB금융/네이버/카카오 등 mid-market·local 진입)
+- `region` flag (any/ko/us/eu/global) — "any" 면 모든 시드, 명시 region 은 해당 + global 만
+- gitignored 운영 yaml (`competitors.yaml` / `intent_tiers.yaml` 패턴 동일). `scripts/draft_sector_leaders.py` 로 Sonnet 1회 초안 생성
 
 **핵심 함수 (`discover.py`):**
-- `discover_targets(*, lang, n_industries=5, n_per_industry=5, seed_summary=None, seed_query="core capabilities and target use cases", output_root=None, top_k=20, client=None, write_artifacts=True) -> DiscoveryResult`
-- system + task 를 `---TASK---` 로 분리 (synthesize 와 같은 패턴), `{n_industries}` / `{n_per_industry}` / `{expected_total}` placeholder 동적 주입
-- `cached_context = <knowledge_base>...` (RAG seed) / `volatile_context = <product_summary>seed_summary</product_summary>` (선택)
-- max_tokens 는 `claude_max_tokens_discover=4000` (synthesize 2000 으로는 25-rationale output ~2.5K 가 truncate)
-- 두 번 실패 시 ValueError, retry 로 못 구하는 truncate 는 max_tokens 재산정으로만 해결 가능
+- `discover_targets(*, lang, n_industries=5, n_per_industry=5, seed_summary=None, seed_query=..., product="databricks", region="any", include_sector_leaders=True, output_root=None, top_k=20, client=None, write_artifacts=True) -> DiscoveryResult`
+- max_tokens 는 `claude_max_tokens_discover=6000` (Phase 9.1 에서 4000 → 6000 상향. scores 6 dim + sector_leaders 가 출력 토큰 ↑)
+- prompt 에 "rationale 1문장 ~25어 강제" — scores 가 차원별 판단 담으니 rationale 은 헤드라인만
 
 **얇은 어댑터:**
-- `main.py discover` Typer 서브커맨드 — `--lang/--n-industries/--n-per-industry/--seed-summary/--seed-query/--top-k/--output-root/--verbose`
-- `scripts/discover_targets.py` argparse 어댑터 — 운영 cron / `python -m` 호출용 (Typer 없는 환경)
+- `main.py discover` — `--lang/--n-industries/--n-per-industry/--seed-summary/--seed-query/--product/--region/--sector-leaders|--no-sector-leaders/--top-k/--output-root/--verbose`
+- `scripts/discover_targets.py` 동일 (argparse)
 
 **산출물 페어:**
-- `candidates.yaml` — `{generated_at, seed{doc_count, chunk_count, summary}, industry_meta, candidates: [...flat], usage}`. 향후 backlog 항목 17 (SQLite import → 웹 편집 UI) 의 입력 포맷
-- `report.md` — `# Target Discovery — date` + 시드 메타 헤더 + 산업별 `## name` + `> rationale` + Tier 정렬 (S→A→B→C) Markdown table + 토큰 요약. 사람이 5분 안에 검수 결정
+- `candidates.yaml` — `{generated_at, seed{...}, industry_meta, candidates: [{name, industry, scores{6}, final_score, tier, rationale}], usage}`. 향후 backlog 항목 17 (편집 웹 UI) 의 입력 포맷
+- `report.md` — 시드 메타 헤더 + 산업별 (S/A/B 만) + ⚠️ Strategic Edge (C tier) 별도 섹션 + Tokens 요약
 
-**비용:** Sonnet 1회, 입력 ~3K (RAG 20 chunk + 시스템) + 출력 ~2.5K (25 rationale). 첫 실행 cache_creation, 같은 RAG 재실행 시 cache_read 적중. 실측 ~$0.04 / ~40s.
+**비용:** Sonnet 1회, ~$0.045-0.08 / ~40-50s. 같은 RAG 재실행 시 cache_read 적중으로 절반 이하. 같은 LLM 응답 재계산 (다른 weight) 은 $0.
 
-**MVP 한계 (의도적):** factual 검증 없음 — 회사명 hallucination 가능성 인정. 사람 검수가 후속 단계로 가정. 풀 reverse matching (Brave 검증 + 산업별 활성 이슈 + product fit 점수화) 은 backlog 항목 8.
+**MVP 한계 (의도적):** factual 검증 없음 — 회사명 hallucination 가능성 인정. 사람 검수가 후속 단계로 가정. Phase 9.1 첫 산출에서 C tier 가 0 인 한계 — sector_leaders.yaml 시드에 hyperscaler/lock-in 케이스 부재가 원인, 후속에서 의도적 추가 검토. 풀 reverse matching (Brave 검증 + 산업별 활성 이슈) 은 backlog 항목 8.
 
 ---
 
