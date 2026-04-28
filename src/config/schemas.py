@@ -30,8 +30,10 @@ class LLMSettings(BaseModel):
     claude_max_tokens_synthesize: int = 2000
     claude_max_tokens_draft: int = 4000
     # Phase 9 — discover emits 5 industries + 25 candidates with rationales,
-    # which routinely overflows 2000 tokens. Default 4000 leaves headroom.
-    claude_max_tokens_discover: int = 4000
+    # which routinely overflows 2000 tokens. Phase 9.1 raised to 6000 because
+    # the per-candidate scores dict (6 keys) + region/sector_leaders prompt
+    # context push output past 4000.
+    claude_max_tokens_discover: int = 6000
     claude_temperature: float = 0.3
     claude_rag_top_k: int = 8
 
@@ -78,6 +80,43 @@ class IntentTiersConfig(BaseModel):
     """Shape of `config/intent_tiers.yaml` — Phase 8 (A) Related channel."""
 
     intents: list[IntentTierEntry] = Field(default_factory=list)
+
+
+class WeightsConfig(BaseModel):
+    """Shape of `config/weights.yaml` — Phase 9.1 scoring engine.
+
+    `default` carries the base weight per dimension. `products[<name>]` is a
+    partial override — only the dimensions you want to bend need to appear.
+    The runtime merges default + override, then auto-normalizes so the
+    weighted sum of 0-10 scores stays in 0-10.
+    """
+
+    version: int = 1
+    default: dict[str, float] = Field(default_factory=dict)
+    products: dict[str, dict[str, float]] = Field(default_factory=dict)
+
+
+class TierRulesConfig(BaseModel):
+    """Shape of `config/tier_rules.yaml` — Phase 9.1 tier threshold rules."""
+
+    version: int = 1
+    tiers: dict[str, float] = Field(default_factory=dict)
+
+
+class SectorLeader(BaseModel):
+    """One row of `config/sector_leaders.yaml` — Phase 9.1 mega-cap bias mitigation."""
+
+    name: str
+    industry_hint: str
+    region: Literal["ko", "us", "eu", "global"]
+    notes: str = ""
+
+
+class SectorLeadersConfig(BaseModel):
+    """Shape of `config/sector_leaders.yaml`."""
+
+    version: int = 1
+    companies: list[SectorLeader] = Field(default_factory=list)
 
 
 class RAGSettings(BaseModel):

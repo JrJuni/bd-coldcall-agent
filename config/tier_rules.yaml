@@ -1,0 +1,17 @@
+# Phase 9.1 — Tier threshold rules.
+#
+# final_score (0-10) → tier mapping:
+#   - Walk thresholds in descending order; first one with `final_score >= threshold` wins.
+#   - Anything below the lowest threshold is clamped to C (Strategic Edge).
+#
+# Editing notes:
+#   - Tighten by raising thresholds (e.g. S=8.5) — fewer S, more A/B.
+#   - Loosen by lowering thresholds. Keep S > A > B > C.
+
+version: 1
+
+tiers:
+  S: 8.0  # Immediate cold-call viability
+  A: 7.0  # Strong fit, longer sales cycle
+  B: 6.0  # Adjacent signal, multi-touch discovery
+  C: 5.0  # Strategic Edge — separate motion (partner / events / events)

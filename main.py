@@ -141,6 +141,21 @@ def discover_cmd(
         "--seed-query",
         help="RAG retrieval query that picks the chunks Sonnet sees.",
     ),
+    product: str = typer.Option(
+        "databricks",
+        "--product",
+        help="Weight profile key from config/weights.yaml::products. Unknown product falls back to default weights.",
+    ),
+    region: str = typer.Option(
+        "any",
+        "--region",
+        help="Region filter for sector_leaders seeds: any | ko | us | eu | global. Non-'any' values also bias the LLM to prioritize that region.",
+    ),
+    sector_leaders: bool = typer.Option(
+        True,
+        "--sector-leaders/--no-sector-leaders",
+        help="Inject config/sector_leaders.yaml as seed inspiration to mitigate Fortune-500 bias.",
+    ),
     top_k: int = typer.Option(20, "--top-k", help="Number of RAG chunks to seed."),
     output_root: Optional[Path] = typer.Option(
         None,
@@ -154,6 +169,10 @@ def discover_cmd(
         raise typer.BadParameter("--lang must be 'en' or 'ko'", param_hint="--lang")
     if n_industries <= 0 or n_per_industry <= 0:
         raise typer.BadParameter("--n-industries and --n-per-industry must be positive")
+    if region not in ("any", "ko", "us", "eu", "global"):
+        raise typer.BadParameter(
+            "--region must be one of: any, ko, us, eu, global", param_hint="--region"
+        )
 
     _setup_logging(verbose)
     from src.core.discover import discover_targets
@@ -167,6 +186,9 @@ def discover_cmd(
         n_per_industry=n_per_industry,
         seed_summary=seed_summary,
         seed_query=seed_query,
+        product=product,
+        region=region,  # type: ignore[arg-type]
+        include_sector_leaders=sector_leaders,
         output_root=output_root,
         top_k=top_k,
     )

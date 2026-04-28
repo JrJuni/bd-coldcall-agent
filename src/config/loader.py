@@ -8,8 +8,11 @@ from .schemas import (
     CompetitorsConfig,
     IntentTiersConfig,
     Secrets,
+    SectorLeadersConfig,
     Settings,
     Targets,
+    TierRulesConfig,
+    WeightsConfig,
 )
 
 
@@ -79,3 +82,52 @@ def load_intent_tiers(path: Path | None = None) -> IntentTiersConfig:
     with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
     return IntentTiersConfig(**data)
+
+
+def load_weights_config(path: Path | None = None) -> WeightsConfig:
+    """Load `config/weights.yaml` — Phase 9.1 scoring weights.
+
+    Bundled committed default; missing file is a config bug, not a soft warn.
+    """
+    path = path or (CONFIG_DIR / "weights.yaml")
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{path} not found — required for discovery scoring. "
+            "Restore from repo or recreate from docs/architecture.md."
+        )
+    with open(path, encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    return WeightsConfig(**data)
+
+
+def load_tier_rules_config(path: Path | None = None) -> TierRulesConfig:
+    """Load `config/tier_rules.yaml` — Phase 9.1 tier thresholds."""
+    path = path or (CONFIG_DIR / "tier_rules.yaml")
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{path} not found — required for discovery tier decisions. "
+            "Restore from repo or recreate from docs/architecture.md."
+        )
+    with open(path, encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    return TierRulesConfig(**data)
+
+
+def load_sector_leaders(path: Path | None = None) -> SectorLeadersConfig:
+    """Load `config/sector_leaders.yaml` — Phase 9.1 mega-cap bias mitigation seed.
+
+    Missing or empty file → empty config + warn (the seed block is simply
+    skipped). Operational yaml is gitignored; commit only sector_leaders.example.yaml.
+    """
+    path = path or (CONFIG_DIR / "sector_leaders.yaml")
+    if not path.exists():
+        _LOGGER.warning(
+            "sector_leaders.yaml not found at %s — sector_leader_seeds block disabled. "
+            "Copy sector_leaders.example.yaml or run "
+            "`python -m scripts.draft_sector_leaders` to generate a draft.",
+            path,
+        )
+        return SectorLeadersConfig()
+    with open(path, encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    return SectorLeadersConfig(**data)

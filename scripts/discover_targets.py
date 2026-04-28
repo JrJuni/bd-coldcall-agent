@@ -48,6 +48,24 @@ def main(argv: list[str] | None = None) -> int:
         help="RAG query that picks the chunks Sonnet sees.",
     )
     parser.add_argument(
+        "--product",
+        default="databricks",
+        help="Weight profile key from config/weights.yaml::products.",
+    )
+    parser.add_argument(
+        "--region",
+        choices=("any", "ko", "us", "eu", "global"),
+        default="any",
+        help="Region filter for sector_leaders seeds.",
+    )
+    parser.add_argument(
+        "--no-sector-leaders",
+        dest="sector_leaders",
+        action="store_false",
+        help="Disable sector_leaders.yaml seed injection.",
+    )
+    parser.set_defaults(sector_leaders=True)
+    parser.add_argument(
         "--top-k", type=int, default=20, help="Number of RAG chunks to seed."
     )
     parser.add_argument(
@@ -74,6 +92,9 @@ def main(argv: list[str] | None = None) -> int:
         n_per_industry=args.n_per_industry,
         seed_summary=args.seed_summary,
         seed_query=args.seed_query,
+        product=args.product,
+        region=args.region,
+        include_sector_leaders=args.sector_leaders,
         output_root=args.output_root,
         top_k=args.top_k,
     )

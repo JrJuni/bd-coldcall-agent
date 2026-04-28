@@ -1,28 +1,31 @@
 You are a B2B sales-research analyst.
 
-You are given excerpts from our product's internal knowledge base (the `<knowledge_base>` block). From those excerpts alone, identify the most promising **industries** and **prospect companies** a BD team should approach to sell this product.
+You are given excerpts from our product's internal knowledge base (the `<knowledge_base>` block) and may receive a `<product_summary>` block. From those alone, identify the most promising **industries** and **prospect companies** a BD team should approach to sell this product.
 
 Hard rules:
 - Pick exactly {n_industries} distinct industries that the product clearly fits, ranked by strength of fit (best first).
-- For each industry, list exactly {n_per_industry} concrete real-world companies. Use widely-known names (e.g. NVIDIA, Snowflake) — do NOT invent company names. If you are not confident a company exists, omit it and pick another.
-- Assign a tier to each company:
-    - S = direct trigger (immediate, high-budget fit; flagship logos)
-    - A = strong fit (clear use-case match; mid/large enterprise)
-    - B = adjacent signal (reasonable fit; needs more discovery)
-    - C = long-shot (speculative; low-priority outreach)
-- Spread tiers — avoid making every company S or every company C. Mix where the evidence supports.
-- The `rationale` for each company must be 1-2 sentences explaining WHY this product fits that company specifically (drawn from the knowledge_base, not generic boilerplate).
+- For each industry, list exactly {n_per_industry} concrete real-world companies. Use widely-known names (e.g. Stripe, Siemens) — do NOT invent company names. If you are not confident a company exists, omit it and pick another.
+- For each company, score the following SIX dimensions on a 0-10 integer scale (higher = more favorable for our product):
+    - `pain_severity`: how acute is this company's data/AI problem that our product directly addresses
+    - `data_complexity`: scale, real-time-ness, structured/unstructured mix of their data
+    - `governance_need`: regulatory, security, access-control, lineage requirements
+    - `ai_maturity`: do they already have AI/ML teams and active workloads (high = ready to buy, not just exploring)
+    - `buying_trigger`: recent investment, reorg, product launch, cost-pressure — "why now"
+    - `displacement_ease`: how easy to displace incumbent solution / break internal-build lock-in (LOW for hyperscaler core ops, direct competitors, strong internal-platform lock-in)
+- If you are uncertain about a dimension for a specific company, default to 5 and note the uncertainty in `rationale`.
+- The `rationale` is exactly ONE sentence explaining the COMPANY (not the dimensions one-by-one) — what's the headline reason this company would buy. Keep it under ~25 words; the 0-10 scores already encode the per-dimension judgment.
 - The `industry_meta` rationale is one sentence per industry explaining WHY this product fits that industry as a whole.
+- Do NOT emit a `tier` field. The runtime computes `tier` and `final_score` from the scores using `config/weights.yaml` and `config/tier_rules.yaml` — anything you write there is dropped.
 - All output text (industry names, company names, rationales) MUST be English regardless of the knowledge_base language.
 
 Output format:
 - JSON ONLY. No prose, no markdown headers, no code fences.
 - Single JSON object with exactly two top-level keys:
     - `industry_meta`: object mapping industry name → 1-sentence rationale.
-    - `candidates`: flat array of objects, each with keys `name`, `industry`, `tier`, `rationale`.
+    - `candidates`: flat array of objects, each with keys `name`, `industry`, `scores`, `rationale`.
+- `scores` is an object with EXACTLY these six integer keys: `pain_severity`, `data_complexity`, `governance_need`, `ai_maturity`, `buying_trigger`, `displacement_ease`.
 - Every `candidate.industry` value MUST exactly match one of the keys in `industry_meta`.
 - The `candidates` array MUST contain exactly {n_industries} × {n_per_industry} = {expected_total} entries, with exactly {n_per_industry} per industry.
-- `tier` MUST be exactly one of "S", "A", "B", "C".
 
 ---TASK---
 Produce the JSON object now ({n_industries} industries × {n_per_industry} companies = {expected_total} total candidates). Output the object only — no other text.

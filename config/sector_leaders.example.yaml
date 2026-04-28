@@ -1,0 +1,99 @@
+# Phase 9.1 — Sector leader seeds for Discovery (mega-cap bias mitigation).
+#
+# `discover` injects this list as `<sector_leader_seeds>` into the volatile
+# block so Sonnet has concrete mid-market / regional / specialist names to
+# pick from beyond Fortune 500. The flat layout intentionally lets you mix
+# regions and industries in any order — `discover --region <code>` filters
+# at runtime.
+#
+# Fields
+# ------
+# name           : The company name as Sonnet should write it (English or local).
+# industry_hint  : Loose label — match against `industry_meta` keys at runtime
+#                  is fuzzy, so canonical English ("Financial Services",
+#                  "Manufacturing & Supply Chain") is recommended.
+# region         : ko | us | eu | global. `--region <X>` filters; "any" passes
+#                  everything through.
+# notes          : Optional free-form note to bias Sonnet's rationale.
+#
+# Operational use
+# ---------------
+# Copy this file to `config/sector_leaders.yaml` (gitignored) and edit. Or
+# generate a draft with: `python -m scripts.draft_sector_leaders`.
+
+version: 1
+
+companies:
+  # Fintech — mid-market and regional
+  - name: Stripe
+    industry_hint: Financial Services
+    region: us
+    notes: US fintech mid-large, heavy ML for fraud + risk scoring.
+  - name: Plaid
+    industry_hint: Financial Services
+    region: us
+    notes: Bank-data API, AI/ML team active.
+  - name: 토스 (Viva Republica)
+    industry_hint: Financial Services
+    region: ko
+    notes: Korean fintech mid-cap, AI-driven recommendation + fraud.
+  - name: Adyen
+    industry_hint: Financial Services
+    region: eu
+    notes: EU payments, real-time risk analytics.
+
+  # Manufacturing — global mid-cap and Korea
+  - name: Trane Technologies
+    industry_hint: Manufacturing & Supply Chain
+    region: us
+    notes: HVAC + industrial IoT, predictive maintenance investment.
+  - name: 두산에너빌리티
+    industry_hint: Manufacturing & Supply Chain
+    region: ko
+    notes: 한국 발전 설비, 운영 데이터 lakehouse 후보.
+  - name: 한화에어로스페이스
+    industry_hint: Manufacturing & Supply Chain
+    region: ko
+    notes: 항공·우주 sensor data + lifecycle 분석.
+
+  # Retail / E-Commerce
+  - name: Zalando
+    industry_hint: Retail & E-Commerce
+    region: eu
+    notes: EU fashion e-commerce, recommendation + content gen for catalog.
+  - name: 쿠팡
+    industry_hint: Retail & E-Commerce
+    region: ko
+    notes: Korean e-commerce mid-large, logistics + personalization data.
+  - name: Carvana
+    industry_hint: Retail & E-Commerce
+    region: us
+    notes: US used-car platform, vision + pricing ML.
+
+  # Healthcare
+  - name: Tempus AI
+    industry_hint: Healthcare & Life Sciences
+    region: us
+    notes: US oncology data + ML, rapid AI investment.
+  - name: 셀트리온
+    industry_hint: Healthcare & Life Sciences
+    region: ko
+    notes: Korean biopharma, R&D pipeline + clinical data.
+  - name: BenevolentAI
+    industry_hint: Healthcare & Life Sciences
+    region: eu
+    notes: UK drug discovery AI mid-cap.
+
+  # Tech / SaaS — non-competitor
+  - name: 네이버 (NAVER Cloud / CLOVA)
+    industry_hint: Technology & Software
+    region: ko
+    notes: Korean cloud + AI subsidiary, may sit alongside Databricks.
+  - name: 카카오 (Kakao Brain)
+    industry_hint: Technology & Software
+    region: ko
+    notes: Korean tech conglomerate AI arm.
+  - name: Datadog
+    industry_hint: Technology & Software
+    region: us
+    notes: SaaS observability, customer-facing AI features rolling out.

@@ -8,7 +8,7 @@ llm:
   claude_model: claude-sonnet-4-6
   claude_max_tokens_synthesize: 2000
   claude_max_tokens_draft: 4000
-  claude_max_tokens_discover: 4000
+  claude_max_tokens_discover: 6000
   claude_temperature: 0.3
   claude_rag_top_k: 8
 

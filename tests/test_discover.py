@@ -93,6 +93,23 @@ def _retrieved(idx: int = 0) -> RetrievedChunk:
     )
 
 
+_DIM_KEYS = (
+    "pain_severity",
+    "data_complexity",
+    "governance_need",
+    "ai_maturity",
+    "buying_trigger",
+    "displacement_ease",
+)
+
+
+def _scores(values=None):
+    """Default 6-dim scores, override by passing 6-tuple."""
+    if values is None:
+        values = (7, 7, 7, 7, 7, 7)
+    return dict(zip(_DIM_KEYS, values))
+
+
 def _payload(*, n_industries: int = 2, n_per_industry: int = 2) -> str:
     industries = [f"ind_{i}" for i in range(n_industries)]
     meta = {ind: f"rationale for {ind}" for ind in industries}
@@ -103,7 +120,7 @@ def _payload(*, n_industries: int = 2, n_per_industry: int = 2) -> str:
                 {
                     "name": f"Co_{ind}_{j}",
                     "industry": ind,
-                    "tier": ("S", "A", "B", "C")[j % 4],
+                    "scores": _scores(),
                     "rationale": "Fits because reasons.",
                 }
             )
@@ -198,7 +215,7 @@ def test_retries_once_on_schema_violation_then_succeeds(
         {
             "industry_meta": {"a": "r", "b": "r"},
             "candidates": [
-                {"name": "X", "industry": "a", "tier": "S", "rationale": "r"}
+                {"name": "X", "industry": "a", "scores": _scores(), "rationale": "r"}
             ],
         }
     )
@@ -301,12 +318,118 @@ def test_parse_discovery_rejects_uneven_industry_distribution():
         {
             "industry_meta": {"a": "r", "b": "r"},
             "candidates": [
-                {"name": "X1", "industry": "a", "tier": "S", "rationale": "r"},
-                {"name": "X2", "industry": "a", "tier": "A", "rationale": "r"},
-                {"name": "X3", "industry": "a", "tier": "B", "rationale": "r"},
-                {"name": "Y1", "industry": "b", "tier": "C", "rationale": "r"},
+                {"name": "X1", "industry": "a", "scores": _scores(), "rationale": "r"},
+                {"name": "X2", "industry": "a", "scores": _scores(), "rationale": "r"},
+                {"name": "X3", "industry": "a", "scores": _scores(), "rationale": "r"},
+                {"name": "Y1", "industry": "b", "scores": _scores(), "rationale": "r"},
             ],
         }
     )
     with pytest.raises(ValueError, match="industry 'a' has 3"):
         parse_discovery(bad, n_industries=2, n_per_industry=2)
+
+
+# ---- Phase 9.1 — scoring + sector_leaders + region ----------------------
+
+
+def test_llm_emitted_tier_is_dropped(patched_rag, tmp_path: Path):
+    """If the LLM ignores the prompt and emits a tier field, runtime must drop it."""
+    payload = json.dumps(
+        {
+            "industry_meta": {"a": "r", "b": "r"},
+            "candidates": [
+                {"name": "X1", "industry": "a", "scores": _scores((9, 9, 9, 9, 9, 9)),
+                 "rationale": "r", "tier": "C"},  # LLM tries to force C
+                {"name": "X2", "industry": "a", "scores": _scores((9, 9, 9, 9, 9, 9)),
+                 "rationale": "r", "tier": "C"},
+                {"name": "Y1", "industry": "b", "scores": _scores((2, 2, 2, 2, 2, 2)),
+                 "rationale": "r", "tier": "S"},  # LLM tries to force S
+                {"name": "Y2", "industry": "b", "scores": _scores((2, 2, 2, 2, 2, 2)),
+                 "rationale": "r", "tier": "S"},
+            ],
+        }
+    )
+    fake = _FakeClient([payload])
+    result = discover_targets(
+        lang="en", n_industries=2, n_per_industry=2,
+        output_root=tmp_path, client=fake, write_artifacts=False,
+    )
+    # all-9 → S (regardless of LLM-asserted "C"), all-2 → C (regardless of "S")
+    by_name = {c.name: c for c in result.candidates}
+    assert by_name["X1"].tier == "S"
+    assert by_name["Y1"].tier == "C"
+    # final_score also computed by code
+    assert by_name["X1"].final_score > 8.0
+    assert by_name["Y1"].final_score < 5.0
+
+
+def test_scores_field_validation_rejects_out_of_range(patched_rag, tmp_path: Path):
+    """LLM emitting score=15 should fail Candidate validation → retry."""
+    bad = json.dumps(
+        {
+            "industry_meta": {"a": "r", "b": "r"},
+            "candidates": [
+                {"name": "X1", "industry": "a",
+                 "scores": _scores((15, 7, 7, 7, 7, 7)),  # 15 out of range
+                 "rationale": "r"},
+                {"name": "X2", "industry": "a", "scores": _scores(), "rationale": "r"},
+                {"name": "Y1", "industry": "b", "scores": _scores(), "rationale": "r"},
+                {"name": "Y2", "industry": "b", "scores": _scores(), "rationale": "r"},
+            ],
+        }
+    )
+    fake = _FakeClient([bad, _payload()])
+    result = discover_targets(
+        lang="en", n_industries=2, n_per_industry=2,
+        output_root=tmp_path, client=fake, write_artifacts=False,
+    )
+    assert len(result.candidates) == 4
+    assert len(fake.messages.calls) == 2  # bad → retry → good
+
+
+def test_sector_leaders_block_injected_when_enabled(patched_rag, tmp_path: Path):
+    fake = _FakeClient([_payload()])
+    discover_targets(
+        lang="en", n_industries=2, n_per_industry=2,
+        seed_summary="x", output_root=tmp_path, client=fake,
+        include_sector_leaders=True, write_artifacts=False,
+    )
+    user_content = fake.messages.calls[0]["messages"][0]["content"]
+    blob = "\n".join(b["text"] for b in user_content)
+    assert "<sector_leader_seeds" in blob
+
+
+def test_no_sector_leaders_skips_block(patched_rag, tmp_path: Path):
+    fake = _FakeClient([_payload()])
+    discover_targets(
+        lang="en", n_industries=2, n_per_industry=2,
+        seed_summary="x", output_root=tmp_path, client=fake,
+        include_sector_leaders=False, write_artifacts=False,
+    )
+    user_content = fake.messages.calls[0]["messages"][0]["content"]
+    blob = "\n".join(b["text"] for b in user_content)
+    assert "<sector_leader_seeds" not in blob
+
+
+def test_region_constraint_emitted_when_not_any(patched_rag, tmp_path: Path):
+    fake = _FakeClient([_payload()])
+    discover_targets(
+        lang="en", n_industries=2, n_per_industry=2,
+        seed_summary="x", output_root=tmp_path, client=fake,
+        region="ko", write_artifacts=False,
+    )
+    user_content = fake.messages.calls[0]["messages"][0]["content"]
+    blob = "\n".join(b["text"] for b in user_content)
+    assert "<region_constraint>ko</region_constraint>" in blob
+
+
+def test_region_any_emits_no_constraint(patched_rag, tmp_path: Path):
+    fake = _FakeClient([_payload()])
+    discover_targets(
+        lang="en", n_industries=2, n_per_industry=2,
+        seed_summary="x", output_root=tmp_path, client=fake,
+        region="any", write_artifacts=False,
+    )
+    user_content = fake.messages.calls[0]["messages"][0]["content"]
+    blob = "\n".join(b["text"] for b in user_content)
+    assert "<region_constraint>" not in blob

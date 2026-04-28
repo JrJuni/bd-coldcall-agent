@@ -26,6 +26,7 @@ ENV/
 config/targets.yaml
 config/competitors.yaml
 config/intent_tiers.yaml
+config/sector_leaders.yaml
 
 # Data & outputs
 data/vectorstore/

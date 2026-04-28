@@ -156,6 +156,11 @@ def _fake_discover_result():
     from datetime import datetime, timezone
     from src.core.discover_types import Candidate, DiscoveryResult
 
+    scores = dict.fromkeys(
+        ("pain_severity", "data_complexity", "governance_need",
+         "ai_maturity", "buying_trigger", "displacement_ease"),
+        7,
+    )
     return DiscoveryResult(
         generated_at=datetime(2026, 4, 28, tzinfo=timezone.utc),
         seed_doc_count=1,
@@ -163,7 +168,8 @@ def _fake_discover_result():
         seed_summary="Lakehouse + AI platform.",
         industry_meta={"fintech": "r"},
         candidates=[
-            Candidate(name="Stripe", industry="fintech", tier="S", rationale="r"),
+            Candidate(name="Stripe", industry="fintech", scores=scores,
+                      rationale="r", final_score=7.0, tier="A"),
         ],
         usage={
             "input_tokens": 100,
@@ -210,4 +216,39 @@ def test_discover_rejects_invalid_lang(monkeypatch):
         lambda **kw: (_ for _ in ()).throw(AssertionError("should not be called")),
     )
     result = runner.invoke(cli.app, ["discover", "--lang", "fr"])
+    assert result.exit_code != 0
+
+
+def test_discover_forwards_product_and_region(monkeypatch, tmp_path: Path):
+    captured: dict = {}
+
+    def _fake_discover(**kwargs):
+        captured.update(kwargs)
+        return _fake_discover_result()
+
+    monkeypatch.setattr("src.core.discover.discover_targets", _fake_discover)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "discover",
+            "--lang", "en",
+            "--product", "snowflake",
+            "--region", "ko",
+            "--no-sector-leaders",
+            "--output-root", str(tmp_path),
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+    assert captured["product"] == "snowflake"
+    assert captured["region"] == "ko"
+    assert captured["include_sector_leaders"] is False
+
+
+def test_discover_rejects_invalid_region(monkeypatch):
+    monkeypatch.setattr(
+        "src.core.discover.discover_targets",
+        lambda **kw: (_ for _ in ()).throw(AssertionError("should not be called")),
+    )
+    result = runner.invoke(cli.app, ["discover", "--region", "antarctica"])
     assert result.exit_code != 0
