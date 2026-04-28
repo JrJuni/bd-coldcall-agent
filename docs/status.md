@@ -153,6 +153,68 @@
   - **DO NOT 룰 실전 강화** — Stream 6 테스트 중 `from src.api.runner import execute_run` 바인딩이 `monkeypatch.setattr("src.api.runner.execute_run", ...)` 와 충돌해 실제 Exaone 이 로딩되는 false-green 발생. `src.api.routes.{runs,ingest}` 및 `src.api.routes.ingest` 의 `from src.config.loader import get_settings` 모두 모듈-경유 접근으로 전환 (`from src.api import runner as _runner` / `from src.config import loader as _config_loader`)
   - **장기 과제로 분리** — 인증, 백그라운드 워커(Celery/RQ), 풀 RAG 관리 UI(업로드/삭제/Notion 페이지별 토글/인덱싱 이력 타임라인), 실행 이력 전용 DB 는 `docs/backlog.md` 에 기록
 
+- **Phase 8 ✅** — Raw data collection 강화 (3채널 검색 + RAG 시드 정리)
+  - **배경**: Phase 5~7 의 단일 채널 검색 (`bilingual_news_search(company)`) 으로는 톤만 조정해도 raw 입력 다양성 한계. 회사 단일 채널 → 3채널 (target / related / competitor) 로 분기.
+  - **Stream 0 — RAG 시드 정리 + 스키마 잠금**
+    - `data/company_docs/README.md` 삭제 (실험용 가이드 → 인덱싱 노이즈 제거), `.gitignore` `.gitkeep` 패턴으로 빈 폴더 보존
+    - `config/targets.yaml::rag.notion_page_ids` 빈 리스트 (Notion 임시 비활성, 페이지 ID 는 주석으로 보존)
+    - `data/vectorstore/` reset → `python -m src.rag.indexer --force` → **Databricks_AI Platform.pdf (20MB) → 64 청크** 신규 인덱싱 (이전 12 청크 대비 5배 풍부)
+    - `Article.channel: Literal["target","related","competitor"]` 필드 추가 (default `"target"`, 기존 산출물 호환)
+    - `AgentState.search_meta: dict` 키 추가 (채널별 pool/returned/errors 메타)
+    - `IntentSpec` / `CompetitorSpec` dataclass + `CompetitorsConfig` / `IntentTiersConfig` Pydantic 스키마
+    - `config/{competitors,intent_tiers}.example.yaml` 템플릿
+  - **Stream 1 — Competitor 채널 (B)**
+    - `src/search/channels/competitor.py::run_competitor` — `direct` weight=1.0 / `adjacent` weight=0.6, round-robin merge 로 cap (default 5) 균등 분배. URL dedup, per-경쟁사 실패 격리.
+    - `src/config/loader.py::load_competitors` — yaml 부재 시 빈 객체 + warn (채널만 비활성, 파이프라인은 정상)
+    - 단위 테스트 10건
+  - **Stream 2 — Related 채널 (A) — AI 초안 + 사람 검수 정적 티어**
+    - 사용자 결정: 런타임 LLM intent 생성 대신 **빌드타임 AI 초안 + 런타임 정적 yaml**. 결정성·비용 0 + 사람-in-the-loop 보정 가능.
+    - `src/search/channels/related.py` — 티어 가중치 (S=5/A=4/B=3/C=2) 비례 분배 + remainder 우선 분배. 첫 키워드만 쿼리화 (단순). intent 별 실패 격리.
+    - `scripts/draft_intent_tiers.py` — Sonnet 1회 (`chat_cached` 사용) 로 `intent_tiers.yaml` 초안 stdout/file 출력. RAG 빈약 시 warn. 운영 도구 (런타임과 분리).
+    - `src/config/loader.py::load_intent_tiers` — yaml 부재 시 빈 객체 + warn
+    - 단위 테스트 11건
+  - **Stream 3 — search_node 통합 + dedup 채널 우선순위**
+    - `src/search/channels/__init__.py::run_all_channels` — `BraveSearch` 컨텍스트 내에서 `ThreadPoolExecutor(max_workers=3)` fan-out (target/related/competitor 병렬). 채널별 try/except → `channel_errors` 누적, partial-success 라우팅.
+    - Cross-channel URL dedup — rank 순서 (target > related > competitor) 로 keep
+    - `src/rag/embeddings.py::_pick_representative` — sort key 에 `_CHANNEL_RANK` 추가. 의미 중복 (같은 기사 다른 URL) 도 target 우선.
+    - `src/graph/nodes.py::search_node` — `_channels.run_all_channels` 모듈-경유 호출 (DO NOT 룰 준수). `bilingual_news_search` / `BraveSearch` import 제거.
+    - `fetch_node` — competitor 채널은 snippet-only fast path (HTTP fetch 스킵). `settings.search.fetch_workers` 노출.
+    - `settings.yaml` — `max_articles_per_channel: {target: 20, related: 15, competitor: 5}`, `fetch_workers: 5`
+    - 기존 monkeypatch 테스트들 (`test_graph_nodes`, `test_pipeline`) 새 인터페이스로 마이그레이션
+    - 신규 통합 테스트 5건 (multi-channel merge / x-channel dedup / partial failure / per-channel cap forwarding / dedup channel rank)
+  - **Stream 4 — Synthesize 다중 블록 + 프롬프트**
+    - `src/llm/synthesize.py::_render_articles_by_channel` — `<target_articles>` / `<related_articles>` / `<competitor_news>` 분기. 빈 채널은 블록 자체 생략.
+    - 채널별 tier 차등: target = 기존 정책 (high-tag → body, low-tag → snippet) / related = 항상 snippet (intent_label/intent_tier attr) / competitor = snippet only (competitor/relation attr)
+    - `src/prompts/{en,ko}/synthesize.txt` task 섹션에 새 블록 처리 지침 추가: target=PRIMARY, related=SUPPORTING, competitor=차별화 한정·직접 인용 금지·경쟁사명 명시 자제
+    - ProposalPoint 스키마 변경 없음 (호환성)
+    - 단위 테스트 7건
+  - **회귀 + 신규**: 기존 235 → **270 passed all green** (+35: Stream 1 +10, Stream 2 +11, Stream 3 +5, fetch_node +1, search_node +1, Stream 4 +7)
+  - **Stream 5 — E2E 스모크 + 운영 시드 ✅**
+    - `config/competitors.yaml` 작성 (direct: Snowflake / Vertex AI / SageMaker, adjacent: Cloudera / Hugging Face / MLflow)
+    - `scripts/draft_intent_tiers.py` 1회 실행 → `config/intent_tiers.yaml` 6 의도 초안 (S 2 / A 2 / B 2). Sonnet 토큰: input=87 / output=822 → ~$0.005. 사람 검수 후 수정 가능한 운영 yaml 로 커밋
+    - **첫 풀 스모크 OOM** — 39 기사 dedup 시 RTX 4070 16GB 에서 bge-m3 가 5.6GB 추가 할당 실패. plan 위험 분석에서 정확히 예측한 케이스. 3 안전장치로 fix:
+      - `embed_texts(..., batch_size=8)` 강제
+      - dedup 입력 텍스트 첫 3000 자 truncate (의미 영향 미미)
+      - dedup 직전 `torch.cuda.empty_cache()` 호출
+    - **재실행 측정값** (NVIDIA / semiconductor / en):
+      | 항목 | 값 |
+      |---|---|
+      | Total wall time | **195.96s** (plan 280-340s 예상보다 **빠름**, batch+truncate 효과) |
+      | Brave 호출 | 13회 (target 1 + related 6 intents + competitor 6 specs) |
+      | search → fetch → preprocess → retrieve → synthesize → draft | 3s + 6s + 140s + <1s + 29s + 16s |
+      | articles | searched 39 / fetched 39 (full 27 + snippet 12, competitor fast-path 5) / processed 20 |
+      | tech chunks | 8 / proposal points 5 / draft 585 단어 |
+      | Sonnet 토큰 | input=16268 / output=2286 / cache_read=0 / cache_write=2656 |
+      | 추정 비용 | **~$0.093** (plan 예상 $0.13-0.16 보다 **저렴** — competitor snippet-only fast path + body truncate 합산 효과). 동일 RAG 로 다음 타겟은 cache_read 로 더 저렴 |
+    - **proposal 품질 검증** — `outputs/NVIDIA_20260428/proposal.md`:
+      - 5 angle 모두 분포 (intro / pain_point / growth_signal / tech_fit / risk_flag)
+      - **Databricks 제품 기능 정확 인용**: MLflow / Feature Store / Model Serving / Unity Catalog / Foundation Model APIs (Llama 4 / Claude / Gemma / DeepSeek) / BI layer — 64-청크 PDF RAG 시드 효과
+      - **NVIDIA 실제 뉴스 정확 인용**: $5.26T 시총, $78B Q1 FY2027, $1T 칩 로드맵, Sequoia $1.1B 라운드, Nokia 6G — target_articles 기반
+      - footnote 7개 자동 번호링 + URL 매핑 정확
+      - **competitor 채널 정확히 차별화 한정** — proposal 본문에 경쟁사명 미명시 (프롬프트 지침 준수)
+  - **docs 갱신**: `backlog.md` (항목 9 multi-intent 흡수 처리, 항목 8 reverse matching 에 빌딩 블록 메모, 신규 항목 15 [개인 CV 피보팅] / 16 [영업 반응 KG] 추가) / `playbook.md` (#10 멀티 채널 rank-based keep, #11 AI 초안+사람 검수 정적 티어) / `lesson-learned.md` (Phase 8 OOM 사건)
+  - **다음**: 1~2 추가 타겟 (Tesla / Deloitte 재실행 등) 으로 channel mix 효과 일반화 확인 → 측정값 누적 후 P1-1 톤 조정 또는 P1-2 drag-drop UX 진행 검토.
+
 - **Phase 5 보강 ✅ (Step 5)** — articles 스테이지 분리
   - `AgentState.articles` 단일 키를 **`searched_articles` / `fetched_articles` / `processed_articles`** 3개로 분할 — 실패 경로에서 어느 단계까지 진행됐는지 state 만 보고 판단 가능
   - 노드별 read/write 재배선: search_node → searched / fetch_node reads searched → writes fetched / preprocess_node reads fetched → writes processed / synthesize·draft 는 processed 를 참조
@@ -161,10 +223,42 @@
   - `main.py run` / `scripts/smoke_phase5.py` 요약 출력이 `searched=N fetched=N processed=N` 3개 카운트 표시로 변경
   - 테스트 3건 신규 (`latest_articles` 우선순위 / persist 가 fetch 실패 시 searched 폴백 + per-stage 덤프 / preprocess 실패 시 fetched 덤프 + searched 덤프 동시) + 기존 테스트 전부 새 키로 재배선. **220 → 223 passed**
 
-## 다음 MVP 범위 (Phase 7 ~ 9)
-- **Phase 7** — Web UI (FastAPI + Next.js — 타겟 CRUD, 실행 + SSE 진행 스트림, 결과 뷰어, RAG 관리)
-- **Phase 8** — 평가·회고 (타겟사 3~5건 스모크 테스트, 결과는 `lesson-learned.md` 에 누적)
-- **Phase 9** — 문서 최종화 (status / architecture / security-audit 갱신)
+- **Phase 9 ✅** — Target Discovery (RAG-only reverse matching, MVP)
+  - **배경**: Phase 8 까지는 "타겟사가 정해진" 전제. 사용자가 새 방향 제시 — `data/company_docs` (64-청크 Databricks PDF) RAG 만으로 잠재 BD 타겟 + 티어리스트 자동 생성. backlog 항목 8 (reverse matching) 의 MVP 컷.
+  - **결정 잠금**: Sonnet 1회 호출만 (검증 없음, 부정확한 회사명 가능성 인정 — 사람이 후속 단계로 검수) / 5 산업 × 5 회사 = 25 (CLI 플래그 오버라이드) / candidates.yaml (flat) + report.md (산업 그루핑) 둘 다 / `src/core/discover.py` 순수 함수 + 얇은 CLI/scripts 어댑터 / en + ko 양쪽 prompt
+  - **Stream 0 — 스키마 + 프롬프트**
+    - `src/core/discover_types.py` — `Candidate` (pydantic, name/industry/tier/rationale) + `DiscoveryResult` (dataclass, generated_at/seed_doc_count/seed_chunk_count/seed_summary/industry_meta/candidates/usage) + `Tier = Literal["S","A","B","C"]` + `parse_discovery(raw, n_industries, n_per_industry)` (object-first JSON 추출 + 카운트·산업키·티어 검증, 위반 시 ValueError)
+    - 자체 `_extract_json_object` 헬퍼 — `proposal_schemas._extract_json` 은 array regex 우선이라 prose 래핑 시 inner candidates list 만 잡는 케이스 회피
+    - `src/prompts/{en,ko}/discover.txt` — system + ---TASK--- 분리, `{n_industries}`/`{n_per_industry}`/`{expected_total}` placeholder 로 카운트 동적 주입
+  - **Stream 1 — `src/core/discover.py` 핵심 함수**
+    - `discover_targets(*, lang, n_industries=5, n_per_industry=5, seed_summary=None, seed_query="core capabilities and target use cases", output_root=None, top_k=20, client=None, write_artifacts=True) -> DiscoveryResult`
+    - manifest.json 직접 read → `seed_doc_count` / `seed_chunk_count` (`indexer.manifest_path_for` + `load_manifest` 재사용, 매니페스트 결측 시 (0,0) + warn)
+    - `retrieve(seed_query, top_k=20)` 호출, RAG 빈 결과 시 warn (Sonnet 부정확 산출물 경고)
+    - `<knowledge_base>` 블록 → `cached_context`, `<product_summary>seed_summary</product_summary>` → `volatile_context`, `chat_cached` 1회 + 스키마 실패 시 temp +0.1 재시도 1회 (synthesize 패턴 그대로). 두 번 실패 시 ValueError
+    - `outputs/discovery_{YYYYMMDD}/candidates.yaml` (flat: generated_at + seed{} + industry_meta + candidates 평면 리스트 + usage) + `report.md` (산업별 그루핑, 시드 메타 헤더, Tier 정렬 (S→A→B→C) Markdown table)
+    - `claude_max_tokens_discover` 신규 setting (4000) — 25 후보 rationale 합산 ~2500 출력 토큰이라 synthesize 의 2000 으로는 부족
+  - **Stream 2 — 얇은 어댑터**
+    - `main.py discover` Typer 서브커맨드 — `--lang/--n-industries/--n-per-industry/--seed-summary/--seed-query/--top-k/--output-root/--verbose`. body 는 `discover_targets()` 호출 + 결과 요약 stdout
+    - `scripts/discover_targets.py` argparse 어댑터 (`draft_intent_tiers.py` 와 같은 형식, Windows utf-8 inside-main 재설정)
+  - **Stream 3 — 테스트 + 1회 실제 실행 + docs**
+    - `tests/test_discover.py` 9건: 정상 / yaml+md 산출물 / fenced JSON / retry 1회 후 성공 / 두 번 실패 → ValueError / cache_control 은 knowledge_base 블록만 / lang=ko prompt 로드 / 카운트 placeholder 치환 / `parse_discovery` 산업 분포 검증
+    - `tests/test_cli.py` +2: discover 인자 포워딩 / 잘못된 lang 거부
+    - **회귀**: 270 → **281 passed all green** (+11)
+    - **실제 1회 실행** (Databricks RAG, en):
+      | 항목 | 값 |
+      |---|---|
+      | Total wall time | ~40s (bge-m3 로딩 + retrieve + Sonnet 1회) |
+      | Sonnet 토큰 | input=3 / output=2520 / **cache_read=6566** / cache_write=83 — 같은 RAG 재실행 시 cache 적중 확인 |
+      | 추정 비용 | **~$0.040** (plan 예상치 정확히 일치) |
+      | 산출물 | `outputs/discovery_20260428/{candidates.yaml, report.md}` |
+    - **품질 관찰**: 5 산업 (Financial Services / Retail & E-Commerce / Healthcare & Life Sciences / Technology & Software / Manufacturing & Supply Chain) × 5 회사. 모든 회사명 실재 (JPMorgan / Goldman / Visa / Pfizer / NVIDIA / Snowflake / Siemens / Bosch 등). Rationale 이 Databricks 구체 기능 (Unity Catalog / MLflow / Mosaic AI / Delta Live Tables / AI Gateway / Knowledge Assistant) 직접 인용. 티어 분포 8 S / 10 A / 7 B / 0 C — 약간 상위 편향 (C 부재). 2 카운트 검증 (5 distinct industry / 산업당 정확히 5 회사) 통과
+    - **docs 갱신**: `status.md` Phase 9 섹션 / `backlog.md` 신규 항목 17 (티어리스트 편집 웹 UI: candidates.yaml → SQLite import → /discover 페이지 sortable·editable table → yaml export 또는 targets.yaml 자동 추가)
+
+## 다음 MVP 범위 (Phase 9 이후)
+- backlog 항목 17 — 티어리스트 편집 웹 UI (candidates.yaml 입력 → table 편집 → 재export / targets.yaml 자동 추가)
+- backlog P1-1 — 제안서 톤 조정 + 민감 가드 (3 톤 프리셋 + self-critique review_node)
+- backlog P1-2 — drag-drop 웹 RAG 입출력
+- 추가 discover 실행 1~2회 (다른 RAG 또는 ko 언어) 로 결과 일반화 확인
 
 ---
 

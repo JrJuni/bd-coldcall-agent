@@ -22,6 +22,10 @@
 | `incremental-indexing` `atomicity` `rag` `safety` | [7. embed-first 원자성](#7-embed-first-원자성으로-중간-실패-복구-가능) | chunk→embed 가 먼저 성공해야 store/manifest 건드림. 중간 실패 시 상태 불변 |
 | `work-planning` `stream-split` `phase-design` `context-window` | [8. 큰 작업은 3~5 stream + TO-BE/DONE 체크박스](#8-큰-작업은-3--5-stream--to-bedone-체크박스) | 세션 단절·컨텍스트 압박 대응, 세션 간 재개 용이 |
 | `windows` `stdout` `cp949` `framework-help` | [9. 선언적 CLI 프레임워크는 모듈 로드 시점에 stdio UTF-8](#9-선언적-cli-프레임워크는-모듈-로드-시점에-stdio-utf-8) | Typer/Rich 는 command body 전에 help 렌더 → 안쪽 reconfigure 늦음 |
+| `multi-channel` `raw-data` `dedup` `rank-policy` `partial-success` | [10. 멀티 채널 raw collection 은 rank 기반 keep + partial-success](#10-멀티-채널-raw-collection-은-rank-기반-keep--partial-success) | 채널별 try/except + 채널 rank dedup. 한 채널 실패가 다른 채널을 죽이면 안 됨 |
+| `static-tier` `human-in-the-loop` `runtime-deterministic` | [11. AI 초안 + 사람 검수 정적 티어 = 운영 안정성](#11-ai-초안--사람-검수-정적-티어--운영-안정성) | LLM 런타임 호출 대신 빌드타임 초안 → yaml 커밋. 결정성·비용 0·검수 가능 |
+| `mvp-cut` `flat-schema` `human-review` `output-format` | [12. MVP 1-shot 산출은 flat 데이터 + grouped 리포트 페어](#12-mvp-1-shot-산출은-flat-데이터--grouped-리포트-페어) | 검증 없는 LLM 1회 산출이라도 flat yaml (편집·UI 친화) + 그룹 md (검수 친화) 두 형태로 동시 출력 |
+| `llm-output-budget` `max-tokens` `step-isolation` `truncate-failure` | [13. LLM step 별 max_tokens 별도 setting](#13-llm-step-별-max_tokens-별도-setting) | 새 step 추가 시 input 비슷해도 output 분포 별도 추정. setting 키 신설이 retry 보다 안전 |
 
 항목이 늘어나면 태그 알파벳순으로 재정렬. 항목 제거는 패턴이 무효화됐을 때만 (이 경우 원인도 기록).
 
@@ -150,3 +154,75 @@
 **Why it works**: argparse 같은 절차적 CLI 는 커맨드 body 에 진입해야 help 를 돌리지만, typer/rich 같은 선언적 프레임워크는 import 시점에 데코레이터로 help 생성기를 등록하고 즉시 렌더링 가능. 인코딩 강제는 그보다 먼저 와야 함.
 
 **Reusable in**: Typer, Click + Rich, Hydra 같은 선언적 CLI 프레임워크를 Windows 환경에서 쓸 때. 일반적으로 "프레임워크 import 전에 stdio 설정 완료" 원칙.
+
+---
+
+## 10. 멀티 채널 raw collection 은 rank 기반 keep + partial-success
+
+**태그**: `multi-channel` `raw-data` `dedup` `rank-policy` `partial-success`
+
+**Problem**: 동일한 raw signal (뉴스/문서/검색결과) 을 여러 의미축에서 모아야 할 때 — 단일 채널은 다양성 부족, 다중 채널은 (a) 채널 간 중복, (b) 한 채널 실패가 전체 실패로 번질 위험, (c) 어느 채널이 우선인지 불명확 의 세 문제 동시 발생.
+
+**Solution**:
+1. **Channel registry** 패턴 — `src/search/channels/__init__.py::run_all_channels` 가 채널 함수들을 dict 로 보유, `ThreadPoolExecutor` fan-out. 채널 추가/제거 = dict 한 줄.
+2. **Per-channel try/except** — 각 채널 결과를 `(articles, meta)` 튜플로 받되, 예외는 `channel_errors` 에 기록만 하고 빈 리스트 반환. 노드는 모든 채널이 실패해야만 fail.
+3. **Rank-based dedup** — `CHANNEL_RANK = {"target": 0, "related": 1, "competitor": 2}`. URL dedup 시 낮은 rank 가 keep. 의미적 dedup (`_pick_representative`) 의 sort key 에도 channel rank 추가.
+4. **First-class channel field** — `Article.channel: Literal[...]` 을 dataclass 필드로 (metadata dict 아님). 직렬화 호환성 위해 default 값.
+
+**Why it works**: rank 가 비교 가능한 정수면 dedup keep 정책이 단순해지고, 채널 추가 시 rank 한 칸만 끼우면 됨. partial-success 는 "한 채널의 일시 장애 (Brave 5xx) 가 전체 BD 실행을 죽이지 않는다" 는 운영 가치 직결.
+
+**Reusable in**: 검색 외에도 멀티 소스 RAG (ChromaDB + Notion + Slack + GitHub), 멀티 모니터링 (Datadog + Sentry + CloudWatch), 멀티 모델 (앙상블) 등 — 여러 소스를 하나의 출력 stream 으로 머지하는 모든 곳. CV 발굴 피보팅 (backlog 항목 15) 도 같은 패턴 그대로 사용.
+
+---
+
+## 11. AI 초안 + 사람 검수 정적 티어 = 운영 안정성
+
+**태그**: `static-tier` `human-in-the-loop` `runtime-deterministic`
+
+**Problem**: 검색 의도·필터·프롬프트 같은 "도메인 지식 데이터" 를 두 극단 중 하나로 갈 때 — 옵션 (a) 런타임 LLM 동적 생성 = RAG 변화에 자동 적응하지만 비결정·비용·디버깅 어려움 / 옵션 (b) 하드코딩 정적 리스트 = 결정·무료·검수 가능하지만 사람이 처음부터 만들어야 함 → 빈 채로 시작 stuck.
+
+**Solution**: **빌드타임 LLM 초안 + 런타임 정적 yaml** 의 하이브리드.
+- 일회성 도구 (`scripts/draft_intent_tiers.py`) 가 RAG 인덱스 + 사용자 입력 product 한줄 요약을 받아 Sonnet 1회 호출 → yaml 형식 초안 출력
+- 사람이 검수·다듬어 `config/intent_tiers.yaml` 로 커밋
+- 런타임은 yaml 만 읽음 — LLM 호출 없음, 결정적, 캐시 무관
+
+**Why it works**: 첫 사용자 경험 = 빈 yaml 이 아니라 "초안 받고 다듬는다" 의 출발점. 운영 단계에선 yaml 이 git-tracked → 변경 이력 추적 가능, A/B 비교 용이, 비용 0. 콘텐츠가 늘면 도구 다시 돌려서 새 초안 받기.
+
+**Reusable in**: 프롬프트 라이브러리, 분류 규칙, 검색 의도 리스트, few-shot 예시, 평가 루브릭 등 — "LLM 이 잘 만들지만 사람이 보정해야 하는 텍스트 데이터" 일반. 동적 vs 정적 의 가성비를 사람-in-the-loop 로 합쳐줌.
+
+---
+
+## 12. MVP 1-shot 산출은 flat 데이터 + grouped 리포트 페어
+
+**태그**: `mvp-cut` `flat-schema` `human-review` `output-format`
+
+**Problem**: 검증 없는 LLM 1회 산출 (Phase 9 의 reverse matching MVP — Sonnet 1회로 25 후보 + 5 산업) 에서 두 가지 상충하는 요구가 동시에 발생: (a) 사람이 빠르게 훑고 쳐낼 수 있는 그룹별 보고서 / (b) 후속 자동화 (편집 UI / SQLite import / `targets.yaml` 자동 추가) 를 위한 flat 머신 친화 포맷. 한 형식으로 둘 다 만족 못 함 — flat 만 있으면 사람이 산업별 묶음을 다시 그루핑하느라 검수 5분이 30분, 그룹 md 만 있으면 인-place 편집·테이블 import 가 어려움.
+
+**Solution**: 같은 LLM 응답을 **두 형태로 직렬화**해 페어로 저장.
+- `outputs/discovery_<date>/candidates.yaml` — flat list (`name, industry, tier, rationale`) + 메타 (`generated_at, seed{}, industry_meta, usage`). 향후 SQLite import → 웹 편집 UI 입력 포맷.
+- `outputs/discovery_<date>/report.md` — 산업별 그루핑, 시드 메타 헤더, Tier 정렬 (S→A→B→C) Markdown table, footnote 토큰 요약. 사람이 5분 안에 검수.
+- 둘 다 같은 `DiscoveryResult` 인스턴스에서 파생 — `_candidates_to_yaml()` / `_render_report()` 두 순수 함수가 같은 dataclass 를 다른 view 로 펼침.
+
+**Why it works**: flat 의 단점 (사람 가독성) 은 grouped md 가 보완하고, grouped 의 단점 (편집 UI 입력 어려움) 은 flat yaml 이 보완. 추가 LLM 호출 0회 — 같은 응답을 다른 view 로 두 번 직렬화하는 비용은 사실상 무료. "MVP 컷이라 검증 안 함" 이라는 결정이 산출물 품질을 떨어뜨리지 않게 만드는 보호막.
+
+**Reusable in**: LLM 1-shot 분석 (이력서 → 적합 기업 발굴 [backlog 15], 영업 반응 → 클러스터 [backlog 16], 제품 → 경쟁 분석 등) 어디서든. 사람 검수가 필수인 산출물은 항상 (flat data, grouped report) 페어로 출력하는 게 후속 단계 (자동화·웹 UI·재import) 의 진입 비용을 낮춤.
+
+---
+
+## 13. LLM step 별 max_tokens 별도 setting
+
+**태그**: `llm-output-budget` `max-tokens` `step-isolation` `truncate-failure`
+
+**Problem**: 새 LLM step 의 input 패턴이 기존 step 과 비슷하면 (둘 다 RAG 시드 + 시스템 프롬프트) `max_tokens` setting 도 그대로 재사용하고 싶어짐. 그런데 **output 분포는 step 마다 다름** — synthesize 의 5 ProposalPoint (~1.5K out) 와 discover 의 5 산업 + 25 후보 rationale (~2.5K out) 와 draft 의 4-section markdown (~3K out) 은 입력이 비슷해도 출력 사이즈가 ×2 수준 차이. 한 setting 으로 묶으면 output 작은 step 은 cost OK 지만 큰 step 에선 truncate, 반대로 큰 쪽에 맞추면 작은 쪽이 idle headroom.
+
+더 위험한 것: **truncate 된 응답은 retry 로 못 구함**. 동일 max_tokens 로 재시도해도 같은 자리에서 잘림. JSON 이 닫히지 않은 raw 출력은 parser 가 항상 실패 → ValueError 만 반복.
+
+**Solution**: 새 step 추가 시 **output 별도 추정 → setting 키 신설**.
+- 추정 공식: `n_items × (avg item tokens + structural overhead) × 1.3 safety`
+- Phase 9 예: `25 × (~80 rationale + ~20 JSON 키) × 1.3 ≈ 3300 → 4000 round up`
+- 결과: `claude_max_tokens_synthesize=2000` / `claude_max_tokens_draft=4000` / `claude_max_tokens_discover=4000` 로 step 별 분리 (`config/settings.yaml` + `LLMSettings`)
+- 첫 실제 실행 시 `output_tokens` 측정 → setting 1.5× headroom 인지 확인 → 부족하면 재조정
+
+**Why it works**: setting 키가 step 과 1:1 매핑되면 (a) 한 step 의 output 폭증이 다른 step 에 영향 없음 (b) git diff 로 어느 step 이 비싸지는지 즉시 보임 (c) retry 로 가짠 못 구하는 truncate 실패를 사전 차단. retry 는 모델 변동성 (JSON 형식 어김 / temperature) 만 흡수하지 max_tokens 같은 fixed budget 문제는 못 풉.
+
+**Reusable in**: 새 LLM step 을 추가하는 모든 프로젝트. 특히 같은 모델·같은 입력 패턴에 묶여 있을 때 무심코 setting 재사용하기 쉬움. checklist 항목으로 "이 step 의 expected output_tokens 는?" 을 plan 단계에 넣는 게 좋음. 같은 원칙은 timeout, batch_size, top_k 등 step 별 budget 키 모두에 일반화.

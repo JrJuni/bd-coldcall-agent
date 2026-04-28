@@ -134,3 +134,27 @@ conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/ms
 **시도**: 초안에서 `chunk_size=500`, `chunk_overlap=50` 을 단순 문자 슬라이딩 윈도우로 구현 (많은 RAG 튜토리얼의 기본 패턴).
 **결과**: 플랜 리뷰에서 "문장 중간이 잘리거나 문단 의미가 부자연스럽게 중복"될 수 있다는 지적. 특히 한글은 종결어미가 뒤에 오는 구조라 문자 중간 cut 시 의미 단위 파손이 더 큼. bge-m3 retrieval 품질이 chunker 에서 크게 갈린다는 관찰.
 **배운 점**: **문장을 1차 단위로 greedy 패킹**하고, 다음 청크의 **overlap 도 문장 단위 tail** 로 구성. 단일 문장이 `chunk_size` 를 넘길 때만 예외적으로 문자 단위 hard-split + 문자 overlap fallback. 문장 경계는 `[.!?。！？]\s+` + `\n\s*\n` (단락 boundary). 구현: `src/rag/chunker.py` `chunk_document()`. 회귀: `tests/test_chunker.py` 12건 (문장 오버랩, 긴 문장 fallback, 한글 단락 분리, chunk_overlap=0, 공용 필드 전파, id 유니크). 전처리 normalize (`normalize_content`) 도 이 단계에서 통일해 해시 안정화까지 같이 잡음.
+
+## [2026-04-28] 공유 `_extract_json` 의 array-first 우선순위가 dict 호출자에서 inner list 만 잡음
+**시도**: Phase 9 `parse_discovery` 에서 Sonnet 의 `{"industry_meta": {...}, "candidates": [...]}` 응답을 파싱하려고 `proposal_schemas._extract_json` 재사용. prose 가 섞인 응답 ("Here you go: {...} Let me know.") 에 대한 회귀 테스트 추가.
+**결과**: `_extract_json` 이 4단 fallback 중 `_ARRAY_RE` (`\[.*\]`) 를 `_OBJECT_RE` (`\{.*\}`) 보다 **먼저** 시도하기 때문에, top-level 이 dict 인 응답에서도 `candidates` 의 inner list 만 매치되어 list 가 반환됨. parse_discovery 의 dict 검증에서 `expected JSON object ... got list` 로 실패. 기존 호출자 (`parse_proposal_points`) 는 top-level list 를 기대하니 문제없었지만, dict 호출자에선 의미가 정반대.
+**배운 점**: 4단 fallback util 의 array vs object **우선순위는 호출자 스키마에 종속** — 공유 util 을 수정하면 기존 list 호출자가 깨지므로, **dict 호출자는 자기만의 thin helper** 를 만든다. `src/core/discover_types.py::_extract_json_object` (raw → fenced → object 만 시도) 로 분기. 일반화: regex-greedy + try-parse-each 방식의 4단 fallback 은 구조가 같아 보이지만 첫 매치가 곧 결과라 호출자 schema 별로 다른 우선순위 helper 가 필요할 수 있다. 공유 util 의 docstring 에 "list 우선" 을 명시해 다음 사람이 같은 함정을 안 밟게.
+
+## [2026-04-28] 새 LLM step 에 기존 `max_tokens` setting 재사용 → output truncate 로 양쪽 시도 다 실패
+**시도**: Phase 9 discover 가 `chat_cached(..., max_tokens=settings.llm.claude_max_tokens_synthesize)` 로 호출. synthesize 와 입력 패턴이 비슷해서 같은 `max_tokens=2000` setting 재사용한 것이 자연스러워 보였음.
+**결과**: 실제 1회 실행에서 두 번 다 `ValueError: discover_targets failed after 2 attempts: no JSON found in discovery output`. 디버그로 raw 응답 캡처해 보니 output_tokens=2511 / 2852 — synthesize 는 5 ProposalPoint (~1.5K out) 라 2000 cap 으로 충분했지만, discover 는 5 산업 + 25 후보 + 각 1~2문장 rationale 합산이 ~2.5K out 으로 일관되게 cap 초과. JSON 이 닫히지 않은 상태로 잘려 두 번째 retry 도 같은 사이즈로 실패.
+**배운 점**: 새 LLM step 추가 시 입력 패턴이 비슷해도 **output 분포는 별도 추정** 후 setting 키 신설. `claude_max_tokens_discover=4000` 추가 (synthesize 2000 / draft 4000 / discover 4000). 추정 공식 안내: `n_items × (avg rationale tokens + structural overhead) × 1.3 safety`. 25 × (~80 + 20) × 1.3 ≈ 3300 → 4000 round up. retry 가 truncate 된 응답을 다시 truncate 만 하므로 max_tokens 부족은 retry 로 못 구함 — sched 인자 자체가 문제일 때 retry 는 무력화.
+
+## [2026-04-28] dict iteration 순서가 set-init 으로 비결정 → pytest 어설션 flake
+**시도**: `parse_discovery` 의 industry-distribution 검증에서 `industry_keys = set(industry_meta.keys())` + `counts: dict[str, int] = {k: 0 for k in industry_keys}`. 잘못된 분포 ('a':3, 'b':1) 에 대해 `pytest.raises(ValueError, match="industry 'a' has 3")` 로 어설션.
+**결과**: 같은 입력으로 첫 실행은 'a' 가 raise 되어 통과, 다음 실행은 'b' 가 먼저 검사되어 "industry 'b' has 1 candidates, expected 2" 가 raise 되어 어설션 실패. set 의 iteration 순서가 hash 기반 비결정이라 dict 의 순서 (set comprehension 거치면 set 의 순서 계승) 도 비결정.
+**배운 점**: dict 의 안정적 순서 (insertion order, Python 3.7+) 를 활용하려면 **dict 자체의 키를 직접 순회** (`for ind in industry_meta`) 해야 함. set 을 중간에 거치면 순서가 무효화됨. 이 패턴은 sorted-needed 가 아니라 단순히 "원본 입력 순서" 가 정답일 때 유효 — 정렬 필요한 경우엔 명시적 `sorted()` 가 더 안전. 일반화: 검증 / 에러 메시지 / 테스트 어설션이 dict 의 순서에 의존한다면, 그 dict 가 어디서 어떻게 만들어졌는지 거꾸로 추적해서 set 경유 여부 확인.
+
+## [2026-04-28] Phase 8 multi-channel 39 기사 dedup 시 RTX 4070 16GB OOM
+**시도**: 채널 cap 합 = 40 (target 20 + related 15 + competitor 5) 으로 search_node 다중 채널화. preprocess 의 dedup 단계가 `embed_texts(texts)` 를 batch_size 미지정 default 로 호출 → 39 articles × 평균 ~3500 자 body 한 번에 임베딩.
+**결과**: 첫 풀 스모크 시 `torch.OutOfMemoryError: Tried to allocate 5.60 GiB. GPU 0 has a total capacity of 15.99 GiB ... 19.80 GiB is allocated by PyTorch`. Exaone 4bit (~6GB) 가 GPU 점유 중에 bge-m3 가 39 sequence batch 를 한 번에 올리려다 OOM. Phase 5 의 20-기사 baseline 에서는 안 보이던 회귀.
+**배운 점**: 채널이 늘어 raw input 이 2배가 되면 dedup embedding 의 GPU 압박이 비선형으로 폭증. 세 가지 안전 장치 동시 적용:
+1. `embed_texts(..., batch_size=8)` — 한 번에 올리는 sequence 수 cap. 16GB 카드에서 Exaone + bge-m3 공존 가능한 보수값.
+2. dedup 입력 텍스트 첫 3000 자 truncate — 임베딩 의미는 lede / 첫 단락에 거의 다 있고, 0.90 threshold 의 dedup 정확도에는 영향 미미.
+3. dedup 직전 `torch.cuda.empty_cache()` — Exaone 이 남긴 fragmented block 회수.
+plan 의 위험 분석에서 정확히 예측한 케이스 (cap 합 40 vs RTX 4070 16GB) — **사전 분석한 위험은 fixture/CI 로 회귀 잠그지 않으면 1회는 반드시 발생함**. 향후 채널 cap 늘릴 때 batch_size·truncate 도 같이 재계산. 구현: `src/rag/embeddings.py::embed_texts` / `dedup_articles`. 기존 `tests/test_dedup.py` 7건 무영향 (작은 배치라 cap 무관).

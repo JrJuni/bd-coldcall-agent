@@ -60,6 +60,11 @@ If the env doesn't exist yet, see the setup steps in `docs/lesson-learned.md` (M
 ~/miniconda3/envs/bd-coldcall/python.exe main.py ingest --notion --dry-run
 ~/miniconda3/envs/bd-coldcall/python.exe main.py ingest --verify
 
+# Phase 9 — RAG-only target discovery (Sonnet 1-shot, 5 industries × 5 companies = 25, ~$0.04)
+~/miniconda3/envs/bd-coldcall/python.exe main.py discover --lang en \
+    --seed-summary "One-paragraph product summary."
+# Writes outputs/discovery_{YYYYMMDD}/{candidates.yaml, report.md}
+
 # Phase 7 Web API (FastAPI, uvicorn autoreload). Skips the 30s Exaone warm-load
 # so frontend dev is fast; drop the flag when you want the real pipeline.
 API_SKIP_WARMUP=1 ~/miniconda3/envs/bd-coldcall/python.exe -m uvicorn src.api.app:app --reload

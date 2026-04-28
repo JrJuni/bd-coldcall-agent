@@ -216,6 +216,62 @@ GET  /ingest/tasks/{task_id}   → 상태
 
 ---
 
+### 9. Target Discovery (`src/core/discover.py` — Phase 9, RAG-only sibling flow)
+
+타겟사가 정해지지 않은 상태에서 "우리 제품이 누구에게 팔릴까" 를 RAG 만으로 역추론하는 별도 entry. 6단 파이프라인 (search/fetch/preprocess/...) 을 거치지 않고 retrieve 만 사용 → Sonnet 1회 → flat yaml + grouped md 페어 출력.
+
+```
+[Input: lang, n_industries=5, n_per_industry=5, seed_summary?]
+        │
+        ▼
+  ┌──────────────────────────┐
+  │  retrieve(seed_query, top_k=20)   │  ChromaDB + bge-m3 (재사용)
+  └──────────────────────────┘
+        │  list[RetrievedChunk]
+        ▼
+  ┌──────────────────────────┐
+  │  manifest_path_for + load_manifest │  seed_doc_count / seed_chunk_count
+  └──────────────────────────┘
+        │
+        ▼
+  ┌──────────────────────────┐
+  │  chat_cached (Sonnet 4.6)         │  knowledge_base 블록만 ephemeral cache
+  │   + retry 1회 (temp +0.1)         │  parse_discovery 로 schema/count 검증
+  └──────────────────────────┘
+        │  DiscoveryResult
+        ▼
+  outputs/discovery_{YYYYMMDD}/
+    ├ candidates.yaml   (flat, 편집 UI / SQLite import 친화)
+    └ report.md         (산업 그루핑, Tier 정렬 table, 사람 검수)
+```
+
+**스키마 (`discover_types.py`):**
+- `Candidate` (pydantic, name/industry/tier/rationale, tier = `Literal["S","A","B","C"]`)
+- `DiscoveryResult` (dataclass, generated_at/seed_doc_count/seed_chunk_count/seed_summary/industry_meta/candidates/usage)
+- `parse_discovery(raw, n_industries, n_per_industry)` — JSON object-first 추출 + count 강제 + 산업 키 매핑 검증
+- 자체 `_extract_json_object` (raw → fenced → object 만) — 공유 `proposal_schemas._extract_json` 은 array regex 우선이라 dict 호출자에서 inner list 만 매치되는 함정 회피
+
+**핵심 함수 (`discover.py`):**
+- `discover_targets(*, lang, n_industries=5, n_per_industry=5, seed_summary=None, seed_query="core capabilities and target use cases", output_root=None, top_k=20, client=None, write_artifacts=True) -> DiscoveryResult`
+- system + task 를 `---TASK---` 로 분리 (synthesize 와 같은 패턴), `{n_industries}` / `{n_per_industry}` / `{expected_total}` placeholder 동적 주입
+- `cached_context = <knowledge_base>...` (RAG seed) / `volatile_context = <product_summary>seed_summary</product_summary>` (선택)
+- max_tokens 는 `claude_max_tokens_discover=4000` (synthesize 2000 으로는 25-rationale output ~2.5K 가 truncate)
+- 두 번 실패 시 ValueError, retry 로 못 구하는 truncate 는 max_tokens 재산정으로만 해결 가능
+
+**얇은 어댑터:**
+- `main.py discover` Typer 서브커맨드 — `--lang/--n-industries/--n-per-industry/--seed-summary/--seed-query/--top-k/--output-root/--verbose`
+- `scripts/discover_targets.py` argparse 어댑터 — 운영 cron / `python -m` 호출용 (Typer 없는 환경)
+
+**산출물 페어:**
+- `candidates.yaml` — `{generated_at, seed{doc_count, chunk_count, summary}, industry_meta, candidates: [...flat], usage}`. 향후 backlog 항목 17 (SQLite import → 웹 편집 UI) 의 입력 포맷
+- `report.md` — `# Target Discovery — date` + 시드 메타 헤더 + 산업별 `## name` + `> rationale` + Tier 정렬 (S→A→B→C) Markdown table + 토큰 요약. 사람이 5분 안에 검수 결정
+
+**비용:** Sonnet 1회, 입력 ~3K (RAG 20 chunk + 시스템) + 출력 ~2.5K (25 rationale). 첫 실행 cache_creation, 같은 RAG 재실행 시 cache_read 적중. 실측 ~$0.04 / ~40s.
+
+**MVP 한계 (의도적):** factual 검증 없음 — 회사명 hallucination 가능성 인정. 사람 검수가 후속 단계로 가정. 풀 reverse matching (Brave 검증 + 산업별 활성 이슈 + product fit 점수화) 은 backlog 항목 8.
+
+---
+
 ## 설정 흐름
 - `.env` 로드 → `pydantic-settings` 로 타입 검증된 `Settings` 객체 생성
 - `Settings` 는 전 모듈에서 공유 (의존성 주입)
