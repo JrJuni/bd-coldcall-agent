@@ -6,6 +6,7 @@ from typing import Literal
 
 Lang = Literal["en", "ko"]
 Kind = Literal["news", "web"]
+Channel = Literal["target", "related", "competitor"]
 
 
 @dataclass
@@ -23,6 +24,11 @@ class Article:
     translated_body: str = ""
     tags: list[str] = field(default_factory=list)
     dedup_group_id: int = -1  # -1 = solo; otherwise group index
+    # Phase 8 — collection channel. "target" = the company itself,
+    # "related" = our-product ↔ company intent matches, "competitor" =
+    # competitor product/project news. Default keeps pre-Phase-8 outputs
+    # JSON-loadable.
+    channel: Channel = "target"
 
 
 class SearchProvider(ABC):

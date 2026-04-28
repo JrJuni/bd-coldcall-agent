@@ -66,15 +66,23 @@ def _install_happy_fakes(monkeypatch):
     class _Secrets:
         brave_search_api_key = "stub"
 
-    class _FakeBrave:
-        def __init__(self, _key): ...
-        def __enter__(self): return self
-        def __exit__(self, *a): return False
-        def search(self, q, **kw): return [_article("https://ex.com/a")]
+    def _fake_run_all_channels(*, company, primary_lang, settings, brave_api_key, max_workers=3):
+        return [_article("https://ex.com/a")], {
+            "by_channel": {
+                "target": {"returned": 1, "pool_size": 1},
+                "related": {"returned": 0, "pool_size": 0, "skipped_empty": True},
+                "competitor": {"returned": 0, "pool_size": 0, "skipped_empty": True},
+            },
+            "channel_errors": {},
+            "total_after_xchannel_dedup": 1,
+        }
 
     monkeypatch.setattr(nodes, "get_secrets", lambda: _Secrets())
-    monkeypatch.setattr(nodes, "BraveSearch", _FakeBrave)
-    monkeypatch.setattr(nodes, "fetch_bodies_parallel", lambda articles: list(articles))
+    monkeypatch.setattr(nodes._channels, "run_all_channels", _fake_run_all_channels)
+    monkeypatch.setattr(
+        nodes, "fetch_bodies_parallel",
+        lambda articles, **kw: list(articles),
+    )
     monkeypatch.setattr(
         nodes, "preprocess_articles",
         lambda articles, *, target_lang=None: (
@@ -199,7 +207,7 @@ def test_search_failure_still_produces_run_summary(monkeypatch, tmp_path: Path):
         raise AssertionError("downstream node ran after failure")
 
     monkeypatch.setattr(nodes, "fetch_bodies_parallel", _should_not_run)
-    monkeypatch.setattr(nodes, "preprocess_articles", _should_not_run)
+    monkeypatch.setattr(nodes, "preprocess_articles", lambda *a, **kw: _should_not_run())
 
     graph = build_graph()
     state = new_state(

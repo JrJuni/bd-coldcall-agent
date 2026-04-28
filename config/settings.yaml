@@ -8,6 +8,7 @@ llm:
   claude_model: claude-sonnet-4-6
   claude_max_tokens_synthesize: 2000
   claude_max_tokens_draft: 4000
+  claude_max_tokens_discover: 4000
   claude_temperature: 0.3
   claude_rag_top_k: 8
 
@@ -24,6 +25,13 @@ search:
   # Dedup: conservative defaults — only remove near-exact reprints.
   dedup_similarity_threshold: 0.90
   min_articles_after_dedup: 10
+  # Phase 8 — per-channel article cap applied at preprocess time.
+  max_articles_per_channel:
+    target: 20
+    related: 15
+    competitor: 5
+  # Phase 8 — fetch_bodies_parallel worker count.
+  fetch_workers: 5
   translations_ko_to_en:
     # Phrases (checked exact first)
     "AI 산업": "AI industry"

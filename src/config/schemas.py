@@ -29,6 +29,9 @@ class LLMSettings(BaseModel):
     claude_model: str
     claude_max_tokens_synthesize: int = 2000
     claude_max_tokens_draft: int = 4000
+    # Phase 9 — discover emits 5 industries + 25 candidates with rationales,
+    # which routinely overflows 2000 tokens. Default 4000 leaves headroom.
+    claude_max_tokens_discover: int = 4000
     claude_temperature: float = 0.3
     claude_rag_top_k: int = 8
 
@@ -46,6 +49,35 @@ class SearchSettings(BaseModel):
     dedup_similarity_threshold: float = 0.90
     min_articles_after_dedup: int = 10
     translations_ko_to_en: dict[str, str] = Field(default_factory=dict)
+    # Phase 8 — per-channel article cap applied at preprocess time.
+    # Keys: "target", "related", "competitor". Total ~40 keeps Exaone 4bit
+    # within RTX 4070 16GB headroom.
+    max_articles_per_channel: dict[str, int] = Field(
+        default_factory=lambda: {"target": 20, "related": 15, "competitor": 5}
+    )
+    # Phase 8 — fetch_bodies_parallel worker count (raise as channel volume grows).
+    fetch_workers: int = 5
+
+
+class CompetitorsConfig(BaseModel):
+    """Shape of `config/competitors.yaml` — Phase 8 (B) channel."""
+
+    direct: list[str] = Field(default_factory=list)
+    adjacent: list[str] = Field(default_factory=list)
+
+
+class IntentTierEntry(BaseModel):
+    label: str
+    tier: Literal["S", "A", "B", "C"]
+    description: str = ""
+    keywords_en: list[str] = Field(default_factory=list)
+    keywords_ko: list[str] = Field(default_factory=list)
+
+
+class IntentTiersConfig(BaseModel):
+    """Shape of `config/intent_tiers.yaml` — Phase 8 (A) Related channel."""
+
+    intents: list[IntentTierEntry] = Field(default_factory=list)
 
 
 class RAGSettings(BaseModel):

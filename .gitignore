@@ -24,11 +24,13 @@ ENV/
 
 # User configuration (contains BD data)
 config/targets.yaml
+config/competitors.yaml
+config/intent_tiers.yaml
 
-# Data & outputs (keep company_docs/README.md as guide)
+# Data & outputs
 data/vectorstore/
 data/company_docs/*
-!data/company_docs/README.md
+!data/company_docs/.gitkeep
 data/checkpoints.db
 data/checkpoints.db-*
 outputs/
@@ -50,3 +52,6 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# Personal study notes (not shared)
+study/

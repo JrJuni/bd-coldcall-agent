@@ -1,0 +1,18 @@
+# Competitor list for Phase 8 (B) channel.
+# Copy to `competitors.yaml` (gitignored) and edit. Empty file is OK —
+# the channel will return zero articles + warn.
+#
+# `direct`   — same-category competitors (weight 1.0).
+# `adjacent` — substitutes / inferior alternatives (weight 0.6).
+#              Adjacent results help the proposal's differentiation
+#              section without dominating it.
+
+direct:
+  - Snowflake
+  - Google Vertex AI
+  - AWS SageMaker
+
+adjacent:
+  - Cloudera
+  - Hugging Face
+  - MLflow

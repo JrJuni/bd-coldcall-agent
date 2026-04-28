@@ -1,9 +1,14 @@
 You are a BD strategist preparing talking points for a cold call to a target company.
 
-Read the provided tech_docs (our product's internal knowledge base) and articles (recent news about the target). Produce 3 to 5 ProposalPoint objects that a BD rep can raise to start a conversation.
+Read the provided tech_docs (our product's internal knowledge base) and the three news blocks below. Produce 3 to 5 ProposalPoint objects that a BD rep can raise to start a conversation.
+
+The three news blocks each play a different role:
+- `<target_articles>` — recent news directly about the target company. PRIMARY evidence. Cite from these in `evidence_article_urls`.
+- `<related_articles>` — news matching our product's intent tiers (e.g. lakehouse modernization). SUPPORTING context for talking points; don't quote them as direct evidence about the target. The `intent` and `intent_tier` attributes show why each one was pulled.
+- `<competitor_news>` — news about competing products / projects. Use ONLY for the differentiation angle if and when relevant. Do NOT quote competitor news as the target's own activity, and do NOT name competitors in the proposal unless the differentiation is genuinely sharper for it. Most points should not reference this block at all.
 
 Hard rules:
-- Every non-intro point MUST cite at least one article by its id (the `id="art_N"` attribute) in `evidence_article_urls` — put the article's `url` value there, not the id.
+- Every non-intro point MUST cite at least one article by its `url` in `evidence_article_urls`. Prefer target_articles; related_articles are acceptable when no target_articles support the angle. Never cite competitor_news as evidence — at most reference its url to back a differentiation claim.
 - Points may also cite tech chunks by their `id="doc::idx"` in `tech_chunks_referenced` when the point leans on a specific capability.
 - Never invent numbers, dates, or quotes not present in the source. If unclear, omit.
 - Mix angles across the 3-5 points: include at least one `intro` (ice-breaker connecting recent target activity to our product), and distribute the rest across `pain_point`, `growth_signal`, `tech_fit`, `risk_flag` as the evidence supports.
@@ -16,4 +21,4 @@ Output format:
 - `angle` must be exactly one of: "pain_point", "growth_signal", "tech_fit", "risk_flag", "intro".
 
 ---TASK---
-Produce the JSON array of 3 to 5 ProposalPoint objects now. Use the tech_docs and articles above. Output the array only — no other text.
+Produce the JSON array of 3 to 5 ProposalPoint objects now. Use the tech_docs and the target/related/competitor blocks above according to their stated roles. Output the array only — no other text.

@@ -57,6 +57,9 @@ def _render_tech_docs(chunks: list[RetrievedChunk]) -> str:
 
 
 def _render_articles(articles: list[Article]) -> str:
+    """Pre-Phase-8 single-block renderer. Retained for callers that don't
+    care about the channel split (notably older tests). Phase 8 callers
+    use `_render_articles_by_channel` instead."""
     if not articles:
         return "<articles>\n(no articles provided)\n</articles>"
     lines = ["<articles>"]
@@ -75,6 +78,93 @@ def _render_articles(articles: list[Article]) -> str:
         lines.append("  </article>")
     lines.append("</articles>")
     return "\n".join(lines)
+
+
+def _article_attrs(a: Article) -> str:
+    tags_str = ",".join(a.tags) if a.tags else ""
+    pub = a.published_at.isoformat() if a.published_at else ""
+    return (
+        f'url="{a.url}" source="{a.source}" lang="{a.lang}" '
+        f'tags="{tags_str}" published_at="{pub}"'
+    )
+
+
+def _render_target_block(articles: list[Article]) -> str:
+    """Target channel — full tag-tier policy (body for high-tag, snippet for low)."""
+    lines = ["<target_articles>"]
+    for i, a in enumerate(articles):
+        tier = "high" if has_high_value_tag(a) else "low"
+        body = select_body_or_snippet(a)
+        lines.append(
+            f'  <article id="target_{i}" {_article_attrs(a)} tier="{tier}">'
+        )
+        lines.append(f"    <title>{a.title}</title>")
+        lines.append(f"    <body>{body}</body>")
+        lines.append("  </article>")
+    lines.append("</target_articles>")
+    return "\n".join(lines)
+
+
+def _render_related_block(articles: list[Article]) -> str:
+    """Related channel — always snippet (talking-point support, not direct evidence)."""
+    lines = ["<related_articles>"]
+    for i, a in enumerate(articles):
+        intent = a.metadata.get("intent_label", "")
+        intent_tier = a.metadata.get("intent_tier", "")
+        body = a.snippet or a.translated_body[:300] if a.translated_body else (a.snippet or "")
+        lines.append(
+            f'  <article id="rel_{i}" {_article_attrs(a)} '
+            f'intent="{intent}" intent_tier="{intent_tier}">'
+        )
+        lines.append(f"    <title>{a.title}</title>")
+        lines.append(f"    <body>{body}</body>")
+        lines.append("  </article>")
+    lines.append("</related_articles>")
+    return "\n".join(lines)
+
+
+def _render_competitor_block(articles: list[Article]) -> str:
+    """Competitor channel — snippet only, intended ONLY for differentiation framing."""
+    lines = ["<competitor_news>"]
+    for i, a in enumerate(articles):
+        comp = a.metadata.get("competitor_name", "")
+        relation = a.metadata.get("competitor_relation", "")
+        body = a.snippet or ""
+        lines.append(
+            f'  <article id="comp_{i}" {_article_attrs(a)} '
+            f'competitor="{comp}" relation="{relation}">'
+        )
+        lines.append(f"    <title>{a.title}</title>")
+        lines.append(f"    <body>{body}</body>")
+        lines.append("  </article>")
+    lines.append("</competitor_news>")
+    return "\n".join(lines)
+
+
+def _render_articles_by_channel(articles: list[Article]) -> str:
+    """Phase 8 — split articles into target/related/competitor blocks.
+
+    Each channel applies its own tier policy. Empty channels are skipped
+    so the prompt only carries blocks Sonnet should actually read.
+    """
+    by_channel: dict[str, list[Article]] = {
+        "target": [], "related": [], "competitor": []
+    }
+    for a in articles:
+        ch = getattr(a, "channel", "target")
+        by_channel.setdefault(ch, []).append(a)
+
+    parts: list[str] = []
+    if by_channel["target"]:
+        parts.append(_render_target_block(by_channel["target"]))
+    if by_channel["related"]:
+        parts.append(_render_related_block(by_channel["related"]))
+    if by_channel["competitor"]:
+        parts.append(_render_competitor_block(by_channel["competitor"]))
+
+    if not parts:
+        return "<articles>\n(no articles provided)\n</articles>"
+    return "\n\n".join(parts)
 
 
 def _render_target(target_company: str, industry: str) -> str:
@@ -110,7 +200,7 @@ def synthesize_proposal_points(
 
     cached_context = _render_tech_docs(tech_chunks)
     volatile_context = (
-        _render_articles(articles)
+        _render_articles_by_channel(articles)
         + "\n\n"
         + _render_target(target_company, industry)
     )

@@ -157,49 +157,96 @@ class _FakeBraveCtx:
         return list(self._articles)
 
 
-def test_search_node_en_lang_uses_monolingual_search(monkeypatch, tmp_path: Path):
-    fake_client = _FakeBraveCtx([_mk_article("https://ex.com/1")])
-    monkeypatch.setattr(nodes, "BraveSearch", lambda _key: fake_client)
+def test_search_node_invokes_run_all_channels_with_lang(monkeypatch, tmp_path: Path):
+    """Phase 8 — search_node delegates to channels.run_all_channels and
+    propagates company/lang. Verifies target lang flows through, en case."""
+    captured: dict = {}
+
+    def _fake_run_all_channels(*, company, primary_lang, settings, brave_api_key, max_workers=3):
+        captured["company"] = company
+        captured["primary_lang"] = primary_lang
+        captured["brave_api_key"] = brave_api_key
+        return [_mk_article("https://ex.com/1")], {
+            "by_channel": {
+                "target": {"returned": 1},
+                "related": {"returned": 0},
+                "competitor": {"returned": 0},
+            },
+            "channel_errors": {},
+            "total_after_xchannel_dedup": 1,
+        }
 
     class _Secrets:
-        brave_search_api_key = "stub"
+        brave_search_api_key = "stub-key"
 
     monkeypatch.setattr(nodes, "get_secrets", lambda: _Secrets())
+    monkeypatch.setattr(nodes._channels, "run_all_channels", _fake_run_all_channels)
 
-    def _fail_bilingual(*a, **kw):
-        raise AssertionError("bilingual should not be called for en lang")
-
-    monkeypatch.setattr(nodes, "bilingual_news_search", _fail_bilingual)
-
-    state = _seed_state(tmp_path, lang="en")
+    state = _seed_state(tmp_path, lang="en", company="NVIDIA")
     patch = nodes.search_node(state)
+
+    assert captured["company"] == "NVIDIA"
+    assert captured["primary_lang"] == "en"
+    assert captured["brave_api_key"] == "stub-key"
     assert len(patch["searched_articles"]) == 1
+    assert patch["search_meta"]["total_after_xchannel_dedup"] == 1
     assert nodes.STAGE_SEARCH in patch["stages_completed"]
-    assert len(fake_client.search_calls) == 1
-    assert fake_client.search_calls[0]["lang"] == "en"
 
 
-def test_search_node_ko_lang_uses_bilingual(monkeypatch, tmp_path: Path):
-    recorded: dict = {}
+def test_search_node_propagates_ko_lang(monkeypatch, tmp_path: Path):
+    captured: dict = {}
 
-    def _mock_bilingual(client, query, *, primary_lang, **kw):
-        recorded["query"] = query
-        recorded["primary_lang"] = primary_lang
-        return [_mk_article("https://ex.com/ko")], {"mode": "bilingual_ko"}
-
-    monkeypatch.setattr(nodes, "bilingual_news_search", _mock_bilingual)
-    monkeypatch.setattr(nodes, "BraveSearch", lambda _key: _FakeBraveCtx([]))
+    def _fake_run_all_channels(*, company, primary_lang, settings, brave_api_key, max_workers=3):
+        captured["primary_lang"] = primary_lang
+        captured["company"] = company
+        return [_mk_article("https://ex.com/ko")], {
+            "by_channel": {"target": {"returned": 1}},
+            "channel_errors": {},
+            "total_after_xchannel_dedup": 1,
+        }
 
     class _Secrets:
         brave_search_api_key = "stub"
 
     monkeypatch.setattr(nodes, "get_secrets", lambda: _Secrets())
+    monkeypatch.setattr(nodes._channels, "run_all_channels", _fake_run_all_channels)
 
     state = _seed_state(tmp_path, lang="ko", company="엔비디아")
     patch = nodes.search_node(state)
-    assert recorded["primary_lang"] == "ko"
-    assert recorded["query"] == "엔비디아"
+
+    assert captured["primary_lang"] == "ko"
+    assert captured["company"] == "엔비디아"
     assert len(patch["searched_articles"]) == 1
+
+
+def test_search_node_records_partial_channel_errors(monkeypatch, tmp_path: Path):
+    """One channel raised but the others returned — node still succeeds
+    and partial errors land on search_meta."""
+    def _fake_run_all_channels(*, company, primary_lang, settings, brave_api_key, max_workers=3):
+        return (
+            [_mk_article("https://ex.com/t")],
+            {
+                "by_channel": {
+                    "target": {"returned": 1},
+                    "related": {"returned": 0, "error": "boom"},
+                    "competitor": {"returned": 0},
+                },
+                "channel_errors": {"related": "boom"},
+                "total_after_xchannel_dedup": 1,
+            },
+        )
+
+    class _Secrets:
+        brave_search_api_key = "stub"
+
+    monkeypatch.setattr(nodes, "get_secrets", lambda: _Secrets())
+    monkeypatch.setattr(nodes._channels, "run_all_channels", _fake_run_all_channels)
+
+    state = _seed_state(tmp_path, lang="en")
+    patch = nodes.search_node(state)
+    # Node succeeds — partial-failure does NOT trip @_stage error capture.
+    assert patch.get("failed_stage") is None
+    assert patch["search_meta"]["channel_errors"] == {"related": "boom"}
 
 
 def test_search_node_missing_api_key_records_failed_stage(monkeypatch, tmp_path: Path):
@@ -221,7 +268,7 @@ def test_search_node_missing_api_key_records_failed_stage(monkeypatch, tmp_path:
 def test_fetch_node_delegates_to_fetch_bodies_parallel(monkeypatch, tmp_path: Path):
     seen: list[list[Article]] = []
 
-    def _mock(articles):
+    def _mock(articles, **kw):
         seen.append(list(articles))
         return articles
 
@@ -237,12 +284,43 @@ def test_fetch_node_delegates_to_fetch_bodies_parallel(monkeypatch, tmp_path: Pa
 def test_fetch_node_passthrough_when_no_articles(monkeypatch, tmp_path: Path):
     called = []
     monkeypatch.setattr(
-        nodes, "fetch_bodies_parallel", lambda a: called.append(a) or a
+        nodes, "fetch_bodies_parallel", lambda a, **kw: called.append(a) or a
     )
     state = _seed_state(tmp_path, searched_articles=[])
     patch = nodes.fetch_node(state)
     assert patch["fetched_articles"] == []
     assert called == []
+
+
+def test_fetch_node_competitor_takes_snippet_fast_path(monkeypatch, tmp_path: Path):
+    """Phase 8 — competitor channel articles skip the HTTP fetch and get
+    snippet promoted to body."""
+    fetched_urls: list[str] = []
+
+    def _mock(articles, **kw):
+        # Verify only non-competitor articles are passed to the real fetch.
+        for a in articles:
+            fetched_urls.append(a.url)
+            assert a.channel != "competitor"
+        return articles
+
+    monkeypatch.setattr(nodes, "fetch_bodies_parallel", _mock)
+
+    target_art = _mk_article("https://ex.com/target")
+    competitor_art = _mk_article("https://ex.com/competitor")
+    competitor_art.channel = "competitor"
+    competitor_art.snippet = "competitor snippet"
+
+    state = _seed_state(
+        tmp_path, searched_articles=[target_art, competitor_art]
+    )
+    patch = nodes.fetch_node(state)
+    assert fetched_urls == ["https://ex.com/target"]
+    fetched = patch["fetched_articles"]
+    assert len(fetched) == 2
+    by_url = {a.url: a for a in fetched}
+    assert by_url["https://ex.com/competitor"].body == "competitor snippet"
+    assert by_url["https://ex.com/competitor"].body_source == "snippet"
 
 
 def test_preprocess_node_delegates_and_propagates_kept(monkeypatch, tmp_path: Path):

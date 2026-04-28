@@ -63,6 +63,9 @@ class AgentState(TypedDict, total=False):
     output_dir: Path
     started_at: float
     ended_at: float
+    # Phase 8 — per-channel pool/returned/dropped counts and any
+    # non-fatal channel-level errors. Populated by `search_node`.
+    search_meta: dict[str, Any]
 
 
 def empty_usage() -> dict[str, int]:
@@ -125,6 +128,7 @@ def new_state(
         "current_stage": None,
         "run_id": run_id,
         "output_dir": output_dir,
+        "search_meta": {},
     }
     if top_k is not None:
         state["top_k"] = top_k

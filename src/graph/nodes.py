@@ -26,13 +26,12 @@ from typing import Any, Callable
 
 from src.config.loader import get_secrets, get_settings
 from src.graph.errors import StageError
-from src.graph.state import AgentState, latest_articles, merge_usage
+from src.graph.state import AgentState, merge_usage
 from src.llm.draft import draft_proposal
 from src.llm.preprocess import preprocess_articles
 from src.llm.synthesize import synthesize_proposal_points
 from src.rag.retriever import retrieve
-from src.search.bilingual import bilingual_news_search
-from src.search.brave import BraveSearch
+from src.search import channels as _channels  # module-level import for monkeypatch safety
 from src.search.fetcher import fetch_bodies_parallel
 
 
@@ -90,7 +89,12 @@ def _stage(name: str) -> Callable[[Callable[[AgentState], dict]], Callable[[Agen
 
 @_stage(STAGE_SEARCH)
 def search_node(state: AgentState) -> dict:
-    """Brave search for recent articles about the target company."""
+    """Phase 8 — multi-channel Brave search (target / related / competitor).
+
+    Per-channel failure is captured in `search_meta.channel_errors`; the
+    node only fails if every channel raises (then the partial merge is
+    empty and persist still happens via the conditional router).
+    """
     settings = get_settings()
     secrets = get_secrets()
     if not secrets.brave_search_api_key:
@@ -98,45 +102,72 @@ def search_node(state: AgentState) -> dict:
 
     company = state["company"]
     lang = state.get("lang", settings.search.default_lang)
-    days = settings.search.days
-    count = settings.search.max_articles
 
-    use_bilingual = (lang == "ko" and settings.search.bilingual_on_ko)
+    articles, search_meta = _channels.run_all_channels(
+        company=company,
+        primary_lang=lang,
+        settings=settings,
+        brave_api_key=secrets.brave_search_api_key,
+    )
 
-    with BraveSearch(secrets.brave_search_api_key) as client:
-        if use_bilingual:
-            articles, _meta = bilingual_news_search(
-                client,
-                company,
-                primary_lang=lang,
-                translations_ko_to_en=settings.search.translations_ko_to_en,
-                days=days,
-                total_count=count,
-                min_foreign_ratio=settings.search.min_foreign_ratio,
-            )
-        else:
-            articles = client.search(
-                company, lang=lang, days=days, kind="news", count=count
-            )
-
-    _LOGGER.info("[search] company=%s lang=%s → %d articles", company, lang, len(articles))
-    return {"searched_articles": articles}
+    by_channel = search_meta.get("by_channel", {})
+    counts = {
+        name: meta.get("returned", 0) for name, meta in by_channel.items()
+    }
+    _LOGGER.info(
+        "[search] company=%s lang=%s → target=%d related=%d competitor=%d "
+        "(merged=%d after x-channel dedup)",
+        company,
+        lang,
+        counts.get("target", 0),
+        counts.get("related", 0),
+        counts.get("competitor", 0),
+        len(articles),
+    )
+    return {"searched_articles": articles, "search_meta": search_meta}
 
 
 @_stage(STAGE_FETCH)
 def fetch_node(state: AgentState) -> dict:
-    """Fill article bodies via trafilatura + ThreadPool."""
+    """Fill article bodies via trafilatura + ThreadPool.
+
+    Phase 8: `competitor` channel articles take the snippet-only fast
+    path (no HTTP fetch) — saves N×timeout seconds and Sonnet only ever
+    sees their snippets via tag-tier downgrade anyway.
+    """
     articles = list(state.get("searched_articles") or [])
     if not articles:
         return {"fetched_articles": articles}
-    enriched = fetch_bodies_parallel(articles)
-    full = sum(1 for a in enriched if a.body_source == "full")
-    snippet = sum(1 for a in enriched if a.body_source == "snippet")
+
+    from dataclasses import replace as _dc_replace
+
+    settings = get_settings()
+    workers = settings.search.fetch_workers
+
+    to_fetch = [a for a in articles if a.channel != "competitor"]
+    fast_path = [a for a in articles if a.channel == "competitor"]
+
+    enriched = list(fetch_bodies_parallel(to_fetch, max_workers=workers)) if to_fetch else []
+    fast_filled = [
+        _dc_replace(
+            a,
+            body=a.snippet,
+            body_source="snippet" if a.snippet else "empty",
+        )
+        for a in fast_path
+    ]
+
+    # Preserve original input order — articles came in mixed by channel.
+    by_url = {a.url: a for a in enriched + fast_filled}
+    final = [by_url.get(a.url, a) for a in articles]
+
+    full = sum(1 for a in final if a.body_source == "full")
+    snippet = sum(1 for a in final if a.body_source == "snippet")
     _LOGGER.info(
-        "[fetch] total=%d full=%d snippet_fallback=%d",
-        len(enriched), full, snippet,
+        "[fetch] total=%d full=%d snippet_fallback=%d (competitor fast-path=%d)",
+        len(final), full, snippet, len(fast_filled),
     )
-    return {"fetched_articles": enriched}
+    return {"fetched_articles": final}
 
 
 @_stage(STAGE_PREPROCESS)

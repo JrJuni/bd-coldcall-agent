@@ -42,12 +42,22 @@ def get_embedder():
         return _MODEL
 
 
-def embed_texts(texts: list[str]) -> np.ndarray:
-    """Return a (N, D) L2-normalized embedding matrix (cosine-ready)."""
+def embed_texts(texts: list[str], *, batch_size: int = 8) -> np.ndarray:
+    """Return a (N, D) L2-normalized embedding matrix (cosine-ready).
+
+    `batch_size` defaults to 8 — small enough that Exaone 4bit (~6GB) and
+    bge-m3 (~2.5GB) co-exist in 16GB GPU memory even when dedup runs on
+    ~40 long article bodies. Increase only if running on a bigger card.
+    """
     if not texts:
         return np.zeros((0, 1), dtype=np.float32)
     model = get_embedder()
-    emb = model.encode(texts, normalize_embeddings=True, convert_to_numpy=True)
+    emb = model.encode(
+        texts,
+        normalize_embeddings=True,
+        convert_to_numpy=True,
+        batch_size=batch_size,
+    )
     return np.asarray(emb, dtype=np.float32)
 
 
@@ -96,13 +106,22 @@ class DedupReport:
         )
 
 
+_CHANNEL_RANK = {"target": 0, "related": 1, "competitor": 2}
+
+
 def _pick_representative(indices: list[int], articles: list[Article]) -> int:
-    """Deterministic rep: longest body, tie → most recent published_at, tie → lowest index."""
+    """Deterministic rep across a dedup group.
+
+    Sort key (lower wins): channel rank → -body length → -timestamp → index.
+    Phase 8: channel rank ensures `target` survives over `related` /
+    `competitor` when the same story surfaces from multiple channels.
+    """
     def sort_key(i: int):
         a = articles[i]
+        ch_rank = _CHANNEL_RANK.get(getattr(a, "channel", "target"), 99)
         body_len = len(a.translated_body or a.body or a.snippet)
         ts = a.published_at.timestamp() if a.published_at else 0.0
-        return (-body_len, -ts, i)
+        return (ch_rank, -body_len, -ts, i)
     return min(indices, key=sort_key)
 
 
@@ -127,7 +146,23 @@ def dedup_articles(
             pairs_considered=0, pairs_merged=0, stopped_by_floor=False,
         )
 
-    texts = [a.translated_body or a.body or a.snippet or a.title for a in articles]
+    # Truncate to keep peak GPU memory bounded — dedup similarity at ≥0.90
+    # is dominated by lede / first paragraphs, so 3000 chars is plenty.
+    # Without this, ~40 articles × ~3500 chars each can OOM bge-m3 on a
+    # 16GB card while Exaone is still resident.
+    texts = [
+        (a.translated_body or a.body or a.snippet or a.title or "")[:3000]
+        for a in articles
+    ]
+    # Free any cached GPU blocks Exaone left behind so bge-m3's batch
+    # allocation has contiguous room.
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:  # noqa: BLE001 — defensive, never fail dedup over cleanup
+        pass
+
     embs = embed_texts(texts)
     sim = embs @ embs.T  # cosine, since rows are unit-norm
 
