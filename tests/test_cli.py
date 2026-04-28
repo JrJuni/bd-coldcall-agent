@@ -147,3 +147,67 @@ def test_ingest_propagates_nonzero_exit(monkeypatch):
 
     result = runner.invoke(cli.app, ["ingest", "--verify"])
     assert result.exit_code == 2
+
+
+# ---- discover ------------------------------------------------------------
+
+
+def _fake_discover_result():
+    from datetime import datetime, timezone
+    from src.core.discover_types import Candidate, DiscoveryResult
+
+    return DiscoveryResult(
+        generated_at=datetime(2026, 4, 28, tzinfo=timezone.utc),
+        seed_doc_count=1,
+        seed_chunk_count=64,
+        seed_summary="Lakehouse + AI platform.",
+        industry_meta={"fintech": "r"},
+        candidates=[
+            Candidate(name="Stripe", industry="fintech", tier="S", rationale="r"),
+        ],
+        usage={
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+        },
+    )
+
+
+def test_discover_forwards_args(monkeypatch, tmp_path: Path):
+    captured: dict = {}
+
+    def _fake_discover(**kwargs):
+        captured.update(kwargs)
+        return _fake_discover_result()
+
+    monkeypatch.setattr("src.core.discover.discover_targets", _fake_discover)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "discover",
+            "--lang", "en",
+            "--n-industries", "3",
+            "--n-per-industry", "4",
+            "--seed-summary", "test summary",
+            "--top-k", "10",
+            "--output-root", str(tmp_path),
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+    assert captured["lang"] == "en"
+    assert captured["n_industries"] == 3
+    assert captured["n_per_industry"] == 4
+    assert captured["seed_summary"] == "test summary"
+    assert captured["top_k"] == 10
+    assert captured["output_root"] == tmp_path
+
+
+def test_discover_rejects_invalid_lang(monkeypatch):
+    monkeypatch.setattr(
+        "src.core.discover.discover_targets",
+        lambda **kw: (_ for _ in ()).throw(AssertionError("should not be called")),
+    )
+    result = runner.invoke(cli.app, ["discover", "--lang", "fr"])
+    assert result.exit_code != 0

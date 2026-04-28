@@ -126,6 +126,89 @@ def run_cmd(
         raise typer.Exit(code=1)
 
 
+@app.command("discover")
+def discover_cmd(
+    lang: str = typer.Option("en", "--lang", help="Output language: 'en' or 'ko'."),
+    n_industries: int = typer.Option(5, "--n-industries", help="Number of industries to propose."),
+    n_per_industry: int = typer.Option(5, "--n-per-industry", help="Number of companies per industry."),
+    seed_summary: Optional[str] = typer.Option(
+        None,
+        "--seed-summary",
+        help="One-paragraph product summary injected as volatile context.",
+    ),
+    seed_query: str = typer.Option(
+        "core capabilities and target use cases",
+        "--seed-query",
+        help="RAG retrieval query that picks the chunks Sonnet sees.",
+    ),
+    top_k: int = typer.Option(20, "--top-k", help="Number of RAG chunks to seed."),
+    output_root: Optional[Path] = typer.Option(
+        None,
+        "--output-root",
+        help="Parent directory for the discovery_<date>/ folder. Defaults to settings.output.dir.",
+    ),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable INFO logs."),
+) -> None:
+    """Phase 9 — propose tiered candidate companies from the RAG index alone."""
+    if lang not in ("en", "ko"):
+        raise typer.BadParameter("--lang must be 'en' or 'ko'", param_hint="--lang")
+    if n_industries <= 0 or n_per_industry <= 0:
+        raise typer.BadParameter("--n-industries and --n-per-industry must be positive")
+
+    _setup_logging(verbose)
+    from src.core.discover import discover_targets
+
+    typer.echo(
+        f"→ discover: lang={lang} {n_industries} industries × {n_per_industry} companies"
+    )
+    result = discover_targets(
+        lang=lang,  # type: ignore[arg-type]
+        n_industries=n_industries,
+        n_per_industry=n_per_industry,
+        seed_summary=seed_summary,
+        seed_query=seed_query,
+        output_root=output_root,
+        top_k=top_k,
+    )
+
+    typer.echo("")
+    typer.echo("=" * 60)
+    typer.echo(
+        f"seed             : {result.seed_doc_count} doc(s), "
+        f"{result.seed_chunk_count} chunk(s)"
+    )
+    typer.echo(f"industries       : {len(result.industry_meta)}")
+    typer.echo(f"candidates       : {len(result.candidates)}")
+    usage = result.usage or {}
+    typer.echo(
+        "sonnet usage     : "
+        f"in={usage.get('input_tokens', 0)} "
+        f"out={usage.get('output_tokens', 0)} "
+        f"cache_read={usage.get('cache_read_input_tokens', 0)} "
+        f"cache_write={usage.get('cache_creation_input_tokens', 0)}"
+    )
+
+    date_str = result.generated_at.strftime("%Y%m%d")
+    from src.config.loader import get_settings as _get_settings
+
+    settings = _get_settings()
+    root = Path(output_root or settings.output.dir)
+    if not root.is_absolute():
+        root = PROJECT_ROOT / root
+    date_dir = root / f"discovery_{date_str}"
+    yaml_path = date_dir / "candidates.yaml"
+    md_path = date_dir / "report.md"
+    try:
+        yaml_rel = yaml_path.relative_to(PROJECT_ROOT)
+        md_rel = md_path.relative_to(PROJECT_ROOT)
+    except ValueError:
+        yaml_rel = yaml_path
+        md_rel = md_path
+    typer.echo("")
+    typer.echo(f"[OK] candidates    -> {yaml_rel}")
+    typer.echo(f"[OK] report        -> {md_rel}")
+
+
 @app.command("ingest")
 def ingest_cmd(
     local_dir: Optional[Path] = typer.Option(
