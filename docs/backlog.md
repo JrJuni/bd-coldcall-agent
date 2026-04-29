@@ -92,15 +92,15 @@
 
 ### 17. 티어리스트 편집 웹 UI (Phase 9 후속)
 
+- **상태 (2026-04-30)**: **Phase 10 의 P10-2 로 흡수 진행 중.** `data/app.db` (`src/api/db.py`) 의 `discovery_runs` / `discovery_candidates` 테이블은 P10-0 에서 이미 생성. 이 항목은 Phase 10 8-탭 구조의 일부로 `/discover` 페이지 + import/edit/recompute/promote 흐름이 구현되면 close.
+- (이전 스케치 — 참고용 보존)
 - **왜**: Phase 9 산출물 `candidates.yaml` (25 행 flat) 을 사람이 검수·편집해야 실제 BD 액션 (targets.yaml 등록) 이 됨. CLI 로 yaml 직접 편집은 비-개발자 BD 인력에게 진입 장벽.
 - **스케치**:
-  - **임포트** — `POST /discover/import` 가 yaml 업로드 → SQLite `discovered_candidates` 테이블 (run_id / generated_at / industry / name / tier / rationale / status [active|archived|promoted]).
-  - **편집 UI** — `/discover` 페이지: sortable·filterable·editable table view. 컬럼: tier (드롭다운 S/A/B/C) / company / industry / rationale / actions. 행 추가·이동(industry 변경)·삭제·티어 변경 모두 인라인.
+  - **임포트** — `POST /discovery/import` 가 yaml 업로드 → SQLite `discovery_candidates` 테이블 (run_id / generated_at / industry / name / scores_json / final_score / tier / rationale / status [active|archived|promoted]).
+  - **편집 UI** — `/discover` 페이지: sortable·filterable·editable table view. 컬럼: tier (드롭다운 S/A/B/C) / company / industry / scores 6개 / rationale / actions. 행 추가·이동·삭제·점수 인라인 편집.
+  - **scoring 엔진 재계산** — weights 슬라이더 → `POST /discovery/recompute` (LLM 호출 0원, `src/core/scoring.py` 만 호출).
   - **export** — "Export YAML" 버튼 → 편집된 candidates.yaml 다시 다운로드.
-  - **targets.yaml 자동 추가** — "Promote to targets" 액션 → `config/targets.yaml::targets` 에 `{name, industry, aliases:[], notes: rationale}` append 후 status="promoted".
-- **재사용**: Phase 7 인프라 (FastAPI / Next.js / SqliteSaver) 그대로. RunStore 패턴을 `DiscoveryStore` 로 미러.
-- **신규 entry**: `/discover` 탭 + `POST /discover/import` / `GET /discover/runs` / `PATCH /discover/candidates/{id}` / `POST /discover/promote/{id}`.
-- **의존성**: Phase 9 yaml 산출물 (✅). Phase 7 웹 인프라 (✅). 즉시 착수 가능.
+  - **targets.yaml 자동 추가** — "Promote to targets" 액션 → `targets` 테이블 에 `{name, industry, notes: rationale, created_from: discovery_promote, discovery_candidate_id}` insert 후 candidate.status="promoted".
 
 ### 9. 검색 쿼리 고도화 (multi-intent merge)
 

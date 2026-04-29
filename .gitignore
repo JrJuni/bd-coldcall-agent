@@ -34,6 +34,8 @@ data/company_docs/*
 !data/company_docs/.gitkeep
 data/checkpoints.db
 data/checkpoints.db-*
+data/app.db
+data/app.db-*
 outputs/
 logs/
 
@@ -53,6 +55,9 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# Claude Code (per-user agent state)
+.claude/
 
 # Personal study notes (not shared)
 study/

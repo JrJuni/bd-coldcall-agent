@@ -206,6 +206,13 @@ GET  /ingest/tasks/{task_id}   → 상태
 - API 는 `RunRecord` 인메모리에만 보관 (프로세스 재시작 시 소멸). LangGraph 체크포인트만 `API_CHECKPOINT_DB` 에 영속화 — 실행 이력 전용 테이블은 장기 과제
 - 프로토콜별 레이아웃은 백엔드가 `outputs/{company}_{YYYYMMDD}/` 로 그대로 쓰며, `/runs/{run_id}` 응답의 `output_dir` 필드로 노출
 
+**Phase 10 확장 (진행 중) — `data/app.db` 분리:**
+- `src/api/db.py` 가 langgraph `SqliteSaver` (체크포인트 전용) 와는 **다른** SQLite 파일에 8-탭 UI 상태를 영속화. 이유: SqliteSaver 는 자기 스키마 단독 소유를 가정하므로 app 테이블을 섞으면 업그레이드 시 충돌 위험
+- 5 테이블: `discovery_runs` / `discovery_candidates` (FK CASCADE) / `targets` (FK SET NULL) / `interactions` (FK SET NULL) / `news_runs`
+- `init_db()` 는 `CREATE TABLE IF NOT EXISTS` + `executescript` 로 idempotent — 매 boot 의 lifespan 에서 호출 가능
+- `connect()` 컨텍스트 매니저: `row_factory=Row`, `PRAGMA foreign_keys=ON`, 정상 종료 시 commit / 예외 시 rollback / 항상 close
+- env 노출: `API_APP_DB` (기본 `data/app.db`)
+
 ### 8. Web UI (`web/` — Phase 7, Next.js 15 App Router)
 
 - `/` 폼 → `POST /runs` → `/runs/[id]` 리다이렉트
@@ -213,6 +220,12 @@ GET  /ingest/tasks/{task_id}   → 상태
 - `/rag` — `GET /ingest/status` 조회 + `POST /ingest` 트리거 (notion/force/dry_run 토글). 업로드/삭제 UI 는 장기 과제
 
 프론트는 `NEXT_PUBLIC_API_BASE_URL` 만 읽고 자체 state 는 없음 — 쉽게 교체/확장 가능.
+
+**Phase 10 진행 중 — 8-탭 확장 (P10-0 머지됨):**
+- `web/src/components/Nav.tsx` — `usePathname()` 기반 active state 의 8-탭 네비. `layout.tsx` 헤더에 마운트
+- 8 탭: Home (`/`) / Daily News (`/news`) / Discovery (`/discover`) / Targets (`/targets`) / Proposals (`/proposals`) / RAG Docs (`/rag`) / 사업 기록 (`/interactions`) / Settings (`/settings`)
+- P10-0 시점에 stub 페이지 6개 + 공유 `StubPage.tsx` (제목 + ship PR 라벨 + 책임 설명) 로 골격 완성. 실제 기능은 P10-1 ~ P10-8 에서 점진 채움
+- 기존 `/` (Run 폼) + `/runs/[id]` + `/rag` 는 그대로 동작 — Phase 10 은 추가 확장이지 breaking change 아님 (P10-4 에서 Run 폼이 `/proposals/new` 로 이전 예정)
 
 ---
 

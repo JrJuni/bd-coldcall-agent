@@ -27,6 +27,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.checkpoint import build_sqlite_checkpointer, close_checkpointer
 from src.api.config import get_api_settings
+from src.api.db import init_db
 from src.api.routes import health as health_routes
 from src.api.routes import ingest as ingest_routes
 from src.api.routes import runs as runs_routes
@@ -54,6 +55,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             "lifespan: sqlite checkpointer init failed — falling back to in-memory"
         )
         app.state.checkpointer = None
+
+    try:
+        init_db(settings.app_db)
+        app.state.app_db_path = settings.app_db
+        _LOGGER.info("lifespan: app db ready at %s", settings.app_db)
+    except Exception:
+        _LOGGER.exception("lifespan: app db init failed (continuing)")
+        app.state.app_db_path = None
 
     if not settings.skip_warmup:
         try:

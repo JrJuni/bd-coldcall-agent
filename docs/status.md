@@ -297,11 +297,23 @@
     - **재현성·재사용성 데모**: 같은 LLM 응답 (`scores`) 으로 weight 만 바꿔 재계산하면 추가 LLM 호출 0원으로 tier 분포 변동 가능. 다른 제품 (Snowflake/Salesforce 등) 도 `weights.yaml::products.<name>` 추가만으로 재사용 가능 — 본 phase 의 핵심 가치.
     - **남은 한계**: C tier 가 0개. AWS/Azure/GCP 본체·Palantir 자체 lock-in 같은 Strategic Edge 케이스는 sector_leaders.yaml 시드에 안 들어가서 LLM 이 자연 배제 → C 후보 자체가 안 뜸. 후속에서 sector_leaders 에 일부 hyperscaler/lock-in 케이스 의도적 추가 또는 prompt 에 "include 1+ challenger case per industry" 룰 추가 검토.
 
-## 다음 MVP 범위 (Phase 9.1 이후)
-- backlog 항목 17 — 티어리스트 편집 웹 UI (candidates.yaml + scores 편집 → SQLite → yaml export / targets.yaml 자동 추가)
+- **Phase 10 — 8-탭 웹 UI 확장 (진행 중)**
+  - **배경**: Phase 7 웹 UI 는 단일 Run 폼 + Run 상세 + RAG 상태 3 페이지 MVP 컷으로 멈춰 있고, Phase 8/9/9.1 자산 (3채널 검색 / discovery / scoring 엔진) 은 CLI + yaml 산출물에만 노출. 비-개발자 BD 인력의 일상 운영 (아침 뉴스 → 후보 검수 → 제안서 → 콜 기록) 을 yaml 직접 편집 없이 하려면 8-탭 UI 가 필요.
+  - **8-탭 구조 (잠금)**: Home / Daily News / Discovery / Targets / Proposals / RAG Docs / 사업 기록 / Settings. PR 시리즈 P10-0 ~ P10-8 로 쪼개 점진 머지.
+  - **Stream 0 ✅ (P10-0) — DB 스키마 + Nav 골격**
+    - `src/api/db.py` — 신규. `data/app.db` (langgraph checkpoint DB 와 분리) + `init_db()` (idempotent) + `connect()` 컨텍스트 매니저 (row_factory=Row, FK ON, 자동 commit/rollback)
+    - 5 테이블: `discovery_runs` / `discovery_candidates` (FK CASCADE) / `targets` (`discovery_candidate_id` FK SET NULL) / `interactions` (`target_id` FK SET NULL) / `news_runs` + 5 인덱스
+    - `src/api/config.py::ApiSettings` 에 `app_db: Path` 추가 (`API_APP_DB`, default `data/app.db`)
+    - `src/api/app.py` lifespan 에 `init_db()` 훅 (best-effort, 실패 시 warn + continue, `app.state.app_db_path` 노출)
+    - **프론트**: `web/src/components/Nav.tsx` 신규 — 8-탭 네비, `usePathname()` 기반 active 표시. `layout.tsx` 가 헤더에 마운트 (max-w-6xl 로 확장)
+    - **stub 페이지 6개** (`web/src/app/{news,discover,targets,proposals,interactions,settings}/page.tsx`) + 공유 `StubPage.tsx` (제목 + ship PR 표시 + description). 기존 `/` Run 폼 + `/rag` 인덱싱 페이지는 그대로 유지
+    - **테스트**: `tests/test_api_db.py` 9건 — schema 생성·idempotent·parent dir·FK·commit·rollback·CASCADE·SET NULL·lifespan integration. **302 → 311 passed all green**
+  - **다음 PR 후보**: P10-1 (Targets CRUD) → P10-2 (Discovery 핵심) → P10-3 (RAG drag-drop) → P10-4 (Proposals 이전) → P10-5 (Daily News) → P10-6 (사업 기록) → P10-7 (Settings) → P10-8 (Home 대시보드)
+
+## 다음 MVP 범위 (Phase 10 이후)
+- Phase 10 PR 시리즈 진행 (P10-1 ~ P10-8)
 - backlog 항목 18 — NVIDIA Nemotron 활용 검토 (4 sub-track: Exaone 대체 / Sonnet 대체 / synthetic data / multi-model 분업) — 별도 branch 실험
-- backlog P1-1 — 제안서 톤 조정 + 민감 가드 (3 톤 프리셋 + self-critique review_node)
-- backlog P1-2 — drag-drop 웹 RAG 입출력
+- backlog P1-1 — 제안서 톤 조정 + 민감 가드 (3 톤 프리셋 + self-critique review_node) — Phase 10 Settings 탭에 자리 마련 후 구현
 - 추가 discover 실행 1~2회 (다른 RAG 또는 ko 언어) 로 결과 일반화 확인
 
 ---

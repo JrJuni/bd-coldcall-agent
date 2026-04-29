@@ -35,6 +35,7 @@ def _env_list(name: str, default: list[str]) -> list[str]:
 class ApiSettings:
     skip_warmup: bool
     checkpoint_db: Path
+    app_db: Path
     cors_origins: list[str]
 
 
@@ -43,6 +44,7 @@ def get_api_settings() -> ApiSettings:
     return ApiSettings(
         skip_warmup=_env_bool("API_SKIP_WARMUP", False),
         checkpoint_db=Path(os.getenv("API_CHECKPOINT_DB", "data/checkpoints.db")),
+        app_db=Path(os.getenv("API_APP_DB", "data/app.db")),
         cors_origins=_env_list("API_CORS_ORIGINS", ["http://localhost:3000"]),
     )
 
