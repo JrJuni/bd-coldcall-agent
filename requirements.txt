@@ -26,6 +26,8 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 sse-starlette>=2.1.0
 langgraph-checkpoint-sqlite>=2.0.0
+# Phase 10 P10-3 — multipart/form-data uploads (UploadFile)
+python-multipart>=0.0.9
 
 # Test
 pytest>=8.0.0

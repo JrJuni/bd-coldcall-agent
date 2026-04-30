@@ -144,6 +144,39 @@ class RagNamespaceListResponse(BaseModel):
     default: str
 
 
+# ── Phase 10 P10-3 — RAG document management ────────────────────────────
+
+
+class RagNamespaceCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=80)
+
+
+class RagDocumentSummary(BaseModel):
+    filename: str  # path relative to namespace docs root, forward slashes
+    size_bytes: int
+    modified_at: str | None = None
+    extension: str
+    indexed: bool = False
+    chunk_count: int = 0
+
+
+class RagDocumentListResponse(BaseModel):
+    namespace: str
+    documents: list[RagDocumentSummary]
+    indexed_doc_count: int = 0
+
+
+class RagDocumentUploadResponse(BaseModel):
+    namespace: str
+    filename: str
+    size_bytes: int
+
+
+class RagNamespaceDeleteResponse(BaseModel):
+    name: str
+    removed: bool
+
+
 # ── Phase 10 P10-2b — Discovery ──────────────────────────────────────────
 
 

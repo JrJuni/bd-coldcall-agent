@@ -120,6 +120,38 @@ export interface RagNamespaceListResponse {
   default: string;
 }
 
+// ── Phase 10 P10-3 — RAG document management ───────────────────────────
+
+export interface RagNamespaceCreateInput {
+  name: string;
+}
+
+export interface RagDocumentSummary {
+  filename: string;
+  size_bytes: number;
+  modified_at: string | null;
+  extension: string;
+  indexed: boolean;
+  chunk_count: number;
+}
+
+export interface RagDocumentListResponse {
+  namespace: string;
+  documents: RagDocumentSummary[];
+  indexed_doc_count: number;
+}
+
+export interface RagDocumentUploadResponse {
+  namespace: string;
+  filename: string;
+  size_bytes: number;
+}
+
+export interface RagNamespaceDeleteResponse {
+  name: string;
+  removed: boolean;
+}
+
 // ── Phase 10 P10-2b — Discovery ─────────────────────────────────────────
 
 export const WEIGHT_DIMENSIONS = [

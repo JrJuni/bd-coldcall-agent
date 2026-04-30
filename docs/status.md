@@ -300,6 +300,18 @@
 - **Phase 10 — 8-탭 웹 UI 확장 (진행 중)**
   - **배경**: Phase 7 웹 UI 는 단일 Run 폼 + Run 상세 + RAG 상태 3 페이지 MVP 컷으로 멈춰 있고, Phase 8/9/9.1 자산 (3채널 검색 / discovery / scoring 엔진) 은 CLI + yaml 산출물에만 노출. 비-개발자 BD 인력의 일상 운영 (아침 뉴스 → 후보 검수 → 제안서 → 콜 기록) 을 yaml 직접 편집 없이 하려면 8-탭 UI 가 필요.
   - **8-탭 구조 (잠금)**: Home / Daily News / Discovery / Targets / Proposals / RAG Docs / 사업 기록 / Settings. PR 시리즈 P10-0 ~ P10-8 로 쪼개 점진 머지.
+  - **Stream 4 ✅ (P10-3) — RAG 문서 관리 (drag-drop + namespace UI)**
+    - **2026-04-30** — P10-2a 의 namespace 인프라 위에 IDE-workspace 식 UX 를 올림. 신규 유저는 빈 `default` namespace 에서도 자연스럽게 시작 가능 (drag-drop → Re-index → Discovery 사용)
+    - **백엔드 (`src/api/routes/rag.py` 확장)**: 기존 `GET /rag/namespaces` 위에 5개 신규 엔드포인트 — `POST /rag/namespaces` (201, 중복 409, invalid name 422) / `DELETE /rag/namespaces/{ns}` (default 보호 400, 비어있지 않으면 409, `?force=true` 로 강제) / `GET /rag/namespaces/{ns}/documents` (rglob 으로 파일 목록 + manifest 와 cross-ref 해서 `indexed`/`chunk_count` 표시) / `POST /rag/namespaces/{ns}/documents` (multipart UploadFile, 25MB cap, 1MB 청크 스트리밍, 확장자 .md/.txt/.pdf 화이트리스트, traversal 차단) / `DELETE /rag/namespaces/{ns}/documents/{filename:path}` (resolve-and-check inside namespace root, 404)
+    - **schemas.py 신규**: `RagNamespaceCreate` / `RagDocumentSummary` (filename·size·modified·extension·indexed·chunk_count) / `RagDocumentListResponse` (namespace + indexed_doc_count) / `RagDocumentUploadResponse` / `RagNamespaceDeleteResponse`
+    - **path 헬퍼**: `_vectorstore_root()` / `_company_docs_root()` / `_validate_namespace_name` / `_validate_upload_filename` (path separator 차단) / `_resolve_inside` (traversal 차단). 테스트는 `_company_docs_root` 를 monkeypatch 해서 tmp_path 로 리다이렉트
+    - **의존성**: `python-multipart>=0.0.9` 추가 (`requirements.txt`) — FastAPI `UploadFile` 의 multipart/form-data 파서. 기존 conda env 에 설치
+    - **프론트 (`web/src/`)**: `react-dropzone@^15.0.0` 신규 의존성 + `RagDocumentDropzone.tsx` 컴포넌트 (drag-drop, ext 화이트리스트, 25MB cap, 진행 상태 표시, rejected 파일 에러 누적). 기존 stub `/rag` 페이지를 namespace switcher + meta + Drop zone + 문서 테이블 (Indexed/Pending 뱃지 + chunk_count + Delete) + Re-index 버튼 (dry/real) 으로 전면 재작성
+    - **신규 유저 관점 (feedback_new_user_lens)**: namespace 비어있을 때 "이 namespace 는 비어있습니다 — 위 드롭 영역으로 .md/.txt/.pdf 업로드 후 Re-index" empty state. `default` 항상 노출 (드롭다운 fallback). 새 namespace 생성은 `prompt()` 인라인. namespace 삭제는 `default` 비활성 + force confirm + 인덱스/소스 모두 정리
+    - **API 클라이언트** (`web/src/lib/api.ts`): `createRagNamespace` / `deleteRagNamespace(name, {force})` / `listRagDocuments` / `uploadRagDocument(ns, File)` (FormData) / `deleteRagDocument(ns, filename)` (segment-wise encodeURIComponent 으로 traversal 안전)
+    - **테스트**: `tests/test_api_rag_docs.py` 20건 — 생성 (성공·duplicate 409·invalid name 422·blank 422) / 삭제 (default 400·404·non-empty 409·force 200·empty 무force 200) / 목록 (empty·indexed 마킹) / 업로드 (성공·새 namespace 자동 생성·traversal 차단·unsupported ext 415·path separator 차단) / 문서 삭제 (성공·404·traversal·namespace missing). 회귀: **354 → 374 passed all green** (+20)
+    - **DO NOT 룰**: 라우트가 `from src.config import loader as _config_loader` 로만 접근. 테스트는 `monkeypatch.setattr(_rag_routes._config_loader, "get_settings", ...)` 와 `monkeypatch.setattr(_rag_routes, "_company_docs_root", lambda: cd_root)` 로 isolation
+    - **다음 (P10-3 머지 후)**: P10-4 (Proposals 이전) → P10-5 (Daily News) → P10-6 (사업 기록) → P10-7 (Settings) → P10-8 (Home 대시보드). 향후 sub-folder UX·namespace 메타데이터 (생성일/소유자/설명) 는 `docs/backlog.md` 17 (RAG SaaS workspace) 항목에서 다룸
   - **Stream 0 ✅ (P10-0) — DB 스키마 + Nav 골격**
     - `src/api/db.py` — 신규. `data/app.db` (langgraph checkpoint DB 와 분리) + `init_db()` (idempotent) + `connect()` 컨텍스트 매니저 (row_factory=Row, FK ON, 자동 commit/rollback)
     - 5 테이블: `discovery_runs` / `discovery_candidates` (FK CASCADE) / `targets` (`discovery_candidate_id` FK SET NULL) / `interactions` (`target_id` FK SET NULL) / `news_runs` + 5 인덱스
@@ -345,7 +357,7 @@
     - `web/src/app/targets/[id]/page.tsx` — 편집 폼 + 삭제 (confirm prompt). PATCH 후 권위 있는 응답으로 폼 재시드
     - **테스트**: `tests/test_api_targets.py` 13건 — 201 생성 / blank name 422 / bad stage 422 / list newest-first / 404 / aliases roundtrip / partial PATCH / 404 PATCH / bad stage PATCH / DELETE 204 / 404 DELETE / aliases 빈 리스트 default. **311 → 324 passed all green**
     - **DO NOT 룰**: 라우트가 `from src.api import store as _store` 로만 접근 → 테스트가 `reset_stores()` 로 싱글턴을 비우면 새 env (`API_APP_DB=tmp_path`) 로 재초기화됨
-  - **다음 PR 후보**: P10-3 (RAG drag-drop + namespace 생성·전환 UI) → P10-4 (Proposals 이전) → P10-5 (Daily News) → P10-6 (사업 기록) → P10-7 (Settings) → P10-8 (Home 대시보드)
+  - **다음 PR 후보**: P10-4 (Proposals 이전) → P10-5 (Daily News) → P10-6 (사업 기록) → P10-7 (Settings) → P10-8 (Home 대시보드)
 
 ## 다음 MVP 범위 (Phase 10 이후)
 - Phase 10 PR 시리즈 진행 (P10-1 ~ P10-8)
