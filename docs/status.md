@@ -300,6 +300,18 @@
 - **Phase 10 — 8-탭 웹 UI 확장 (진행 중)**
   - **배경**: Phase 7 웹 UI 는 단일 Run 폼 + Run 상세 + RAG 상태 3 페이지 MVP 컷으로 멈춰 있고, Phase 8/9/9.1 자산 (3채널 검색 / discovery / scoring 엔진) 은 CLI + yaml 산출물에만 노출. 비-개발자 BD 인력의 일상 운영 (아침 뉴스 → 후보 검수 → 제안서 → 콜 기록) 을 yaml 직접 편집 없이 하려면 8-탭 UI 가 필요.
   - **8-탭 구조 (잠금)**: Home / Daily News / Discovery / Targets / Proposals / RAG Docs / 사업 기록 / Settings. PR 시리즈 P10-0 ~ P10-8 로 쪼개 점진 머지.
+  - **Stream 6 ✅ (P10-5) — Daily News (Brave 시드 검색 + namespace 캐시)**
+    - **2026-04-30** — Namespace 별 시드 키워드 → Brave 1회 (en) 또는 2회 (ko bilingual blend) 호출 → SQLite `news_runs` 캐시. Sonnet 코멘트는 후속 PR (Sonnet 1회 추가 시 ~$0.05). 신규 유저는 빈 cache 에서 Refresh 한 번으로 시작
+    - **DB 스키마**: `news_runs` 에 `namespace`/`seed_query`/`lang`/`days`/`status`/`article_count`/`started_at`/`ended_at`/`error_message`/`created_at` 컬럼 추가 (`_NEWS_RUNS_NEW_COLUMNS` ALTER 백필 + `idx_news_runs_namespace_generated` 복합 인덱스). P10-0 의 기존 `articles_json`/`sonnet_summary`/`usage_json`/`ttl_hours` 는 그대로 유지
+    - **백엔드 store** `src/api/store.py::NewsStore` — SQLite-only CRUD (`create`/`update(articles=)`/`get`/`latest_for_namespace(status="completed")`/`list(namespace=,limit=)`). lazy 싱글턴 `get_news_store()` + `reset_stores()` 가 캐시 무효화
+    - **runner** `src/api/runner.py::execute_news_refresh` — `from src.config import loader as _config_loader` + `from src.search import brave as _brave` 모듈 경유. ko 인 경우 `bilingual_news_search`, en 인 경우 단일 Brave 호출. 결과는 `_article_to_news_dict` 로 직렬화 후 `store.update(articles=...)` 로 일괄 갱신. 실패 시 `error_message` 저장
+    - **routes/news.py** 신규 4 엔드포인트 — `POST /news/refresh` (202 + task_id, BackgroundTasks) / `GET /news/today?namespace=` (latest completed, 404 if empty) / `GET /news/runs/{task_id}` (단건 detail) / `GET /news/runs?namespace=&limit=` (list newest first). 모든 store/runner 접근은 모듈 attr (`_store.get_news_store()`, `_runner.execute_news_refresh`)
+    - **schemas.py**: `NewsArticle` / `NewsRefreshRequest` (seed_query 필수 1-200자, lang en|ko, days 1-365, count 1-20) / `NewsRunSummary` / `NewsRunDetail` (extends summary + articles[]) / `NewsRunListResponse` / `NewsRefreshResponse`
+    - **프론트** `web/src/app/news/page.tsx` — stub 대체. namespace 드롭다운 (RAG 와 공유), seed_query / lang / days / count 입력, Refresh 버튼이 1.5s 간격 polling (90s timeout) 으로 task 완료 감지 → article 카드 (title link / hostname / lang / published / snippet). 빈 namespace 시 EmptyState
+    - **API 클라이언트**: `refreshNews(input)` / `getNewsToday(ns)` (404 → null) / `getNewsRun(taskId)`
+    - **테스트**: `tests/test_api_news.py` 9건 — refresh queues + completes / today returns latest / 404 empty / 404 unknown task / blank query 422 / invalid namespace 422 / failed surfaces error / list newest-first / namespace filter. **377 → 386 passed all green** (+9)
+    - **DO NOT 룰**: routes/news.py 가 `_runner` / `_store` 모듈 경유. 테스트는 `monkeypatch.setattr("src.api.runner.execute_news_refresh", _fake)` 로 fake 주입 → Brave/Sonnet 미사용
+    - **다음 (P10-5 머지 후)**: P10-6 (사업 기록 — interactions CRUD + LIKE 검색) → P10-7 (Settings — sub-tab + yaml 편집) → P10-8 (Home 대시보드 + 집계 endpoint)
   - **Stream 5 ✅ (P10-4) — Proposals 탭 (Run 폼 이전 + Targets 점프 + 편집/다운로드)**
     - **2026-04-30** — Phase 7 의 단일-페이지 Run 폼을 `/proposals/new` 로 이전. `/proposals` 는 작성 이력 목록, `/` 는 6-카드 랜딩 (P10-8 대시보드 자리)
     - **백엔드**: `PATCH /runs/{run_id}` 엔드포인트 추가 — `proposal_md` 편집 (`RunUpdate` 스키마, max 200KB, exclude_unset partial). 스토어는 in-memory RunStore — 프로세스 재시작 시 휘발. DB 영속화는 후속 PR
@@ -371,7 +383,7 @@
     - `web/src/app/targets/[id]/page.tsx` — 편집 폼 + 삭제 (confirm prompt). PATCH 후 권위 있는 응답으로 폼 재시드
     - **테스트**: `tests/test_api_targets.py` 13건 — 201 생성 / blank name 422 / bad stage 422 / list newest-first / 404 / aliases roundtrip / partial PATCH / 404 PATCH / bad stage PATCH / DELETE 204 / 404 DELETE / aliases 빈 리스트 default. **311 → 324 passed all green**
     - **DO NOT 룰**: 라우트가 `from src.api import store as _store` 로만 접근 → 테스트가 `reset_stores()` 로 싱글턴을 비우면 새 env (`API_APP_DB=tmp_path`) 로 재초기화됨
-  - **다음 PR 후보**: P10-5 (Daily News) → P10-6 (사업 기록) → P10-7 (Settings) → P10-8 (Home 대시보드)
+  - **다음 PR 후보**: P10-6 (사업 기록) → P10-7 (Settings) → P10-8 (Home 대시보드)
 
 ## 다음 MVP 범위 (Phase 10 이후)
 - Phase 10 PR 시리즈 진행 (P10-1 ~ P10-8)

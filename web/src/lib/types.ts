@@ -152,6 +152,56 @@ export interface RagNamespaceDeleteResponse {
   removed: boolean;
 }
 
+// ── Phase 10 P10-5 — Daily News ────────────────────────────────────────
+
+export type NewsStatus = "queued" | "running" | "completed" | "failed";
+
+export interface NewsArticle {
+  title: string;
+  url: string;
+  snippet: string | null;
+  hostname: string | null;
+  lang: string | null;
+  published: string | null;
+}
+
+export interface NewsRunSummary {
+  task_id: string;
+  namespace: string;
+  generated_at: string;
+  seed_summary: string | null;
+  seed_query: string | null;
+  lang: string;
+  days: number;
+  status: NewsStatus;
+  article_count: number;
+  started_at: string | null;
+  ended_at: string | null;
+  error_message: string | null;
+  sonnet_summary: string | null;
+  ttl_hours: number;
+  usage: Record<string, number>;
+}
+
+export interface NewsRunDetail extends NewsRunSummary {
+  articles: NewsArticle[];
+}
+
+export interface NewsRefreshInput {
+  namespace: string;
+  seed_query: string;
+  lang: "en" | "ko";
+  days?: number;
+  count?: number;
+  seed_summary?: string | null;
+}
+
+export interface NewsRefreshResponse {
+  task_id: string;
+  status: NewsStatus;
+  namespace: string;
+}
+
 // ── Phase 10 P10-2b — Discovery ─────────────────────────────────────────
 
 export const WEIGHT_DIMENSIONS = [

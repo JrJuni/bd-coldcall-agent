@@ -31,6 +31,7 @@ from src.api.db import init_db
 from src.api.routes import discovery as discovery_routes
 from src.api.routes import health as health_routes
 from src.api.routes import ingest as ingest_routes
+from src.api.routes import news as news_routes
 from src.api.routes import rag as rag_routes
 from src.api.routes import runs as runs_routes
 from src.api.routes import targets as targets_routes
@@ -136,6 +137,7 @@ def create_app() -> FastAPI:
     app.include_router(rag_routes.router, tags=["rag"])
     app.include_router(targets_routes.router, tags=["targets"])
     app.include_router(discovery_routes.router, tags=["discovery"])
+    app.include_router(news_routes.router, tags=["news"])
 
     return app
 

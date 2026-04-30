@@ -522,10 +522,151 @@ class DiscoveryStore:
             )
 
 
+class NewsStore:
+    """SQLite-backed CRUD over the `news_runs` table.
+
+    One row per refresh task: queued/running/completed/failed status with
+    cached `articles_json` blob (raw Brave hits + per-article meta). The
+    UI reads `latest_for_namespace()` for the cache hit on /news/today,
+    and `get(task_id)` for the polling hook after POST /news/refresh.
+    """
+
+    def __init__(self, db_path: Path | str) -> None:
+        self._db_path = Path(db_path)
+
+    @staticmethod
+    def _row_to_dict(row: Any) -> dict[str, Any]:
+        try:
+            articles = json.loads(row["articles_json"] or "[]")
+        except (TypeError, json.JSONDecodeError):
+            articles = []
+        try:
+            usage = json.loads(row["usage_json"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            usage = {}
+        return {
+            "task_id": row["task_id"],
+            "namespace": row["namespace"],
+            "generated_at": row["generated_at"],
+            "seed_summary": row["seed_summary"],
+            "seed_query": row["seed_query"],
+            "lang": row["lang"],
+            "days": row["days"],
+            "status": row["status"],
+            "article_count": row["article_count"],
+            "started_at": row["started_at"],
+            "ended_at": row["ended_at"],
+            "error_message": row["error_message"],
+            "sonnet_summary": row["sonnet_summary"],
+            "ttl_hours": row["ttl_hours"],
+            "articles": articles,
+            "usage": usage,
+            "created_at": row["created_at"] if "created_at" in row.keys() else None,
+        }
+
+    def create(
+        self,
+        *,
+        task_id: str,
+        namespace: str,
+        seed_query: str | None,
+        seed_summary: str | None,
+        lang: str,
+        days: int,
+        ttl_hours: int = 12,
+    ) -> dict[str, Any]:
+        ts = _now_iso()
+        with _db.connect(self._db_path) as conn:
+            conn.execute(
+                "INSERT INTO news_runs("
+                " task_id, namespace, generated_at, seed_summary, seed_query,"
+                " articles_json, lang, days, status, article_count,"
+                " ttl_hours, started_at, ended_at, error_message, created_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    task_id,
+                    namespace,
+                    ts,
+                    seed_summary,
+                    seed_query,
+                    "[]",
+                    lang,
+                    days,
+                    "queued",
+                    0,
+                    ttl_hours,
+                    None,
+                    None,
+                    None,
+                    ts,
+                ),
+            )
+        return self.get(task_id)  # type: ignore[return-value]
+
+    def update(self, task_id: str, **fields: Any) -> dict[str, Any] | None:
+        if not fields:
+            return self.get(task_id)
+        col_map = dict(fields)
+        if "articles" in col_map:
+            col_map["articles_json"] = json.dumps(
+                col_map.pop("articles") or [], ensure_ascii=False
+            )
+        if "usage" in col_map:
+            col_map["usage_json"] = json.dumps(
+                col_map.pop("usage") or {}, ensure_ascii=False
+            )
+        cols = list(col_map.keys())
+        set_clause = ", ".join(f"{c}=?" for c in cols)
+        values = [col_map[c] for c in cols] + [task_id]
+        with _db.connect(self._db_path) as conn:
+            cur = conn.execute(
+                f"UPDATE news_runs SET {set_clause} WHERE task_id=?",
+                values,
+            )
+            if cur.rowcount == 0:
+                return None
+        return self.get(task_id)
+
+    def get(self, task_id: str) -> dict[str, Any] | None:
+        with _db.connect(self._db_path) as conn:
+            row = conn.execute(
+                "SELECT * FROM news_runs WHERE task_id=?", (task_id,)
+            ).fetchone()
+        return self._row_to_dict(row) if row else None
+
+    def latest_for_namespace(
+        self, namespace: str, *, status: str | None = "completed"
+    ) -> dict[str, Any] | None:
+        sql = "SELECT * FROM news_runs WHERE namespace=?"
+        params: list[Any] = [namespace]
+        if status:
+            sql += " AND status=?"
+            params.append(status)
+        sql += " ORDER BY generated_at DESC LIMIT 1"
+        with _db.connect(self._db_path) as conn:
+            row = conn.execute(sql, params).fetchone()
+        return self._row_to_dict(row) if row else None
+
+    def list(
+        self, *, namespace: str | None = None, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM news_runs"
+        params: list[Any] = []
+        if namespace:
+            sql += " WHERE namespace=?"
+            params.append(namespace)
+        sql += " ORDER BY generated_at DESC LIMIT ?"
+        params.append(limit)
+        with _db.connect(self._db_path) as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [self._row_to_dict(r) for r in rows]
+
+
 _run_store: RunStore | None = None
 _ingest_store: IngestStore | None = None
 _target_store: TargetStore | None = None
 _discovery_store: DiscoveryStore | None = None
+_news_store: NewsStore | None = None
 
 
 def get_run_store() -> RunStore:
@@ -566,10 +707,22 @@ def get_discovery_store() -> DiscoveryStore:
     return _discovery_store
 
 
+def get_news_store() -> NewsStore:
+    """Return a NewsStore bound to the configured app DB path."""
+    global _news_store
+    if _news_store is None:
+        from src.api.config import get_api_settings
+
+        _news_store = NewsStore(get_api_settings().app_db)
+    return _news_store
+
+
 def reset_stores() -> None:
     """Test hook — drop cached singletons so each test starts empty."""
     global _run_store, _ingest_store, _target_store, _discovery_store
+    global _news_store
     _run_store = None
     _ingest_store = None
     _target_store = None
     _discovery_store = None
+    _news_store = None

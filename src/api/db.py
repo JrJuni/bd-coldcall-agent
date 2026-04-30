@@ -95,11 +95,23 @@ CREATE TABLE IF NOT EXISTS news_runs (
     task_id TEXT PRIMARY KEY,
     generated_at TEXT NOT NULL,
     seed_summary TEXT,
-    articles_json TEXT NOT NULL,
+    articles_json TEXT NOT NULL DEFAULT '[]',
     sonnet_summary TEXT,
     usage_json TEXT,
-    ttl_hours INTEGER NOT NULL DEFAULT 12
+    ttl_hours INTEGER NOT NULL DEFAULT 12,
+    namespace TEXT NOT NULL DEFAULT 'default',
+    seed_query TEXT,
+    lang TEXT NOT NULL DEFAULT 'en',
+    days INTEGER NOT NULL DEFAULT 30,
+    status TEXT NOT NULL DEFAULT 'queued',
+    article_count INTEGER NOT NULL DEFAULT 0,
+    started_at TEXT,
+    ended_at TEXT,
+    error_message TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
+CREATE INDEX IF NOT EXISTS idx_news_runs_namespace_generated
+    ON news_runs(namespace, generated_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_discovery_candidates_run_id
     ON discovery_candidates(run_id);
@@ -160,6 +172,36 @@ def _migrate_discovery_runs(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE discovery_runs ADD COLUMN {col} {decl}")
 
 
+_NEWS_RUNS_NEW_COLUMNS = (
+    # Phase 10 P10-5 — added after P10-0 shipped. Same pattern as
+    # discovery_runs: ALTER TABLE backfill for app.db files predating P10-5.
+    ("namespace", "TEXT NOT NULL DEFAULT 'default'"),
+    ("seed_query", "TEXT"),
+    ("lang", "TEXT NOT NULL DEFAULT 'en'"),
+    ("days", "INTEGER NOT NULL DEFAULT 30"),
+    ("status", "TEXT NOT NULL DEFAULT 'queued'"),
+    ("article_count", "INTEGER NOT NULL DEFAULT 0"),
+    ("started_at", "TEXT"),
+    ("ended_at", "TEXT"),
+    ("error_message", "TEXT"),
+    ("created_at", "TEXT"),
+)
+
+
+def _migrate_news_runs(conn: sqlite3.Connection) -> None:
+    existing = {
+        row[1] for row in conn.execute("PRAGMA table_info(news_runs)").fetchall()
+    }
+    for col, decl in _NEWS_RUNS_NEW_COLUMNS:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE news_runs ADD COLUMN {col} {decl}")
+    # Index addition is idempotent via CREATE INDEX IF NOT EXISTS.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_news_runs_namespace_generated "
+        "ON news_runs(namespace, generated_at DESC)"
+    )
+
+
 def init_db(db_path: Path | str) -> None:
     """Create tables idempotently. Safe to call on every boot.
 
@@ -173,3 +215,4 @@ def init_db(db_path: Path | str) -> None:
     with connect(db_path) as conn:
         conn.executescript(_SCHEMA_SQL)
         _migrate_discovery_runs(conn)
+        _migrate_news_runs(conn)

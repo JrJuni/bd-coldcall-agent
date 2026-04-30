@@ -10,6 +10,9 @@ import type {
   DiscoveryRunSummary,
   IngestStatus,
   IngestTriggerResponse,
+  NewsRefreshInput,
+  NewsRefreshResponse,
+  NewsRunDetail,
   RagDocumentListResponse,
   RagDocumentUploadResponse,
   RagNamespaceDeleteResponse,
@@ -221,6 +224,42 @@ export async function deleteRagDocument(
     throw new Error(
       `DELETE /rag/namespaces/${namespace}/documents/${filename} ${r.status}`,
     );
+}
+
+// ── Phase 10 P10-5 — Daily News ────────────────────────────────────────
+
+export async function refreshNews(
+  body: NewsRefreshInput,
+): Promise<NewsRefreshResponse> {
+  const r = await fetch(`${API_BASE}/news/refresh`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok)
+    throw new Error(`POST /news/refresh ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+export async function getNewsToday(
+  namespace: string,
+): Promise<NewsRunDetail | null> {
+  const r = await fetch(
+    `${API_BASE}/news/today?namespace=${encodeURIComponent(namespace)}`,
+    { cache: "no-store" },
+  );
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error(`GET /news/today ${r.status}`);
+  return r.json();
+}
+
+export async function getNewsRun(taskId: string): Promise<NewsRunDetail> {
+  const r = await fetch(
+    `${API_BASE}/news/runs/${encodeURIComponent(taskId)}`,
+    { cache: "no-store" },
+  );
+  if (!r.ok) throw new Error(`GET /news/runs/${taskId} ${r.status}`);
+  return r.json();
 }
 
 // ── Phase 10 P10-2b — Discovery ─────────────────────────────────────────

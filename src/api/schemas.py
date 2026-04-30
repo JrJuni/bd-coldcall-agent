@@ -270,3 +270,59 @@ class DiscoveryPromoteResponse(BaseModel):
     candidate_id: int
     target_id: int
     candidate_status: CandidateStatus
+
+
+# ── Phase 10 P10-5 — Daily News ─────────────────────────────────────────
+
+
+NewsStatus = Literal["queued", "running", "completed", "failed"]
+
+
+class NewsArticle(BaseModel):
+    title: str
+    url: str
+    snippet: str | None = None
+    hostname: str | None = None
+    lang: str | None = None
+    published: str | None = None
+
+
+class NewsRefreshRequest(BaseModel):
+    namespace: str = Field(default="default", min_length=1, max_length=80)
+    seed_query: str = Field(..., min_length=1, max_length=200)
+    lang: Literal["en", "ko"] = "en"
+    days: int = Field(default=30, ge=1, le=365)
+    count: int = Field(default=10, ge=1, le=20)
+    seed_summary: str | None = None
+
+
+class NewsRunSummary(BaseModel):
+    task_id: str
+    namespace: str
+    generated_at: str
+    seed_summary: str | None = None
+    seed_query: str | None = None
+    lang: str
+    days: int
+    status: NewsStatus
+    article_count: int = 0
+    started_at: str | None = None
+    ended_at: str | None = None
+    error_message: str | None = None
+    sonnet_summary: str | None = None
+    ttl_hours: int = 12
+    usage: dict[str, int] = Field(default_factory=dict)
+
+
+class NewsRunDetail(NewsRunSummary):
+    articles: list[NewsArticle] = Field(default_factory=list)
+
+
+class NewsRunListResponse(BaseModel):
+    runs: list[NewsRunSummary]
+
+
+class NewsRefreshResponse(BaseModel):
+    task_id: str
+    status: NewsStatus
+    namespace: str

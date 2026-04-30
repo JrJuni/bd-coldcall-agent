@@ -28,8 +28,8 @@ const QUICK_LINKS = [
   {
     href: "/news",
     title: "Daily News",
-    description: "RAG 시드 기반 산업 뉴스 모음 (P10-5 작업 중).",
-    accent: "border border-dashed border-slate-300 bg-white hover:bg-slate-50",
+    description: "RAG namespace + 시드 키워드로 Brave 뉴스 한 번에 모아 캐시.",
+    accent: "border border-slate-300 bg-white hover:bg-slate-50",
   },
   {
     href: "/interactions",

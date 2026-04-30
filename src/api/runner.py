@@ -18,10 +18,12 @@ from typing import Any
 from src.api.store import (
     DiscoveryStore,
     IngestStore,
+    NewsStore,
     RunRecord,
     RunStore,
     get_discovery_store,
     get_ingest_store,
+    get_news_store,
     get_run_store,
 )
 
@@ -394,4 +396,94 @@ def execute_ingest(
             status="failed",
             ended_at=_now_iso(),
             message=f"Indexer exited with code {code}",
+        )
+
+
+def _article_to_news_dict(article: Any) -> dict[str, Any]:
+    pub = getattr(article, "published_at", None)
+    return {
+        "title": getattr(article, "title", "") or "",
+        "url": getattr(article, "url", "") or "",
+        "snippet": getattr(article, "snippet", "") or "",
+        "hostname": getattr(article, "source", "") or "",
+        "lang": getattr(article, "lang", "") or "",
+        "published": pub.isoformat() if hasattr(pub, "isoformat") else None,
+    }
+
+
+def execute_news_refresh(
+    *,
+    task_id: str,
+    namespace: str,
+    seed_query: str,
+    lang: str,
+    days: int,
+    count: int,
+    seed_summary: str | None = None,
+    store: NewsStore | None = None,
+) -> None:
+    """Run a single Brave news search for the seed query, persist articles.
+
+    P10-5 MVP intentionally keeps this simple — one Brave call (or two
+    when ``primary_lang=='ko'`` blends en+ko), no Sonnet summarization
+    yet. The plan's industry_meta extraction + Sonnet polish is a follow-
+    up; this function leaves `sonnet_summary=None` so the UI can render
+    raw articles right away.
+    """
+    from src.config import loader as _config_loader
+    from src.search import brave as _brave
+
+    store = store or get_news_store()
+    record = store.get(task_id)
+    if record is None:
+        _LOGGER.error("execute_news_refresh: task_id %s not found", task_id)
+        return
+
+    store.update(
+        task_id,
+        status="running",
+        started_at=_now_iso(),
+    )
+
+    try:
+        secrets = _config_loader.get_secrets()
+        api_key = getattr(secrets, "brave_search_api_key", "")
+        if not api_key:
+            raise RuntimeError(
+                "BRAVE_SEARCH_API_KEY missing — set it in .env to refresh news"
+            )
+
+        settings = _config_loader.get_settings()
+        with _brave.BraveSearch(api_key) as client:
+            if lang == "ko":
+                from src.search.bilingual import bilingual_news_search
+
+                articles, _meta = bilingual_news_search(
+                    client,
+                    seed_query,
+                    primary_lang="ko",
+                    translations_ko_to_en=settings.search.translations_ko_to_en,
+                    days=days,
+                    total_count=count,
+                )
+            else:
+                articles = client.search(
+                    seed_query, lang="en", days=days, kind="news", count=count
+                )
+
+        article_dicts = [_article_to_news_dict(a) for a in articles]
+        store.update(
+            task_id,
+            status="completed",
+            ended_at=_now_iso(),
+            articles=article_dicts,
+            article_count=len(article_dicts),
+        )
+    except Exception as exc:
+        _LOGGER.exception("execute_news_refresh: failed")
+        store.update(
+            task_id,
+            status="failed",
+            ended_at=_now_iso(),
+            error_message=f"{type(exc).__name__}: {exc}",
         )
