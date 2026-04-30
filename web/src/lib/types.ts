@@ -256,6 +256,37 @@ export interface InteractionListResponse {
   interactions: Interaction[];
 }
 
+// ── Phase 10 P10-7 — Settings ──────────────────────────────────────────
+
+export const SETTINGS_KINDS = [
+  "settings",
+  "weights",
+  "tier_rules",
+  "competitors",
+  "intent_tiers",
+  "sector_leaders",
+  "targets",
+] as const;
+export type SettingsKind = (typeof SETTINGS_KINDS)[number];
+
+export interface SettingsRead {
+  kind: SettingsKind;
+  path: string;
+  exists: boolean;
+  raw_yaml: string;
+  parsed: Record<string, unknown> | null;
+}
+
+export interface SettingsKindList {
+  kinds: SettingsKind[];
+}
+
+export interface SecretsView {
+  anthropic_api_key: boolean;
+  brave_search_api_key: boolean;
+  notion_token: boolean;
+}
+
 // ── Phase 10 P10-2b — Discovery ─────────────────────────────────────────
 
 export const WEIGHT_DIMENSIONS = [

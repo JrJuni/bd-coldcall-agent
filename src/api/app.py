@@ -35,6 +35,7 @@ from src.api.routes import interactions as interactions_routes
 from src.api.routes import news as news_routes
 from src.api.routes import rag as rag_routes
 from src.api.routes import runs as runs_routes
+from src.api.routes import settings as settings_routes
 from src.api.routes import targets as targets_routes
 
 
@@ -140,6 +141,7 @@ def create_app() -> FastAPI:
     app.include_router(discovery_routes.router, tags=["discovery"])
     app.include_router(news_routes.router, tags=["news"])
     app.include_router(interactions_routes.router, tags=["interactions"])
+    app.include_router(settings_routes.router, tags=["settings"])
 
     return app
 

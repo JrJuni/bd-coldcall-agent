@@ -300,6 +300,17 @@
 - **Phase 10 — 8-탭 웹 UI 확장 (진행 중)**
   - **배경**: Phase 7 웹 UI 는 단일 Run 폼 + Run 상세 + RAG 상태 3 페이지 MVP 컷으로 멈춰 있고, Phase 8/9/9.1 자산 (3채널 검색 / discovery / scoring 엔진) 은 CLI + yaml 산출물에만 노출. 비-개발자 BD 인력의 일상 운영 (아침 뉴스 → 후보 검수 → 제안서 → 콜 기록) 을 yaml 직접 편집 없이 하려면 8-탭 UI 가 필요.
   - **8-탭 구조 (잠금)**: Home / Daily News / Discovery / Targets / Proposals / RAG Docs / 사업 기록 / Settings. PR 시리즈 P10-0 ~ P10-8 로 쪼개 점진 머지.
+  - **Stream 8 ✅ (P10-7) — Settings (sub-tab + yaml 편집/검증)**
+    - **2026-04-30** — `config/*.yaml` 7종을 sub-tab 으로 직접 편집. YAML syntax + pydantic 모델 두 단계 검증 후 atomic 쓰기. API 키는 .env 전용 (이 화면은 존재 여부만 표시 — 값은 절대 응답에 포함 X)
+    - **백엔드 routes/settings.py** 신규 — `GET /settings` (지원 kind 목록) / `GET /settings/secrets` (3개 키 boolean view) / `GET /settings/{kind}` (raw_yaml + parsed dict, 파일 없으면 exists=False) / `PUT /settings/{kind}` (yaml.safe_load 422 → top-level dict 검증 → 해당 pydantic model 검증 → atomic tmp+replace 쓰기 → loader lru_cache 무효화)
+    - **kind ↔ 파일 매핑**: settings/weights/tier_rules/competitors/intent_tiers/sector_leaders/targets → 동일 이름 yaml. 각 kind 마다 검증용 pydantic 클래스 (`Settings`/`WeightsConfig`/`TierRulesConfig`/...) `_KIND_TO_VALIDATOR` 테이블
+    - **schemas.py**: `SettingsKind` Literal + `SETTINGS_KINDS` 튜플 + `SettingsRead` (kind/path/exists/raw_yaml/parsed) + `SettingsUpdate` (raw_yaml 200KB cap) + `SettingsKindList` + `SecretsView` (3개 boolean)
+    - **캐시 무효화**: `_config_loader.get_settings.cache_clear()` + `get_secrets.cache_clear()` PUT 후 호출 → 다음 호출부터 새 yaml 반영. 다른 `load_*` 헬퍼는 lru_cache 미사용 (매번 read)
+    - **프론트** `web/src/app/settings/page.tsx` — stub 대체. 8개 sub-tab (7 yaml + API keys). 각 yaml tab: textarea + 다시 불러오기 + 저장 버튼. 422 응답 시 raw 에러 메시지 (`YAML parse error: ...` / `validation failed for weights: ...`) 그대로 surfacing. API keys tab: boolean 뱃지 (set/missing) + .env 가이드. 파일 없으면 "저장 시 새로 생성" 뱃지 표시
+    - **API 클라이언트**: `listSettingsKinds()` / `getSettings(kind)` / `putSettings(kind, rawYaml)` / `getSecretsView()`
+    - **테스트**: `tests/test_api_settings.py` 10건 — kind 목록 / GET 정상 / GET 파일 없음 exists=False / GET 알 수 없는 kind 404 / PUT 정상 + 라운드트립 / PUT YAML syntax 422 / PUT top-level list 422 / PUT pydantic 422 / PUT 알 수 없는 kind 404 / GET secrets boolean 뷰 + 키 값 응답에 포함 X. **400 → 410 passed all green** (+10)
+    - **DO NOT 룰**: routes/settings.py 가 `from src.config import loader as _config_loader` 모듈 attr. 테스트는 `monkeypatch.setattr(_loader, "CONFIG_DIR", tmp_cfg)` + `monkeypatch.setattr(_settings_routes._config_loader, "get_secrets", lambda: _Fake())` 로 격리 (직접 .env 가 pydantic-settings 우선순위로 envvar 를 이긴 케이스 → 모듈 attr monkeypatch 가 깔끔)
+    - **다음 (P10-7 머지 후)**: P10-8 (Home 6-박스 대시보드 + 집계 endpoint) — 마지막 Stream
   - **Stream 7 ✅ (P10-6) — 사업 기록 (interactions CRUD + LIKE 검색)**
     - **2026-04-30** — BD 일상 운영의 콜/미팅/이메일/메모 캡처 탭. SQLite `interactions` 테이블 + 회사 정확 매치 / 텍스트 LIKE 검색. Targets 와 느슨한 연결 (`target_id` FK NULL 가능, 회사가 등록 전이어도 기록 가능)
     - **백엔드 store** `src/api/store.py::InteractionStore` — SQLite-only CRUD + LIKE search. `list(company=, target_id=, q=, limit=)` 가 `company_name`/`raw_text`/`contact_role` 3 필드에 LIKE 매치. `delete(id) → bool`. lazy 싱글턴 `get_interaction_store()` + `reset_stores()` 가 캐시 무효화
@@ -393,7 +404,7 @@
     - `web/src/app/targets/[id]/page.tsx` — 편집 폼 + 삭제 (confirm prompt). PATCH 후 권위 있는 응답으로 폼 재시드
     - **테스트**: `tests/test_api_targets.py` 13건 — 201 생성 / blank name 422 / bad stage 422 / list newest-first / 404 / aliases roundtrip / partial PATCH / 404 PATCH / bad stage PATCH / DELETE 204 / 404 DELETE / aliases 빈 리스트 default. **311 → 324 passed all green**
     - **DO NOT 룰**: 라우트가 `from src.api import store as _store` 로만 접근 → 테스트가 `reset_stores()` 로 싱글턴을 비우면 새 env (`API_APP_DB=tmp_path`) 로 재초기화됨
-  - **다음 PR 후보**: P10-7 (Settings) → P10-8 (Home 대시보드)
+  - **다음 PR 후보**: P10-8 (Home 대시보드 + 집계 endpoint) — 마지막
 
 ## 다음 MVP 범위 (Phase 10 이후)
 - Phase 10 PR 시리즈 진행 (P10-1 ~ P10-8)

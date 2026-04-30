@@ -376,3 +376,48 @@ class InteractionSummary(BaseModel):
 
 class InteractionListResponse(BaseModel):
     interactions: list[InteractionSummary]
+
+
+# ── Phase 10 P10-7 — Settings ───────────────────────────────────────────
+
+
+SettingsKind = Literal[
+    "settings",
+    "weights",
+    "tier_rules",
+    "competitors",
+    "intent_tiers",
+    "sector_leaders",
+    "targets",
+]
+SETTINGS_KINDS: tuple[str, ...] = (
+    "settings",
+    "weights",
+    "tier_rules",
+    "competitors",
+    "intent_tiers",
+    "sector_leaders",
+    "targets",
+)
+
+
+class SettingsRead(BaseModel):
+    kind: SettingsKind
+    path: str
+    exists: bool
+    raw_yaml: str = ""
+    parsed: dict[str, Any] | None = None
+
+
+class SettingsUpdate(BaseModel):
+    raw_yaml: str = Field(..., max_length=200_000)
+
+
+class SettingsKindList(BaseModel):
+    kinds: list[SettingsKind]
+
+
+class SecretsView(BaseModel):
+    anthropic_api_key: bool
+    brave_search_api_key: bool
+    notion_token: bool

@@ -23,6 +23,10 @@ import type {
   RagNamespaceListResponse,
   RagNamespaceSummary,
   RunCreateResponse,
+  SecretsView,
+  SettingsKind,
+  SettingsKindList,
+  SettingsRead,
   RunSummary,
   Target,
   TargetCreateInput,
@@ -323,6 +327,44 @@ export async function deleteInteraction(id: number): Promise<void> {
   });
   if (!r.ok && r.status !== 204)
     throw new Error(`DELETE /interactions/${id} ${r.status}`);
+}
+
+// ── Phase 10 P10-7 — Settings ──────────────────────────────────────────
+
+export async function listSettingsKinds(): Promise<SettingsKindList> {
+  const r = await fetch(`${API_BASE}/settings`, { cache: "no-store" });
+  if (!r.ok) throw new Error(`GET /settings ${r.status}`);
+  return r.json();
+}
+
+export async function getSettings(kind: SettingsKind): Promise<SettingsRead> {
+  const r = await fetch(`${API_BASE}/settings/${encodeURIComponent(kind)}`, {
+    cache: "no-store",
+  });
+  if (!r.ok) throw new Error(`GET /settings/${kind} ${r.status}`);
+  return r.json();
+}
+
+export async function putSettings(
+  kind: SettingsKind,
+  rawYaml: string,
+): Promise<SettingsRead> {
+  const r = await fetch(`${API_BASE}/settings/${encodeURIComponent(kind)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ raw_yaml: rawYaml }),
+  });
+  if (!r.ok)
+    throw new Error(
+      `PUT /settings/${kind} ${r.status}: ${await r.text()}`,
+    );
+  return r.json();
+}
+
+export async function getSecretsView(): Promise<SecretsView> {
+  const r = await fetch(`${API_BASE}/settings/secrets`, { cache: "no-store" });
+  if (!r.ok) throw new Error(`GET /settings/secrets ${r.status}`);
+  return r.json();
 }
 
 // ── Phase 10 P10-2b — Discovery ─────────────────────────────────────────
