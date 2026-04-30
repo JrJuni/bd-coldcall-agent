@@ -421,3 +421,61 @@ class SecretsView(BaseModel):
     anthropic_api_key: bool
     brave_search_api_key: bool
     notion_token: bool
+
+
+# ── Phase 10 P10-8 — Home dashboard ─────────────────────────────────────
+
+
+class DashboardRecentRun(BaseModel):
+    run_id: str
+    company: str
+    industry: str
+    status: str
+    created_at: str
+
+
+class DashboardRecentDiscovery(BaseModel):
+    run_id: str
+    namespace: str
+    product: str
+    status: str
+    candidate_count: int
+    tier_distribution: dict[str, int]
+    generated_at: str
+
+
+class DashboardNewsMini(BaseModel):
+    namespace: str
+    generated_at: str
+    article_count: int
+    seed_query: str | None = None
+    top_titles: list[str] = Field(default_factory=list)
+
+
+class DashboardRagStatus(BaseModel):
+    namespace: str
+    document_count: int = 0
+    chunk_count: int = 0
+    is_indexed: bool = False
+
+
+class DashboardCostSummary(BaseModel):
+    proposal_input_tokens: int = 0
+    proposal_output_tokens: int = 0
+    proposal_cache_read_tokens: int = 0
+    proposal_cache_write_tokens: int = 0
+    discovery_input_tokens: int = 0
+    discovery_output_tokens: int = 0
+    discovery_cache_read_tokens: int = 0
+    discovery_cache_write_tokens: int = 0
+
+
+class DashboardResponse(BaseModel):
+    recent_runs: list[DashboardRecentRun] = Field(default_factory=list)
+    recent_discovery: DashboardRecentDiscovery | None = None
+    pipeline_by_stage: dict[str, int] = Field(default_factory=dict)
+    rag: list[DashboardRagStatus] = Field(default_factory=list)
+    news: DashboardNewsMini | None = None
+    interactions_count: int = 0
+    cost: DashboardCostSummary = Field(default_factory=DashboardCostSummary)
+    generated_at: str

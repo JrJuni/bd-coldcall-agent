@@ -17,6 +17,7 @@ import type {
   NewsRefreshInput,
   NewsRefreshResponse,
   NewsRunDetail,
+  DashboardResponse,
   RagDocumentListResponse,
   RagDocumentUploadResponse,
   RagNamespaceDeleteResponse,
@@ -364,6 +365,14 @@ export async function putSettings(
 export async function getSecretsView(): Promise<SecretsView> {
   const r = await fetch(`${API_BASE}/settings/secrets`, { cache: "no-store" });
   if (!r.ok) throw new Error(`GET /settings/secrets ${r.status}`);
+  return r.json();
+}
+
+// ── Phase 10 P10-8 — Home dashboard ────────────────────────────────────
+
+export async function getDashboard(): Promise<DashboardResponse> {
+  const r = await fetch(`${API_BASE}/dashboard`, { cache: "no-store" });
+  if (!r.ok) throw new Error(`GET /dashboard ${r.status}`);
   return r.json();
 }
 

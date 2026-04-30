@@ -299,7 +299,23 @@
 
 - **Phase 10 — 8-탭 웹 UI 확장 (진행 중)**
   - **배경**: Phase 7 웹 UI 는 단일 Run 폼 + Run 상세 + RAG 상태 3 페이지 MVP 컷으로 멈춰 있고, Phase 8/9/9.1 자산 (3채널 검색 / discovery / scoring 엔진) 은 CLI + yaml 산출물에만 노출. 비-개발자 BD 인력의 일상 운영 (아침 뉴스 → 후보 검수 → 제안서 → 콜 기록) 을 yaml 직접 편집 없이 하려면 8-탭 UI 가 필요.
-  - **8-탭 구조 (잠금)**: Home / Daily News / Discovery / Targets / Proposals / RAG Docs / 사업 기록 / Settings. PR 시리즈 P10-0 ~ P10-8 로 쪼개 점진 머지.
+  - **8-탭 구조 (잠금)**: Home / Daily News / Discovery / Targets / Proposals / RAG Docs / 사업 기록 / Settings. PR 시리즈 P10-0 ~ P10-8 **모두 완료 (2026-04-30)**.
+  - **Stream 9 ✅ (P10-8) — Home 6-박스 대시보드 + 집계 endpoint**
+    - **2026-04-30** — Phase 10 의 마지막 Stream. 8개 탭의 활동을 한 화면에서 요약 + 새로고침 버튼으로 재집계
+    - **백엔드 routes/dashboard.py** 신규 — `GET /dashboard` 한 endpoint 가 6개 sub-aggregate 를 모음:
+      1. **recent_runs** — RunStore newest-first top 5
+      2. **recent_discovery** — DiscoveryStore latest run + tier_distribution 재계산 (S/A/B/C count)
+      3. **pipeline_by_stage** — Targets 단계별 카운트
+      4. **rag** — vectorstore 디렉토리 스캔 → namespace 별 manifest read → document_count/chunk_count/is_indexed 플래그. `default` 항상 포함
+      5. **news** — NewsStore.latest_for_namespace("default", status="completed") + 상위 3 title
+      6. **cost** — RunStore + DiscoveryStore usage_json 합산 (proposal_in/out/cache_read/cache_write + discovery_in/out/cache)
+    - 각 sub-aggregate 는 best-effort: 실패 시 warn + 빈 값 fallback (한 모듈 장애가 전체 dashboard 를 500 으로 만들지 않음)
+    - **schemas.py**: `DashboardRecentRun` / `DashboardRecentDiscovery` / `DashboardNewsMini` / `DashboardRagStatus` / `DashboardCostSummary` / `DashboardResponse`
+    - **프론트** `web/src/app/page.tsx` — 6-카드 placeholder landing 을 진짜 대시보드로 재작성. 6 박스: Quick Run (CTA → /proposals/new) / 오늘의 뉴스 mini (top 3 title) / Pipeline 요약 (Targets stage 별 + TargetStageBadge) / Recent Proposals & Discovery (top 3 runs + latest discovery tier 분포) / RAG 상태 (namespace 별 doc/chunk count) / 비용 (in/out/cache 토큰 합). 새로고침 버튼으로 즉시 재페치
+    - **API 클라이언트**: `getDashboard()` 단일 함수
+    - **테스트**: `tests/test_api_dashboard.py` 6건 — empty install (모든 aggregate 비어있음 + default namespace 항상 surface) / targets pipeline 카운트 / interactions 카운트 / RAG manifest pickup / news mini after refresh / recent_runs newest-first. **410 → 416 passed all green** (+6)
+    - **DO NOT 룰**: dashboard.py 가 `_store` / `_config_loader` 모듈 attr 만 사용. 테스트는 `monkeypatch.setattr(_dash._config_loader, "get_settings", lambda: _Fake())` 로 vectorstore tmp 격리 + `monkeypatch.setattr("src.api.runner.execute_news_refresh", _fake)` 로 news/run 시드
+    - **Phase 10 완료 메트릭**: P10-0/1/2a/2b/3/4/5/6/7/8 = **9 스트림** 머지. 311 → **416 tests** all green (+105 신규). 신규 라우터 8개 (targets / rag / discovery / news / interactions / settings / dashboard + 기존 ingest/runs/health 확장). 신규 frontend 페이지 6개 + Suspense·SSE·polling·dropzone·multipart·yaml editor 까지 포함
   - **Stream 8 ✅ (P10-7) — Settings (sub-tab + yaml 편집/검증)**
     - **2026-04-30** — `config/*.yaml` 7종을 sub-tab 으로 직접 편집. YAML syntax + pydantic 모델 두 단계 검증 후 atomic 쓰기. API 키는 .env 전용 (이 화면은 존재 여부만 표시 — 값은 절대 응답에 포함 X)
     - **백엔드 routes/settings.py** 신규 — `GET /settings` (지원 kind 목록) / `GET /settings/secrets` (3개 키 boolean view) / `GET /settings/{kind}` (raw_yaml + parsed dict, 파일 없으면 exists=False) / `PUT /settings/{kind}` (yaml.safe_load 422 → top-level dict 검증 → 해당 pydantic model 검증 → atomic tmp+replace 쓰기 → loader lru_cache 무효화)
@@ -404,7 +420,7 @@
     - `web/src/app/targets/[id]/page.tsx` — 편집 폼 + 삭제 (confirm prompt). PATCH 후 권위 있는 응답으로 폼 재시드
     - **테스트**: `tests/test_api_targets.py` 13건 — 201 생성 / blank name 422 / bad stage 422 / list newest-first / 404 / aliases roundtrip / partial PATCH / 404 PATCH / bad stage PATCH / DELETE 204 / 404 DELETE / aliases 빈 리스트 default. **311 → 324 passed all green**
     - **DO NOT 룰**: 라우트가 `from src.api import store as _store` 로만 접근 → 테스트가 `reset_stores()` 로 싱글턴을 비우면 새 env (`API_APP_DB=tmp_path`) 로 재초기화됨
-  - **다음 PR 후보**: P10-8 (Home 대시보드 + 집계 endpoint) — 마지막
+  - **Phase 10 완료 — 다음 단계**: P1-1 (제안서 톤 조정) 또는 backlog 18 (Nemotron 검토) 또는 backlog 19 (패키지/배포). 추가 discover 실행 1~2회 (다른 RAG namespace 또는 ko 언어) 로 결과 일반화 검증
 
 ## 다음 MVP 범위 (Phase 10 이후)
 - Phase 10 PR 시리즈 진행 (P10-1 ~ P10-8)

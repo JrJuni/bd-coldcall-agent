@@ -287,6 +287,63 @@ export interface SecretsView {
   notion_token: boolean;
 }
 
+// ── Phase 10 P10-8 — Home dashboard ────────────────────────────────────
+
+export interface DashboardRecentRun {
+  run_id: string;
+  company: string;
+  industry: string;
+  status: string;
+  created_at: string;
+}
+
+export interface DashboardRecentDiscovery {
+  run_id: string;
+  namespace: string;
+  product: string;
+  status: string;
+  candidate_count: number;
+  tier_distribution: Record<string, number>;
+  generated_at: string;
+}
+
+export interface DashboardNewsMini {
+  namespace: string;
+  generated_at: string;
+  article_count: number;
+  seed_query: string | null;
+  top_titles: string[];
+}
+
+export interface DashboardRagStatus {
+  namespace: string;
+  document_count: number;
+  chunk_count: number;
+  is_indexed: boolean;
+}
+
+export interface DashboardCostSummary {
+  proposal_input_tokens: number;
+  proposal_output_tokens: number;
+  proposal_cache_read_tokens: number;
+  proposal_cache_write_tokens: number;
+  discovery_input_tokens: number;
+  discovery_output_tokens: number;
+  discovery_cache_read_tokens: number;
+  discovery_cache_write_tokens: number;
+}
+
+export interface DashboardResponse {
+  recent_runs: DashboardRecentRun[];
+  recent_discovery: DashboardRecentDiscovery | null;
+  pipeline_by_stage: Record<string, number>;
+  rag: DashboardRagStatus[];
+  news: DashboardNewsMini | null;
+  interactions_count: number;
+  cost: DashboardCostSummary;
+  generated_at: string;
+}
+
 // ── Phase 10 P10-2b — Discovery ─────────────────────────────────────────
 
 export const WEIGHT_DIMENSIONS = [
