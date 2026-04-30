@@ -74,7 +74,9 @@ def test_ingest_status_no_manifest(client, monkeypatch, tmp_path):
 
 def test_ingest_status_reads_manifest(client, monkeypatch, tmp_path):
     vs_dir = tmp_path / "vs"
-    vs_dir.mkdir()
+    # Phase 10 P10-2a — /ingest/status without ?namespace= reads the
+    # `default` namespace, so the manifest must live at <vs>/default/.
+    (vs_dir / "default").mkdir(parents=True)
     manifest = {
         "version": 1,
         "updated_at": "2026-04-22T00:00:00+00:00",
@@ -84,7 +86,9 @@ def test_ingest_status_reads_manifest(client, monkeypatch, tmp_path):
             "doc_c": {"source_type": "notion", "chunk_count": 2},
         },
     }
-    (vs_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (vs_dir / "default" / "manifest.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
 
     from src.config import loader as _loader
     original = _loader.get_settings()

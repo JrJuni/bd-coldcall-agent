@@ -80,3 +80,156 @@ class HealthResponse(BaseModel):
     warmup_skipped: bool
     exaone_loaded: bool
     embedder_loaded: bool
+
+
+# ── Phase 10 — Targets (P10-1) ───────────────────────────────────────────
+
+TargetStage = Literal[
+    "planned", "contacted", "proposal_sent", "meeting", "won", "lost"
+]
+TARGET_STAGES: tuple[str, ...] = (
+    "planned", "contacted", "proposal_sent", "meeting", "won", "lost"
+)
+CreatedFrom = Literal["manual", "discovery_promote"]
+
+
+class TargetCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    industry: str = Field(..., min_length=1, max_length=200)
+    aliases: list[str] = Field(default_factory=list)
+    notes: str | None = None
+    stage: TargetStage = "planned"
+
+
+class TargetUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    industry: str | None = Field(default=None, min_length=1, max_length=200)
+    aliases: list[str] | None = None
+    notes: str | None = None
+    stage: TargetStage | None = None
+
+
+class TargetSummary(BaseModel):
+    id: int
+    name: str
+    industry: str
+    aliases: list[str] = Field(default_factory=list)
+    notes: str | None = None
+    stage: TargetStage
+    created_from: CreatedFrom
+    discovery_candidate_id: int | None = None
+    last_run_id: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class TargetListResponse(BaseModel):
+    targets: list[TargetSummary]
+
+
+# ── Phase 10 P10-2a — RAG namespaces ─────────────────────────────────────
+
+
+class RagNamespaceSummary(BaseModel):
+    name: str
+    document_count: int = 0
+    chunk_count: int = 0
+    updated_at: str | None = None
+    by_source_type: dict[str, int] = Field(default_factory=dict)
+    is_default: bool = False
+
+
+class RagNamespaceListResponse(BaseModel):
+    namespaces: list[RagNamespaceSummary]
+    default: str
+
+
+# ── Phase 10 P10-2b — Discovery ──────────────────────────────────────────
+
+
+DiscoveryRegion = Literal["any", "ko", "us", "eu", "global"]
+DiscoveryStatus = Literal["queued", "running", "completed", "failed"]
+CandidateStatus = Literal["active", "archived", "promoted"]
+TierLiteral = Literal["S", "A", "B", "C"]
+
+
+class DiscoveryRunCreate(BaseModel):
+    namespace: str = Field(default="default", min_length=1, max_length=80)
+    region: DiscoveryRegion = "any"
+    product: str = Field(default="databricks", min_length=1, max_length=80)
+    seed_summary: str | None = None
+    seed_query: str | None = None  # None → discover_targets default
+    top_k: int | None = Field(default=None, ge=1, le=100)
+    n_industries: int = Field(default=5, ge=1, le=20)
+    n_per_industry: int = Field(default=5, ge=1, le=20)
+    lang: Literal["en", "ko"] = "en"
+    include_sector_leaders: bool = True
+
+
+class DiscoveryRunSummary(BaseModel):
+    run_id: str
+    generated_at: str
+    status: DiscoveryStatus
+    namespace: str
+    product: str
+    region: DiscoveryRegion
+    lang: str
+    seed_doc_count: int = 0
+    seed_chunk_count: int = 0
+    seed_summary: str | None = None
+    started_at: str | None = None
+    ended_at: str | None = None
+    failed_stage: str | None = None
+    error_message: str | None = None
+    usage: dict[str, int] = Field(default_factory=dict)
+    created_at: str
+    candidate_count: int = 0
+    tier_distribution: dict[str, int] = Field(default_factory=dict)
+
+
+class DiscoveryRunListResponse(BaseModel):
+    runs: list[DiscoveryRunSummary]
+
+
+class DiscoveryCandidate(BaseModel):
+    id: int
+    run_id: str
+    name: str
+    industry: str
+    scores: dict[str, int]
+    final_score: float
+    tier: TierLiteral
+    rationale: str | None = None
+    status: CandidateStatus = "active"
+    updated_at: str
+
+
+class DiscoveryRunDetail(DiscoveryRunSummary):
+    candidates: list[DiscoveryCandidate] = Field(default_factory=list)
+
+
+class DiscoveryCandidateUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    industry: str | None = Field(default=None, min_length=1, max_length=200)
+    scores: dict[str, int] | None = None
+    rationale: str | None = None
+    status: CandidateStatus | None = None
+    tier: TierLiteral | None = None  # manual tier override
+
+
+class DiscoveryRecomputeRequest(BaseModel):
+    weights: dict[str, float] | None = None  # 6-dim slider state from UI
+    product: str | None = None  # fallback to weights.yaml::products.<name>
+
+
+class DiscoveryRecomputeResponse(BaseModel):
+    run_id: str
+    candidates: list[DiscoveryCandidate]
+    weights_applied: dict[str, float]
+    tier_distribution: dict[str, int]
+
+
+class DiscoveryPromoteResponse(BaseModel):
+    candidate_id: int
+    target_id: int
+    candidate_status: CandidateStatus

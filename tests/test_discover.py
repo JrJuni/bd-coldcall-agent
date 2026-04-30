@@ -133,10 +133,13 @@ def patched_rag(monkeypatch):
     monkeypatch.setattr(
         _discover_mod._retriever,
         "retrieve",
-        lambda query, top_k=None: [_retrieved(0), _retrieved(1)],
+        lambda query, namespace="default", top_k=None: [
+            _retrieved(0),
+            _retrieved(1),
+        ],
     )
     monkeypatch.setattr(
-        _discover_mod, "_read_seed_meta", lambda: (1, 64)
+        _discover_mod, "_read_seed_meta", lambda namespace="default": (1, 64)
     )
     return None
 

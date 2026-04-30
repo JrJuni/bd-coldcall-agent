@@ -316,8 +316,10 @@ GET  /ingest/tasks/{task_id}   → 상태
 - 환경변수가 이미 설정되어 있으면 `.env` 값보다 우선
 
 ## 데이터 영속성
-- 벡터스토어: `data/vectorstore/` (ChromaDB persistent)
-- 원본 문서: `data/company_docs/` (로컬) + Notion (원격 페이지 ID 관리)
+- 벡터스토어: `data/vectorstore/<namespace>/` (ChromaDB persistent, P10-2a 부터 namespace-scoped — `default` 가 기본)
+- 원본 문서: `data/company_docs/<namespace>/` (로컬) + Notion (원격 페이지 ID 관리)
+- 매니페스트: `data/vectorstore/<namespace>/manifest.json` (namespace 별)
+- 마이그레이션: 첫 부팅 / `indexer.main()` 시 평면 layout (`data/vectorstore/{chroma.sqlite3, manifest.json}` + `data/company_docs/*.pdf`) 가 감지되면 `migrate_flat_layout` 이 자동으로 `<root>/default/` 로 이동 (idempotent)
 - 결과물: `outputs/{company}_{YYYYMMDD}.md`
 - 중간 산출물: `outputs/{company}_{date}/intermediate/` (원시 기사, 요약 JSON, 검색 결과)
 - 로그: `logs/` (일자별 파일)

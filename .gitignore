@@ -43,6 +43,9 @@ logs/
 web/node_modules/
 web/.next/
 web/out/
+# Guard against uvicorn / indexer being launched from web/ cwd —
+# `data/app.db` is a relative path and would land here as `web/data/app.db`
+web/data/
 
 # Model caches
 .cache/

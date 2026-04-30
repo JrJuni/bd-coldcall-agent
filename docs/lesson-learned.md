@@ -173,3 +173,9 @@ conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/ms
 2. dedup 입력 텍스트 첫 3000 자 truncate — 임베딩 의미는 lede / 첫 단락에 거의 다 있고, 0.90 threshold 의 dedup 정확도에는 영향 미미.
 3. dedup 직전 `torch.cuda.empty_cache()` — Exaone 이 남긴 fragmented block 회수.
 plan 의 위험 분석에서 정확히 예측한 케이스 (cap 합 40 vs RTX 4070 16GB) — **사전 분석한 위험은 fixture/CI 로 회귀 잠그지 않으면 1회는 반드시 발생함**. 향후 채널 cap 늘릴 때 batch_size·truncate 도 같이 재계산. 구현: `src/rag/embeddings.py::embed_texts` / `dedup_articles`. 기존 `tests/test_dedup.py` 7건 무영향 (작은 배치라 cap 무관).
+
+
+## [2026-04-30] FastAPI lifespan 의 자동 마이그레이션이 테스트 중에 실제 사용자 data/ 를 건드렸다
+**시도**: Phase 10 P10-2a 에서 `migrate_flat_layout(vectorstore_root, company_docs_root)` 을 `app.py::lifespan` 에 best-effort 로 호출. 환경변수 토글 없이 바로 동작.
+**결과**: pytest 실행 중 `tests/test_api_db.py::test_lifespan_initializes_app_db` 등 `create_app()` 을 호출하는 테스트가 lifespan 까지 깨우면서, `PROJECT_ROOT / "data" / "vectorstore"` (절대 경로) 의 실제 평면 layout 을 `data/vectorstore/default/` 로 이동시켰다. 다행히 마이그레이션 함수가 idempotent + dest.exists() skip 이라 손실은 없었지만, 테스트가 사용자 데이터를 건드릴 수 있다는 점은 위험 신호.
+**배운 점**: FastAPI lifespan 의 자동 마이그레이션 같은 "환경을 mutating" 하는 부수효과는 (1) 환경변수 toggle 로 default off 하거나 (2) 테스트 fixture 가 PROJECT_ROOT 를 override 가능하도록 인자화하거나 (3) 명시적 CLI 명령으로만 트리거. 본 케이스는 1회성 마이그레이션이라 큰 후속 처리는 안 했지만, 향후 비슷한 mutation 코드가 lifespan 에 들어가면 `os.environ.get("APP_AUTO_MIGRATE", "0") == "1"` 같은 가드를 default 로 채택. 또 마이그레이션 함수 자체는 idempotent + best-effort + dest 보존 (overwrite 금지) 가 필수 — 이 세 가지 덕분에 사고가 손실로 이어지지 않았다.

@@ -27,6 +27,15 @@ import numpy as np
 from src.rag.chunker import chunk_document
 from src.rag.connectors.base import SourceConnector
 from src.rag.embeddings import embed_texts
+from src.rag.namespace import (
+    DEFAULT_NAMESPACE,
+    MANIFEST_FILENAME,
+    company_docs_root_for,
+    ensure_namespace,
+    list_namespaces,
+    migrate_flat_layout,
+    vectorstore_root_for,
+)
 from src.rag.normalize import normalize_content
 from src.rag.store import VectorStore
 from src.rag.types import Document
@@ -35,7 +44,6 @@ from src.rag.types import Document
 _LOGGER = logging.getLogger(__name__)
 
 MANIFEST_VERSION = 1
-MANIFEST_FILENAME = "manifest.json"
 
 
 EmbedFn = Callable[[list[str]], np.ndarray]
@@ -330,10 +338,33 @@ def main(argv: list[str] | None = None) -> int:
         description="Index local + Notion docs into ChromaDB with incremental hashing"
     )
     parser.add_argument(
+        "--namespace",
+        type=str,
+        default=DEFAULT_NAMESPACE,
+        help=(
+            "Workspace namespace — separates ChromaDB persist dir + manifest "
+            f"per workspace (default: {DEFAULT_NAMESPACE!r})"
+        ),
+    )
+    parser.add_argument(
+        "--list-namespaces",
+        action="store_true",
+        help="List available namespaces (those with a manifest.json) and exit",
+    )
+    parser.add_argument(
+        "--create-namespace",
+        type=str,
+        default=None,
+        help="Create empty workspace dirs for the given namespace and exit",
+    )
+    parser.add_argument(
         "--local-dir",
         type=Path,
-        default=PROJECT_ROOT / "data" / "company_docs",
-        help="Root for the local connector (default: data/company_docs)",
+        default=None,
+        help=(
+            "Root for the local connector (default: "
+            "data/company_docs/<namespace>)"
+        ),
     )
     parser.add_argument(
         "--no-local",
@@ -363,20 +394,54 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     settings = get_settings()
-    vectorstore_path = Path(settings.rag.vectorstore_path)
-    if not vectorstore_path.is_absolute():
-        vectorstore_path = PROJECT_ROOT / vectorstore_path
-    mpath = manifest_path_for(vectorstore_path)
+    vs_root_raw = Path(settings.rag.vectorstore_path)
+    if not vs_root_raw.is_absolute():
+        vs_root_raw = PROJECT_ROOT / vs_root_raw
+    cd_root_raw = PROJECT_ROOT / "data" / "company_docs"
+
+    # ── Maintenance commands (no indexing) ─────────────────────────────
+    if args.list_namespaces:
+        for name in list_namespaces(vs_root_raw):
+            print(name)
+        return 0
+    if args.create_namespace is not None:
+        vs_dir, cd_dir = ensure_namespace(
+            vectorstore_root=vs_root_raw,
+            company_docs_root=cd_root_raw,
+            namespace=args.create_namespace,
+        )
+        print(f"created vectorstore: {vs_dir}")
+        print(f"created docs:        {cd_dir}")
+        return 0
+
+    # ── Best-effort migration for legacy flat layout ───────────────────
+    mig = migrate_flat_layout(
+        vectorstore_root=vs_root_raw,
+        company_docs_root=cd_root_raw,
+    )
+    if any(v for k, v in mig.items() if k != "errors"):
+        _LOGGER.info("namespace migration: %s", mig)
+
+    # ── Resolve namespace-scoped paths ─────────────────────────────────
+    namespace = args.namespace
+    ns_vs_path = vectorstore_root_for(vs_root_raw, namespace)
+    ns_vs_path.mkdir(parents=True, exist_ok=True)
+    mpath = manifest_path_for(ns_vs_path)
+
+    if args.local_dir is None:
+        local_dir_default = company_docs_root_for(cd_root_raw, namespace)
+    else:
+        local_dir_default = args.local_dir
 
     store = VectorStore(
-        persist_path=vectorstore_path,
+        persist_path=ns_vs_path,
         collection_name=settings.rag.collection_name,
     )
 
     if args.verify:
         result = verify(store, mpath)
         print(
-            f"verify: matched={result['matched']} "
+            f"verify (namespace={namespace}): matched={result['matched']} "
             f"manifest_only={len(result['manifest_only'])} "
             f"store_only={len(result['store_only'])}"
         )
@@ -386,7 +451,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  store_only:    {doc_id}")
         return 0
 
-    local_dir = None if args.no_local else args.local_dir
+    local_dir = None if args.no_local else local_dir_default
     connectors = _build_connectors(local_dir=local_dir, use_notion=args.notion)
     if not connectors:
         raise SystemExit(
@@ -405,7 +470,7 @@ def main(argv: list[str] | None = None) -> int:
         dry_run=args.dry_run,
     )
     tag = " (dry-run)" if args.dry_run else ""
-    print(f"indexer{tag}: {report.describe()}")
+    print(f"indexer{tag} [ns={namespace}]: {report.describe()}")
     return 0
 
 

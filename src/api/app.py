@@ -28,9 +28,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.api.checkpoint import build_sqlite_checkpointer, close_checkpointer
 from src.api.config import get_api_settings
 from src.api.db import init_db
+from src.api.routes import discovery as discovery_routes
 from src.api.routes import health as health_routes
 from src.api.routes import ingest as ingest_routes
+from src.api.routes import rag as rag_routes
 from src.api.routes import runs as runs_routes
+from src.api.routes import targets as targets_routes
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -63,6 +66,25 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception:
         _LOGGER.exception("lifespan: app db init failed (continuing)")
         app.state.app_db_path = None
+
+    try:
+        from pathlib import Path
+
+        from src.config.loader import PROJECT_ROOT, get_settings
+        from src.rag.namespace import migrate_flat_layout
+
+        rag_settings = get_settings().rag
+        vs_root = Path(rag_settings.vectorstore_path)
+        if not vs_root.is_absolute():
+            vs_root = PROJECT_ROOT / vs_root
+        cd_root = PROJECT_ROOT / "data" / "company_docs"
+        report = migrate_flat_layout(
+            vectorstore_root=vs_root, company_docs_root=cd_root
+        )
+        if any(v for k, v in report.items() if k != "errors"):
+            _LOGGER.info("lifespan: namespace migration: %s", report)
+    except Exception:
+        _LOGGER.exception("lifespan: namespace migration failed (continuing)")
 
     if not settings.skip_warmup:
         try:
@@ -111,6 +133,9 @@ def create_app() -> FastAPI:
     app.include_router(health_routes.router, tags=["health"])
     app.include_router(runs_routes.router, tags=["runs"])
     app.include_router(ingest_routes.router, tags=["ingest"])
+    app.include_router(rag_routes.router, tags=["rag"])
+    app.include_router(targets_routes.router, tags=["targets"])
+    app.include_router(discovery_routes.router, tags=["discovery"])
 
     return app
 

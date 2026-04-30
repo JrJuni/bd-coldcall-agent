@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Iterator
 
 
+
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS discovery_runs (
     run_id TEXT PRIMARY KEY,
@@ -37,6 +38,12 @@ CREATE TABLE IF NOT EXISTS discovery_runs (
     product TEXT,
     region TEXT,
     lang TEXT,
+    namespace TEXT NOT NULL DEFAULT 'default',
+    status TEXT NOT NULL DEFAULT 'queued',
+    started_at TEXT,
+    ended_at TEXT,
+    failed_stage TEXT,
+    error_message TEXT,
     source_yaml_path TEXT,
     usage_json TEXT,
     created_at TEXT NOT NULL
@@ -131,9 +138,38 @@ def connect(db_path: Path | str) -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+_DISCOVERY_RUNS_NEW_COLUMNS = (
+    # Phase 10 P10-2b — added after P10-0 shipped, so existing app.db files
+    # need ALTER TABLE backfill. Each tuple = (column, sql_decl_for_alter).
+    ("namespace", "TEXT NOT NULL DEFAULT 'default'"),
+    ("status", "TEXT NOT NULL DEFAULT 'queued'"),
+    ("started_at", "TEXT"),
+    ("ended_at", "TEXT"),
+    ("failed_stage", "TEXT"),
+    ("error_message", "TEXT"),
+)
+
+
+def _migrate_discovery_runs(conn: sqlite3.Connection) -> None:
+    existing = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(discovery_runs)").fetchall()
+    }
+    for col, decl in _DISCOVERY_RUNS_NEW_COLUMNS:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE discovery_runs ADD COLUMN {col} {decl}")
+
+
 def init_db(db_path: Path | str) -> None:
-    """Create tables idempotently. Safe to call on every boot."""
+    """Create tables idempotently. Safe to call on every boot.
+
+    Also backfills new columns added after P10-0 shipped — `discovery_runs`
+    gained namespace/status/started_at/ended_at/failed_stage/error_message
+    in P10-2b. CREATE TABLE IF NOT EXISTS doesn't update existing schemas,
+    so we ALTER TABLE for any missing column.
+    """
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with connect(db_path) as conn:
         conn.executescript(_SCHEMA_SQL)
+        _migrate_discovery_runs(conn)

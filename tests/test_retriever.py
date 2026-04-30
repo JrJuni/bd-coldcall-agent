@@ -51,7 +51,9 @@ def patched_store(tmp_path, monkeypatch):
     store.upsert_chunks(chunks, embs)
 
     retriever_mod.reset_store_singleton()
-    monkeypatch.setattr(retriever_mod, "_store", lambda: store)
+    monkeypatch.setattr(
+        retriever_mod, "_store", lambda namespace="default": store
+    )
 
     # Default query-embedding stub: caller can override via monkeypatch
     def fake_embed(texts):
