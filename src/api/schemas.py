@@ -28,6 +28,10 @@ class RunCreateResponse(BaseModel):
     created_at: str
 
 
+class RunUpdate(BaseModel):
+    proposal_md: str | None = Field(default=None, max_length=200_000)
+
+
 class RunSummary(BaseModel):
     run_id: str
     company: str

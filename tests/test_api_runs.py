@@ -110,6 +110,41 @@ def test_create_run_returns_run_id_and_persists_record(client, monkeypatch):
     assert "persist" in rec["stages_completed"]
 
 
+def test_patch_run_updates_proposal_md(client, monkeypatch):
+    monkeypatch.setattr("src.api.runner.execute_run", _fake_execute_run_factory())
+    r = client.post(
+        "/runs",
+        json={"company": "NVIDIA", "industry": "semiconductor", "lang": "en"},
+    )
+    run_id = r.json()["run_id"]
+
+    edited = "# Edited proposal\n\nNew content."
+    r2 = client.patch(f"/runs/{run_id}", json={"proposal_md": edited})
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["proposal_md"] == edited
+
+    r3 = client.get(f"/runs/{run_id}")
+    assert r3.json()["proposal_md"] == edited
+
+
+def test_patch_run_404_for_unknown(client):
+    r = client.patch("/runs/missing-id", json={"proposal_md": "x"})
+    assert r.status_code == 404
+
+
+def test_patch_run_empty_payload_returns_current(client, monkeypatch):
+    monkeypatch.setattr("src.api.runner.execute_run", _fake_execute_run_factory())
+    r = client.post(
+        "/runs",
+        json={"company": "Acme", "industry": "x", "lang": "en"},
+    )
+    run_id = r.json()["run_id"]
+    r2 = client.patch(f"/runs/{run_id}", json={})
+    assert r2.status_code == 200
+    # Original "# done" stays intact when no fields are sent.
+    assert r2.json()["proposal_md"] == "# done"
+
+
 def test_create_run_rejects_blank_company(client):
     r = client.post(
         "/runs",

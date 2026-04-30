@@ -192,10 +192,18 @@ export default function TargetsPage() {
                     <td className="px-4 py-2 text-xs text-slate-500">
                       {t.updated_at.slice(0, 19).replace("T", " ")}
                     </td>
-                    <td className="px-4 py-2">
+                    <td className="px-4 py-2 text-right text-xs">
+                      <Link
+                        href={`/proposals/new?company=${encodeURIComponent(
+                          t.name,
+                        )}&industry=${encodeURIComponent(t.industry)}`}
+                        className="mr-3 font-medium text-emerald-700 hover:underline"
+                      >
+                        제안서 →
+                      </Link>
                       <Link
                         href={`/targets/${t.id}`}
-                        className="text-xs font-medium text-blue-600 hover:underline"
+                        className="font-medium text-blue-600 hover:underline"
                       >
                         편집 →
                       </Link>

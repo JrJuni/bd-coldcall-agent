@@ -49,6 +49,26 @@ export async function getRun(runId: string): Promise<RunSummary> {
   return r.json();
 }
 
+export async function listRuns(): Promise<{ runs: RunSummary[] }> {
+  const r = await fetch(`${API_BASE}/runs`, { cache: "no-store" });
+  if (!r.ok) throw new Error(`GET /runs ${r.status}`);
+  return r.json();
+}
+
+export async function patchRun(
+  runId: string,
+  body: { proposal_md?: string },
+): Promise<RunSummary> {
+  const r = await fetch(`${API_BASE}/runs/${encodeURIComponent(runId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok)
+    throw new Error(`PATCH /runs/${runId} ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
 export async function getIngestStatus(): Promise<IngestStatus> {
   const r = await fetch(`${API_BASE}/ingest/status`, { cache: "no-store" });
   if (!r.ok) throw new Error(`GET /ingest/status ${r.status}`);

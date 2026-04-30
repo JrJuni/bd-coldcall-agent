@@ -300,6 +300,20 @@
 - **Phase 10 — 8-탭 웹 UI 확장 (진행 중)**
   - **배경**: Phase 7 웹 UI 는 단일 Run 폼 + Run 상세 + RAG 상태 3 페이지 MVP 컷으로 멈춰 있고, Phase 8/9/9.1 자산 (3채널 검색 / discovery / scoring 엔진) 은 CLI + yaml 산출물에만 노출. 비-개발자 BD 인력의 일상 운영 (아침 뉴스 → 후보 검수 → 제안서 → 콜 기록) 을 yaml 직접 편집 없이 하려면 8-탭 UI 가 필요.
   - **8-탭 구조 (잠금)**: Home / Daily News / Discovery / Targets / Proposals / RAG Docs / 사업 기록 / Settings. PR 시리즈 P10-0 ~ P10-8 로 쪼개 점진 머지.
+  - **Stream 5 ✅ (P10-4) — Proposals 탭 (Run 폼 이전 + Targets 점프 + 편집/다운로드)**
+    - **2026-04-30** — Phase 7 의 단일-페이지 Run 폼을 `/proposals/new` 로 이전. `/proposals` 는 작성 이력 목록, `/` 는 6-카드 랜딩 (P10-8 대시보드 자리)
+    - **백엔드**: `PATCH /runs/{run_id}` 엔드포인트 추가 — `proposal_md` 편집 (`RunUpdate` 스키마, max 200KB, exclude_unset partial). 스토어는 in-memory RunStore — 프로세스 재시작 시 휘발. DB 영속화는 후속 PR
+    - **schemas.py**: `RunUpdate(proposal_md: str | None = Field(max_length=200_000))`
+    - **프론트 라우팅 재구성**:
+      - `web/src/app/page.tsx` — 6-카드 quick-link 그리드 (Proposals/Discovery/Targets/RAG/News/Interactions). Home 6-박스 대시보드는 P10-8 합류 예정
+      - `web/src/app/proposals/page.tsx` — runs 목록 (newest first, status pill, 클릭 → `/runs/{id}`). 빈 상태 시 EmptyState + CTA → `/proposals/new`
+      - `web/src/app/proposals/new/page.tsx` — Run 폼 + `Suspense` 래퍼 (Next 15 의 `useSearchParams` 요구사항). 쿼리 prefill: `?company=&industry=&lang=` → 폼 초기값
+      - `web/src/app/runs/[id]/page.tsx` — 편집 토글 (`편집` → textarea), 저장 (`PATCH /runs/{id}` → 반환된 권위 있는 RunSummary 로 state hydrate), `.md 다운로드` (Blob → `<company>_<YYYYMMDD>.md`, filename sanitize)
+    - **API 클라이언트**: `listRuns()` / `patchRun(runId, {proposal_md})`
+    - **Targets → Proposal 점프**: 행 우측에 `제안서 →` 링크 (`/proposals/new?company=X&industry=Y`). 기존 `편집 →` 와 병존
+    - **테스트**: `tests/test_api_runs.py` 에 PATCH 3건 추가 — proposal_md 업데이트 / 404 / empty payload no-op. **374 → 377 passed all green** (+3)
+    - **DO NOT 룰**: `runs.py` 가 기존 `from src.api import runner as _runner` 패턴 유지. PATCH 는 store 만 건드리므로 추가 monkeypatch 불필요
+    - **다음 (P10-4 머지 후)**: P10-5 (Daily News — RAG 시드 → Brave 1회 + 캐시) → P10-6 (사업 기록) → P10-7 (Settings) → P10-8 (Home 대시보드)
   - **Stream 4 ✅ (P10-3) — RAG 문서 관리 (drag-drop + namespace UI)**
     - **2026-04-30** — P10-2a 의 namespace 인프라 위에 IDE-workspace 식 UX 를 올림. 신규 유저는 빈 `default` namespace 에서도 자연스럽게 시작 가능 (drag-drop → Re-index → Discovery 사용)
     - **백엔드 (`src/api/routes/rag.py` 확장)**: 기존 `GET /rag/namespaces` 위에 5개 신규 엔드포인트 — `POST /rag/namespaces` (201, 중복 409, invalid name 422) / `DELETE /rag/namespaces/{ns}` (default 보호 400, 비어있지 않으면 409, `?force=true` 로 강제) / `GET /rag/namespaces/{ns}/documents` (rglob 으로 파일 목록 + manifest 와 cross-ref 해서 `indexed`/`chunk_count` 표시) / `POST /rag/namespaces/{ns}/documents` (multipart UploadFile, 25MB cap, 1MB 청크 스트리밍, 확장자 .md/.txt/.pdf 화이트리스트, traversal 차단) / `DELETE /rag/namespaces/{ns}/documents/{filename:path}` (resolve-and-check inside namespace root, 404)
@@ -357,7 +371,7 @@
     - `web/src/app/targets/[id]/page.tsx` — 편집 폼 + 삭제 (confirm prompt). PATCH 후 권위 있는 응답으로 폼 재시드
     - **테스트**: `tests/test_api_targets.py` 13건 — 201 생성 / blank name 422 / bad stage 422 / list newest-first / 404 / aliases roundtrip / partial PATCH / 404 PATCH / bad stage PATCH / DELETE 204 / 404 DELETE / aliases 빈 리스트 default. **311 → 324 passed all green**
     - **DO NOT 룰**: 라우트가 `from src.api import store as _store` 로만 접근 → 테스트가 `reset_stores()` 로 싱글턴을 비우면 새 env (`API_APP_DB=tmp_path`) 로 재초기화됨
-  - **다음 PR 후보**: P10-4 (Proposals 이전) → P10-5 (Daily News) → P10-6 (사업 기록) → P10-7 (Settings) → P10-8 (Home 대시보드)
+  - **다음 PR 후보**: P10-5 (Daily News) → P10-6 (사업 기록) → P10-7 (Settings) → P10-8 (Home 대시보드)
 
 ## 다음 MVP 범위 (Phase 10 이후)
 - Phase 10 PR 시리즈 진행 (P10-1 ~ P10-8)

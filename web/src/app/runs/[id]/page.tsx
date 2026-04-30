@@ -5,7 +5,7 @@ import { useParams } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { getRun, sseUrl } from "@/lib/api";
+import { getRun, patchRun, sseUrl } from "@/lib/api";
 import type { RunSummary } from "@/lib/types";
 import { StageProgress } from "@/components/StageProgress";
 
@@ -23,8 +23,11 @@ export default function RunDetailPage() {
   const runId = decodeURIComponent(params.id);
   const [run, setRun] = useState<RunSummary | null>(null);
   const [connError, setConnError] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<string>("");
+  const [saving, setSaving] = useState(false);
+  const [saveErr, setSaveErr] = useState<string | null>(null);
 
-  // Initial authoritative snapshot
   useEffect(() => {
     let cancelled = false;
     getRun(runId)
@@ -39,8 +42,6 @@ export default function RunDetailPage() {
     };
   }, [runId]);
 
-  // SSE subscription — on every progress event, refetch the full summary
-  // so the UI reflects authoritative state (stages_completed, usage, etc.).
   useEffect(() => {
     const source = new EventSource(sseUrl(runId));
     const onEvent = () => {
@@ -52,13 +53,55 @@ export default function RunDetailPage() {
       source.addEventListener(kind, onEvent);
     });
     source.onerror = () => {
-      // The backend closes the stream when the run reaches a terminal state.
       source.close();
     };
     return () => {
       source.close();
     };
   }, [runId]);
+
+  function startEdit() {
+    setDraft(run?.proposal_md ?? "");
+    setEditing(true);
+    setSaveErr(null);
+  }
+
+  async function saveEdit() {
+    setSaving(true);
+    setSaveErr(null);
+    try {
+      const updated = await patchRun(runId, { proposal_md: draft });
+      setRun(updated);
+      setEditing(false);
+    } catch (err) {
+      setSaveErr(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function cancelEdit() {
+    setEditing(false);
+    setSaveErr(null);
+  }
+
+  function downloadMarkdown() {
+    if (!run?.proposal_md) return;
+    const blob = new Blob([run.proposal_md], {
+      type: "text/markdown;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const safeCompany = (run.company || "proposal").replace(/[^A-Za-z0-9_-]/g, "_");
+    const stamp = (run.created_at || "").slice(0, 10).replace(/-/g, "");
+    const filename = `${safeCompany}_${stamp || "proposal"}.md`;
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
 
   return (
     <div className="space-y-8">
@@ -103,9 +146,7 @@ export default function RunDetailPage() {
           <ul className="space-y-1 font-mono text-xs text-slate-600">
             <li>in: {run?.usage?.input_tokens ?? 0}</li>
             <li>out: {run?.usage?.output_tokens ?? 0}</li>
-            <li>
-              cache_read: {run?.usage?.cache_read_input_tokens ?? 0}
-            </li>
+            <li>cache_read: {run?.usage?.cache_read_input_tokens ?? 0}</li>
             <li>
               cache_write:{" "}
               {run?.usage?.cache_creation_input_tokens ?? 0}
@@ -130,14 +171,74 @@ export default function RunDetailPage() {
 
       {run?.proposal_md && (
         <section className="rounded-lg border border-slate-200 bg-white p-6">
-          <h2 className="mb-4 text-sm font-semibold text-slate-600">
-            Proposal
-          </h2>
-          <div className="prose prose-slate max-w-none [&_h2]:mt-6 [&_h2]:text-lg [&_h3]:mt-4 [&_p]:leading-relaxed">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-              {run.proposal_md}
-            </ReactMarkdown>
+          <div className="mb-4 flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-slate-600">Proposal</h2>
+            <div className="flex gap-2">
+              {!editing && (
+                <>
+                  <button
+                    type="button"
+                    onClick={startEdit}
+                    className="rounded border border-slate-300 px-2.5 py-1 text-xs hover:bg-slate-50"
+                  >
+                    편집
+                  </button>
+                  <button
+                    type="button"
+                    onClick={downloadMarkdown}
+                    className="rounded border border-slate-300 px-2.5 py-1 text-xs hover:bg-slate-50"
+                  >
+                    .md 다운로드
+                  </button>
+                </>
+              )}
+              {editing && (
+                <>
+                  <button
+                    type="button"
+                    onClick={saveEdit}
+                    disabled={saving}
+                    className="rounded bg-slate-900 px-2.5 py-1 text-xs text-white hover:bg-slate-800 disabled:opacity-50"
+                  >
+                    {saving ? "저장 중..." : "저장"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={cancelEdit}
+                    disabled={saving}
+                    className="rounded border border-slate-300 px-2.5 py-1 text-xs hover:bg-slate-50 disabled:opacity-50"
+                  >
+                    취소
+                  </button>
+                </>
+              )}
+            </div>
           </div>
+
+          {editing ? (
+            <>
+              <textarea
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                rows={24}
+                className="block w-full rounded border border-slate-300 px-3 py-2 font-mono text-xs"
+                spellCheck={false}
+              />
+              {saveErr && (
+                <p className="mt-2 text-xs text-red-600">{saveErr}</p>
+              )}
+              <p className="mt-2 text-xs text-slate-500">
+                편집한 markdown 은 process-local RunStore 에 저장됩니다 (재시작 시
+                휘발). DB 영속화는 후속 PR.
+              </p>
+            </>
+          ) : (
+            <div className="prose prose-slate max-w-none [&_h2]:mt-6 [&_h2]:text-lg [&_h3]:mt-4 [&_p]:leading-relaxed">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                {run.proposal_md}
+              </ReactMarkdown>
+            </div>
+          )}
         </section>
       )}
 

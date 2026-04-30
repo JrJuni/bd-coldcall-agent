@@ -30,6 +30,7 @@ from src.api.schemas import (
     RunCreateResponse,
     RunListResponse,
     RunSummary,
+    RunUpdate,
 )
 from src.api.store import RunRecord, get_run_store
 
@@ -123,6 +124,31 @@ async def get_run(run_id: str) -> RunSummary:
     if record is None:
         raise HTTPException(status_code=404, detail=f"run_id {run_id!r} not found")
     return _record_to_summary(record, include_md=True)
+
+
+@router.patch("/runs/{run_id}", response_model=RunSummary)
+async def patch_run(run_id: str, payload: RunUpdate) -> RunSummary:
+    """Edit a stored run record — currently only `proposal_md`.
+
+    The Phase 7 store is in-memory + process-local, so edits made here
+    persist for the lifetime of the FastAPI process. Future PR can move
+    proposal_md into `runs` table for durability.
+    """
+    store = get_run_store()
+    record = store.get(run_id)
+    if record is None:
+        raise HTTPException(
+            status_code=404, detail=f"run_id {run_id!r} not found"
+        )
+    fields = payload.model_dump(exclude_unset=True)
+    if not fields:
+        return _record_to_summary(record, include_md=True)
+    updated = store.update(run_id, **fields)
+    if updated is None:
+        raise HTTPException(
+            status_code=404, detail=f"run_id {run_id!r} not found"
+        )
+    return _record_to_summary(updated, include_md=True)
 
 
 @router.get("/runs/{run_id}/events")
