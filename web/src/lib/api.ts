@@ -10,6 +10,10 @@ import type {
   DiscoveryRunSummary,
   IngestStatus,
   IngestTriggerResponse,
+  Interaction,
+  InteractionCreateInput,
+  InteractionListResponse,
+  InteractionUpdateInput,
   NewsRefreshInput,
   NewsRefreshResponse,
   NewsRunDetail,
@@ -260,6 +264,65 @@ export async function getNewsRun(taskId: string): Promise<NewsRunDetail> {
   );
   if (!r.ok) throw new Error(`GET /news/runs/${taskId} ${r.status}`);
   return r.json();
+}
+
+// ── Phase 10 P10-6 — Interactions (사업 기록) ────────────────────────
+
+export async function listInteractions(opts?: {
+  company?: string;
+  q?: string;
+  target_id?: number;
+  limit?: number;
+}): Promise<InteractionListResponse> {
+  const qs = new URLSearchParams();
+  if (opts?.company) qs.set("company", opts.company);
+  if (opts?.q) qs.set("q", opts.q);
+  if (opts?.target_id != null)
+    qs.set("target_id", String(opts.target_id));
+  if (opts?.limit != null) qs.set("limit", String(opts.limit));
+  const url = qs.toString()
+    ? `${API_BASE}/interactions?${qs.toString()}`
+    : `${API_BASE}/interactions`;
+  const r = await fetch(url, { cache: "no-store" });
+  if (!r.ok) throw new Error(`GET /interactions ${r.status}`);
+  return r.json();
+}
+
+export async function createInteraction(
+  body: InteractionCreateInput,
+): Promise<Interaction> {
+  const r = await fetch(`${API_BASE}/interactions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok)
+    throw new Error(`POST /interactions ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+export async function patchInteraction(
+  id: number,
+  body: InteractionUpdateInput,
+): Promise<Interaction> {
+  const r = await fetch(`${API_BASE}/interactions/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok)
+    throw new Error(
+      `PATCH /interactions/${id} ${r.status}: ${await r.text()}`,
+    );
+  return r.json();
+}
+
+export async function deleteInteraction(id: number): Promise<void> {
+  const r = await fetch(`${API_BASE}/interactions/${id}`, {
+    method: "DELETE",
+  });
+  if (!r.ok && r.status !== 204)
+    throw new Error(`DELETE /interactions/${id} ${r.status}`);
 }
 
 // ── Phase 10 P10-2b — Discovery ─────────────────────────────────────────

@@ -300,6 +300,16 @@
 - **Phase 10 — 8-탭 웹 UI 확장 (진행 중)**
   - **배경**: Phase 7 웹 UI 는 단일 Run 폼 + Run 상세 + RAG 상태 3 페이지 MVP 컷으로 멈춰 있고, Phase 8/9/9.1 자산 (3채널 검색 / discovery / scoring 엔진) 은 CLI + yaml 산출물에만 노출. 비-개발자 BD 인력의 일상 운영 (아침 뉴스 → 후보 검수 → 제안서 → 콜 기록) 을 yaml 직접 편집 없이 하려면 8-탭 UI 가 필요.
   - **8-탭 구조 (잠금)**: Home / Daily News / Discovery / Targets / Proposals / RAG Docs / 사업 기록 / Settings. PR 시리즈 P10-0 ~ P10-8 로 쪼개 점진 머지.
+  - **Stream 7 ✅ (P10-6) — 사업 기록 (interactions CRUD + LIKE 검색)**
+    - **2026-04-30** — BD 일상 운영의 콜/미팅/이메일/메모 캡처 탭. SQLite `interactions` 테이블 + 회사 정확 매치 / 텍스트 LIKE 검색. Targets 와 느슨한 연결 (`target_id` FK NULL 가능, 회사가 등록 전이어도 기록 가능)
+    - **백엔드 store** `src/api/store.py::InteractionStore` — SQLite-only CRUD + LIKE search. `list(company=, target_id=, q=, limit=)` 가 `company_name`/`raw_text`/`contact_role` 3 필드에 LIKE 매치. `delete(id) → bool`. lazy 싱글턴 `get_interaction_store()` + `reset_stores()` 가 캐시 무효화
+    - **routes/interactions.py** 신규 5 엔드포인트 — `GET /interactions?company=&target_id=&q=&limit=` (newest first, 정렬 `occurred_at DESC, id DESC`) / `POST /interactions` (201) / `GET /interactions/{id}` / `PATCH /interactions/{id}` (partial via exclude_unset) / `DELETE /interactions/{id}` (204). 모든 store 접근은 모듈 attr (`_store.get_interaction_store()`)
+    - **schemas.py**: `InteractionKind` Literal (call/meeting/email/note) + `InteractionOutcome` Literal (positive/neutral/negative/pending) + `INTERACTION_KINDS`/`OUTCOMES` 상수 + `InteractionCreate`/`Update`/`Summary`/`ListResponse`. raw_text 20KB cap
+    - **프론트** `web/src/app/interactions/page.tsx` — stub 대체. 단일 페이지 캡처 폼 (Company / Kind / Outcome / When date / Contact role / Notes textarea) + 회사 정확 필터 + 텍스트 검색 (form submit으로 search 적용) + 테이블 (When/Company/KindBadge/OutcomeBadge/Contact/Notes 2-line clamp/편집·삭제). 행 편집은 인라인 (폼 hydrate → PATCH). 빈 상태시 EmptyState
+    - **API 클라이언트**: `listInteractions(opts)` / `createInteraction` / `patchInteraction` / `deleteInteraction`
+    - **테스트**: `tests/test_api_interactions.py` 14건 — 생성 (full/minimal/blank 422/bad kind 422/bad outcome 422) / 목록 (company filter / q LIKE / newest-first) / get 404 / patch (partial / 404 / bad kind 422) / delete (204 / 404). **386 → 400 passed all green** (+14)
+    - **DO NOT 룰**: routes 가 `_store` 모듈 attr 만 사용. 테스트는 env-driven `API_APP_DB` + `reset_stores()` 로 DB 격리, 모듈 monkeypatch 불필요 (외부 호출 없는 순수 SQLite store)
+    - **다음 (P10-6 머지 후)**: P10-7 (Settings — sub-tab + yaml 편집/검증) → P10-8 (Home 대시보드 + 집계 endpoint)
   - **Stream 6 ✅ (P10-5) — Daily News (Brave 시드 검색 + namespace 캐시)**
     - **2026-04-30** — Namespace 별 시드 키워드 → Brave 1회 (en) 또는 2회 (ko bilingual blend) 호출 → SQLite `news_runs` 캐시. Sonnet 코멘트는 후속 PR (Sonnet 1회 추가 시 ~$0.05). 신규 유저는 빈 cache 에서 Refresh 한 번으로 시작
     - **DB 스키마**: `news_runs` 에 `namespace`/`seed_query`/`lang`/`days`/`status`/`article_count`/`started_at`/`ended_at`/`error_message`/`created_at` 컬럼 추가 (`_NEWS_RUNS_NEW_COLUMNS` ALTER 백필 + `idx_news_runs_namespace_generated` 복합 인덱스). P10-0 의 기존 `articles_json`/`sonnet_summary`/`usage_json`/`ttl_hours` 는 그대로 유지
@@ -383,7 +393,7 @@
     - `web/src/app/targets/[id]/page.tsx` — 편집 폼 + 삭제 (confirm prompt). PATCH 후 권위 있는 응답으로 폼 재시드
     - **테스트**: `tests/test_api_targets.py` 13건 — 201 생성 / blank name 422 / bad stage 422 / list newest-first / 404 / aliases roundtrip / partial PATCH / 404 PATCH / bad stage PATCH / DELETE 204 / 404 DELETE / aliases 빈 리스트 default. **311 → 324 passed all green**
     - **DO NOT 룰**: 라우트가 `from src.api import store as _store` 로만 접근 → 테스트가 `reset_stores()` 로 싱글턴을 비우면 새 env (`API_APP_DB=tmp_path`) 로 재초기화됨
-  - **다음 PR 후보**: P10-6 (사업 기록) → P10-7 (Settings) → P10-8 (Home 대시보드)
+  - **다음 PR 후보**: P10-7 (Settings) → P10-8 (Home 대시보드)
 
 ## 다음 MVP 범위 (Phase 10 이후)
 - Phase 10 PR 시리즈 진행 (P10-1 ~ P10-8)

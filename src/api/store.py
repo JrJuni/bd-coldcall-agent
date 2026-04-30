@@ -522,6 +522,145 @@ class DiscoveryStore:
             )
 
 
+class InteractionStore:
+    """SQLite-backed CRUD + LIKE search over the `interactions` table.
+
+    Captured BD touchpoints (call/meeting/email/note) live here. The
+    schema lets `target_id` be NULL so a free-text "I called Acme today"
+    note works even before the company is registered as a Target. The
+    LIKE search scans `company_name`, `raw_text`, and `contact_role` so
+    "find every interaction that mentions Stripe" works without joins.
+    """
+
+    def __init__(self, db_path: Path | str) -> None:
+        self._db_path = Path(db_path)
+
+    @staticmethod
+    def _row_to_dict(row: Any) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "target_id": row["target_id"],
+            "company_name": row["company_name"],
+            "kind": row["kind"],
+            "occurred_at": row["occurred_at"],
+            "outcome": row["outcome"],
+            "raw_text": row["raw_text"],
+            "contact_role": row["contact_role"],
+            "created_at": row["created_at"],
+        }
+
+    def create(
+        self,
+        *,
+        company_name: str,
+        kind: str,
+        occurred_at: str,
+        target_id: int | None = None,
+        outcome: str | None = None,
+        raw_text: str | None = None,
+        contact_role: str | None = None,
+    ) -> dict[str, Any]:
+        ts = _now_iso()
+        with _db.connect(self._db_path) as conn:
+            cur = conn.execute(
+                "INSERT INTO interactions("
+                " target_id, company_name, kind, occurred_at, outcome,"
+                " raw_text, contact_role, created_at)"
+                " VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    target_id,
+                    company_name,
+                    kind,
+                    occurred_at,
+                    outcome,
+                    raw_text,
+                    contact_role,
+                    ts,
+                ),
+            )
+            new_id = cur.lastrowid
+            row = conn.execute(
+                "SELECT * FROM interactions WHERE id=?", (new_id,)
+            ).fetchone()
+        return self._row_to_dict(row)
+
+    def get(self, interaction_id: int) -> dict[str, Any] | None:
+        with _db.connect(self._db_path) as conn:
+            row = conn.execute(
+                "SELECT * FROM interactions WHERE id=?", (interaction_id,)
+            ).fetchone()
+        return self._row_to_dict(row) if row else None
+
+    def list(
+        self,
+        *,
+        company: str | None = None,
+        target_id: int | None = None,
+        q: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if company:
+            clauses.append("company_name = ?")
+            params.append(company)
+        if target_id is not None:
+            clauses.append("target_id = ?")
+            params.append(target_id)
+        if q:
+            like = f"%{q}%"
+            clauses.append(
+                "(company_name LIKE ? OR raw_text LIKE ? OR contact_role LIKE ?)"
+            )
+            params.extend([like, like, like])
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        sql = (
+            "SELECT * FROM interactions"
+            f"{where} ORDER BY occurred_at DESC, id DESC LIMIT ?"
+        )
+        params.append(limit)
+        with _db.connect(self._db_path) as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [self._row_to_dict(r) for r in rows]
+
+    def update(
+        self, interaction_id: int, **fields: Any
+    ) -> dict[str, Any] | None:
+        col_map: dict[str, Any] = {}
+        for key in (
+            "company_name",
+            "kind",
+            "occurred_at",
+            "outcome",
+            "raw_text",
+            "contact_role",
+            "target_id",
+        ):
+            if key in fields:
+                col_map[key] = fields[key]
+        if not col_map:
+            return self.get(interaction_id)
+        sets = ", ".join(f"{k}=?" for k in col_map.keys())
+        params = list(col_map.values()) + [interaction_id]
+        with _db.connect(self._db_path) as conn:
+            cur = conn.execute(
+                f"UPDATE interactions SET {sets} WHERE id=?", params
+            )
+            if cur.rowcount == 0:
+                return None
+            row = conn.execute(
+                "SELECT * FROM interactions WHERE id=?", (interaction_id,)
+            ).fetchone()
+        return self._row_to_dict(row)
+
+    def delete(self, interaction_id: int) -> bool:
+        with _db.connect(self._db_path) as conn:
+            cur = conn.execute(
+                "DELETE FROM interactions WHERE id=?", (interaction_id,)
+            )
+        return cur.rowcount > 0
+
+
 class NewsStore:
     """SQLite-backed CRUD over the `news_runs` table.
 
@@ -667,6 +806,7 @@ _ingest_store: IngestStore | None = None
 _target_store: TargetStore | None = None
 _discovery_store: DiscoveryStore | None = None
 _news_store: NewsStore | None = None
+_interaction_store: InteractionStore | None = None
 
 
 def get_run_store() -> RunStore:
@@ -717,12 +857,23 @@ def get_news_store() -> NewsStore:
     return _news_store
 
 
+def get_interaction_store() -> InteractionStore:
+    """Return an InteractionStore bound to the configured app DB path."""
+    global _interaction_store
+    if _interaction_store is None:
+        from src.api.config import get_api_settings
+
+        _interaction_store = InteractionStore(get_api_settings().app_db)
+    return _interaction_store
+
+
 def reset_stores() -> None:
     """Test hook — drop cached singletons so each test starts empty."""
     global _run_store, _ingest_store, _target_store, _discovery_store
-    global _news_store
+    global _news_store, _interaction_store
     _run_store = None
     _ingest_store = None
     _target_store = None
     _discovery_store = None
     _news_store = None
+    _interaction_store = None

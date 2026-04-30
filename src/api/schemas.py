@@ -326,3 +326,53 @@ class NewsRefreshResponse(BaseModel):
     task_id: str
     status: NewsStatus
     namespace: str
+
+
+# ── Phase 10 P10-6 — Interactions (사업 기록) ────────────────────────────
+
+
+InteractionKind = Literal["call", "meeting", "email", "note"]
+InteractionOutcome = Literal["positive", "neutral", "negative", "pending"]
+INTERACTION_KINDS: tuple[str, ...] = ("call", "meeting", "email", "note")
+INTERACTION_OUTCOMES: tuple[str, ...] = (
+    "positive",
+    "neutral",
+    "negative",
+    "pending",
+)
+
+
+class InteractionCreate(BaseModel):
+    company_name: str = Field(..., min_length=1, max_length=200)
+    kind: InteractionKind = "note"
+    occurred_at: str = Field(..., min_length=1, max_length=64)
+    outcome: InteractionOutcome | None = None
+    raw_text: str | None = Field(default=None, max_length=20_000)
+    contact_role: str | None = Field(default=None, max_length=200)
+    target_id: int | None = None
+
+
+class InteractionUpdate(BaseModel):
+    company_name: str | None = Field(default=None, min_length=1, max_length=200)
+    kind: InteractionKind | None = None
+    occurred_at: str | None = Field(default=None, min_length=1, max_length=64)
+    outcome: InteractionOutcome | None = None
+    raw_text: str | None = Field(default=None, max_length=20_000)
+    contact_role: str | None = Field(default=None, max_length=200)
+    target_id: int | None = None
+
+
+class InteractionSummary(BaseModel):
+    id: int
+    target_id: int | None = None
+    company_name: str
+    kind: InteractionKind
+    occurred_at: str
+    outcome: InteractionOutcome | None = None
+    raw_text: str | None = None
+    contact_role: str | None = None
+    created_at: str
+
+
+class InteractionListResponse(BaseModel):
+    interactions: list[InteractionSummary]

@@ -202,6 +202,60 @@ export interface NewsRefreshResponse {
   namespace: string;
 }
 
+// ── Phase 10 P10-6 — Interactions (사업 기록) ─────────────────────────
+
+export const INTERACTION_KINDS = [
+  "call",
+  "meeting",
+  "email",
+  "note",
+] as const;
+export type InteractionKind = (typeof INTERACTION_KINDS)[number];
+
+export const INTERACTION_OUTCOMES = [
+  "positive",
+  "neutral",
+  "negative",
+  "pending",
+] as const;
+export type InteractionOutcome = (typeof INTERACTION_OUTCOMES)[number];
+
+export interface Interaction {
+  id: number;
+  target_id: number | null;
+  company_name: string;
+  kind: InteractionKind;
+  occurred_at: string;
+  outcome: InteractionOutcome | null;
+  raw_text: string | null;
+  contact_role: string | null;
+  created_at: string;
+}
+
+export interface InteractionCreateInput {
+  company_name: string;
+  kind: InteractionKind;
+  occurred_at: string;
+  outcome?: InteractionOutcome | null;
+  raw_text?: string | null;
+  contact_role?: string | null;
+  target_id?: number | null;
+}
+
+export interface InteractionUpdateInput {
+  company_name?: string;
+  kind?: InteractionKind;
+  occurred_at?: string;
+  outcome?: InteractionOutcome | null;
+  raw_text?: string | null;
+  contact_role?: string | null;
+  target_id?: number | null;
+}
+
+export interface InteractionListResponse {
+  interactions: Interaction[];
+}
+
 // ── Phase 10 P10-2b — Discovery ─────────────────────────────────────────
 
 export const WEIGHT_DIMENSIONS = [

@@ -34,8 +34,8 @@ const QUICK_LINKS = [
   {
     href: "/interactions",
     title: "사업 기록",
-    description: "콜·미팅·메모 기록 (P10-6 작업 중).",
-    accent: "border border-dashed border-slate-300 bg-white hover:bg-slate-50",
+    description: "콜·미팅·이메일·메모 캡처 + 회사·키워드 검색.",
+    accent: "border border-slate-300 bg-white hover:bg-slate-50",
   },
 ];
 
