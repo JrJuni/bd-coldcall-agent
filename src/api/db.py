@@ -113,6 +113,22 @@ CREATE TABLE IF NOT EXISTS news_runs (
 CREATE INDEX IF NOT EXISTS idx_news_runs_namespace_generated
     ON news_runs(namespace, generated_at DESC);
 
+CREATE TABLE IF NOT EXISTS rag_summaries (
+    namespace TEXT NOT NULL,
+    path TEXT NOT NULL DEFAULT '',
+    summary TEXT NOT NULL,
+    lang TEXT NOT NULL,
+    model TEXT,
+    usage_json TEXT,
+    chunk_count INTEGER NOT NULL DEFAULT 0,
+    chunks_in_namespace INTEGER NOT NULL DEFAULT 0,
+    -- Folder's last_indexed_at AT THE MOMENT this summary was generated;
+    -- compared against the current value to detect stale summaries.
+    indexed_at_at_generation TEXT,
+    generated_at TEXT NOT NULL,
+    PRIMARY KEY (namespace, path)
+);
+
 CREATE INDEX IF NOT EXISTS idx_discovery_candidates_run_id
     ON discovery_candidates(run_id);
 CREATE INDEX IF NOT EXISTS idx_discovery_candidates_status
@@ -131,6 +147,7 @@ SCHEMA_TABLES = (
     "targets",
     "interactions",
     "news_runs",
+    "rag_summaries",
 )
 
 

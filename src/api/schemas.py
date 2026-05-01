@@ -141,6 +141,9 @@ class RagNamespaceSummary(BaseModel):
     updated_at: str | None = None
     by_source_type: dict[str, int] = Field(default_factory=dict)
     is_default: bool = False
+    # True when at least one file in the namespace's docs root has been
+    # added or modified since its last indexed_at — i.e. Re-index needed.
+    needs_reindex: bool = False
 
 
 class RagNamespaceListResponse(BaseModel):
@@ -179,6 +182,91 @@ class RagDocumentUploadResponse(BaseModel):
 class RagNamespaceDeleteResponse(BaseModel):
     name: str
     removed: bool
+
+
+# ── Phase 10 P10-3+ — RAG folder browsing ───────────────────────────────
+
+
+RagTreeEntryType = Literal["folder", "file"]
+
+
+class RagTreeEntry(BaseModel):
+    type: RagTreeEntryType
+    name: str
+    # File-only fields (None for folders).
+    size_bytes: int | None = None
+    modified_at: str | None = None
+    extension: str | None = None
+    indexed: bool | None = None
+    chunk_count: int | None = None
+    # Folder-only fields (None for files).
+    child_count: int | None = None
+    # Folder-only — True when any descendant file is missing from the
+    # manifest or has mtime > its indexed_at.
+    needs_reindex: bool | None = None
+
+
+class RagTreeResponse(BaseModel):
+    namespace: str
+    path: str  # posix subpath relative to namespace root, "" = root
+    parent: str | None = None
+    entries: list[RagTreeEntry] = Field(default_factory=list)
+
+
+class RagFolderCreate(BaseModel):
+    path: str = Field(..., min_length=1, max_length=512)
+
+
+class RagFolderActionResponse(BaseModel):
+    namespace: str
+    path: str
+    removed: bool = False
+    created: bool = False
+
+
+class RagOpenFolderResponse(BaseModel):
+    namespace: str
+    path: str
+    abs_path: str
+    opened: bool
+
+
+class RagRootOpenResponse(BaseModel):
+    abs_path: str
+    opened: bool
+
+
+class RagRootFileListResponse(BaseModel):
+    files: list[RagDocumentSummary] = Field(default_factory=list)
+
+
+class RagSummaryRequest(BaseModel):
+    path: str = ""
+    lang: Literal["en", "ko"] = "ko"
+    sample_size: int = Field(default=20, ge=1, le=80)
+    max_tokens: int = Field(default=900, ge=100, le=4000)
+
+
+class RagSummaryResponse(BaseModel):
+    namespace: str
+    path: str
+    chunk_count: int  # how many chunks were sampled
+    chunks_in_namespace: int  # total chunks available
+    summary: str  # the LLM output (markdown bullets)
+    model: str | None = None
+    usage: dict[str, int] = Field(default_factory=dict)
+    generated_at: str
+    # True when the folder has been re-indexed since this summary was
+    # generated — UI flips the "다시 생성" button to "Update ⚠".
+    is_stale: bool = False
+
+
+class RagSummaryCachedResponse(BaseModel):
+    """Wrapper for GET /rag/namespaces/{ns}/summary — returns null when no
+    cached summary exists for the (namespace, path) pair so the frontend
+    can branch on a 200 + null payload instead of catching a 404."""
+
+    summary: RagSummaryResponse | None = None
 
 
 # ── Phase 10 P10-2b — Discovery ──────────────────────────────────────────

@@ -107,6 +107,49 @@ def test_ensure_namespace_creates_dirs(tmp_path):
     )
 
 
+def test_ensure_namespace_writes_seed_manifest(tmp_path):
+    """A freshly-created empty namespace must be discoverable immediately —
+    `list_namespaces` keys off manifest presence, so `ensure_namespace`
+    seeds an empty versioned manifest."""
+    vs_root = tmp_path / "vs"
+    ensure_namespace(
+        vectorstore_root=vs_root,
+        company_docs_root=tmp_path / "docs",
+        namespace="freshly-made",
+    )
+    manifest = vs_root / "freshly-made" / MANIFEST_FILENAME
+    assert manifest.exists(), "ensure_namespace should write a seed manifest"
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    assert data["version"] == 1
+    assert data["documents"] == {}
+    assert "freshly-made" in list_namespaces(vs_root)
+
+
+def test_ensure_namespace_does_not_clobber_existing_manifest(tmp_path):
+    """Pre-existing manifest must survive — no data loss on re-create."""
+    vs_root = tmp_path / "vs"
+    ensure_namespace(
+        vectorstore_root=vs_root,
+        company_docs_root=tmp_path / "docs",
+        namespace="acme",
+    )
+    manifest = vs_root / "acme" / MANIFEST_FILENAME
+    payload = {
+        "version": 1,
+        "updated_at": "2026-04-01T00:00:00+00:00",
+        "documents": {"local:keep.md": {"chunk_count": 3}},
+    }
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+
+    ensure_namespace(
+        vectorstore_root=vs_root,
+        company_docs_root=tmp_path / "docs",
+        namespace="acme",
+    )
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    assert data["documents"] == {"local:keep.md": {"chunk_count": 3}}
+
+
 # ── migrate_flat_layout ────────────────────────────────────────────────
 
 

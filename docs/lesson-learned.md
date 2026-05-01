@@ -179,3 +179,19 @@ plan 의 위험 분석에서 정확히 예측한 케이스 (cap 합 40 vs RTX 40
 **시도**: Phase 10 P10-2a 에서 `migrate_flat_layout(vectorstore_root, company_docs_root)` 을 `app.py::lifespan` 에 best-effort 로 호출. 환경변수 토글 없이 바로 동작.
 **결과**: pytest 실행 중 `tests/test_api_db.py::test_lifespan_initializes_app_db` 등 `create_app()` 을 호출하는 테스트가 lifespan 까지 깨우면서, `PROJECT_ROOT / "data" / "vectorstore"` (절대 경로) 의 실제 평면 layout 을 `data/vectorstore/default/` 로 이동시켰다. 다행히 마이그레이션 함수가 idempotent + dest.exists() skip 이라 손실은 없었지만, 테스트가 사용자 데이터를 건드릴 수 있다는 점은 위험 신호.
 **배운 점**: FastAPI lifespan 의 자동 마이그레이션 같은 "환경을 mutating" 하는 부수효과는 (1) 환경변수 toggle 로 default off 하거나 (2) 테스트 fixture 가 PROJECT_ROOT 를 override 가능하도록 인자화하거나 (3) 명시적 CLI 명령으로만 트리거. 본 케이스는 1회성 마이그레이션이라 큰 후속 처리는 안 했지만, 향후 비슷한 mutation 코드가 lifespan 에 들어가면 `os.environ.get("APP_AUTO_MIGRATE", "0") == "1"` 같은 가드를 default 로 채택. 또 마이그레이션 함수 자체는 idempotent + best-effort + dest 보존 (overwrite 금지) 가 필수 — 이 세 가지 덕분에 사고가 손실로 이어지지 않았다.
+
+
+## [2026-05-02] CORS allow_methods 에 DELETE/PATCH/PUT 누락 → 브라우저에서 잠복 무력화
+**시도**: Phase 7 `src/api/app.py::create_app()` 의 CORSMiddleware 를 `allow_methods=["GET","POST","OPTIONS"]` 로 좁게 시작 (초기엔 GET/POST 만 쓰던 시절 잔재). 이후 P10-1 (targets PATCH/DELETE), P10-3 (rag DELETE/folders DELETE), P10-7 (settings PUT) 등이 추가됐지만 allow_methods 는 그대로.
+**결과**: pytest 의 `TestClient` 는 CORS preflight 를 거치지 않고 직접 호출하므로 466개 테스트 전부 green. 그러나 Phase 10 RAG 탭에서 사용자가 휴지통 클릭 → 브라우저가 DELETE 보내기 전 OPTIONS preflight 를 던짐 → CORS 가 `400 Disallowed CORS method` 로 거부 → 브라우저가 정작 DELETE 는 보내지도 못 하고 `TypeError: Failed to fetch`. **6개월 가까이 PATCH/DELETE/PUT 라우트 다수가 잠복으로 죽어 있었지만 GET/POST 만 쓰는 화면이 많아 들키지 않았다**.
+**배운 점**: FastAPI CORS 는 `allow_methods=["*"]` 또는 사용 중인 모든 verb (`GET/POST/PUT/PATCH/DELETE/OPTIONS`) 명시. 새 verb 라우트를 추가할 때 CORS 설정도 같이 점검. 회귀 방지로 OPTIONS preflight 를 1건이라도 테스트에 포함할 가치 있음 — `TestClient` 는 preflight 를 안 가지만 `httpx.Client` 로 헤더 명시 호출하면 검증 가능. 일반화: **테스트 환경 (TestClient/curl) 과 실제 브라우저 환경의 CORS 거동 차이** 가 가장 큰 false-green 원천 — preflight 가 필요한 verb (DELETE/PATCH/PUT/Custom-Header POST) 는 브라우저로 한 번씩 직접 눌러서 확인 (또는 `OPTIONS` curl 로 200 확인).
+
+## [2026-05-02] `ensure_namespace` 가 manifest seed 안 써서 새 namespace 가 listing 에서 사라짐
+**시도**: P10-2a `src/rag/namespace.py::ensure_namespace()` 가 `vectorstore_root/<ns>/` + `company_docs_root/<ns>/` 디렉터리만 mkdir. `list_namespaces()` 는 manifest.json 존재로 namespace 식별. POST `/rag/namespaces` 의 happy-path 만 단위 테스트로 검증.
+**결과**: 사용자 시나리오 — `POST /rag/namespaces "test-ns"` → 201 응답 + `_summarize` 가 빈 manifest 로 정상 요약 반환 → 직후 `GET /rag/namespaces` → 새 namespace **목록에서 사라짐**. 첫 Re-index 가 manifest 를 쓸 때까지 invisible. 사용자가 "방금 만들었는데 어디갔지?" 로 막힘.
+**배운 점**: 두 자료 (manifest 존재 vs 디렉터리 존재) 를 다른 함수가 다른 의도로 다룰 때, 한쪽을 만든 코드 경로가 다른 쪽 invariant 도 같이 만족시켜야 한다. `ensure_namespace` 가 빈 manifest (`{"version":1,"updated_at":null,"documents":{}}`) 를 atomic write (tmp + replace) 로 같이 쓰는 fix 적용. 일반화: **"이 자료가 X 의 source-of-truth" 같은 invariant 는 단위 테스트의 happy-path 로는 안 잡힌다** — 두 함수 사이의 경계를 넘는 통합 시나리오 (POST 직후 GET) 가 있어야 노출. 신규 entity 생성 코드를 짤 때 항상 자문: "이 entity 를 다른 함수가 어떻게 발견하는가? 그 발견 경로가 지금 만족되나?"
+
+## [2026-05-01] Windows uvicorn 컨텍스트에서 subprocess.Popen(["explorer", path]) 는 silent fail
+**시도**: P10-9 의 "현재 폴더를 OS 탐색기에서 열기" endpoint 1차 구현 — `subprocess.Popen(["explorer", abs_path])` (cross-platform 통일을 노린 첫 시도). 단위 테스트는 `subprocess.Popen` 을 monkeypatch 해서 통과.
+**결과**: 사용자가 실제 RAG 탭에서 🗂 Explorer 버튼을 눌렀을 때 endpoint 는 200·`opened=True` 응답을 돌려주지만 정작 탐색기 창이 안 뜸. uvicorn 이 콘솔 미부착 (백그라운드) 컨텍스트에서 explorer.exe 를 spawn 하면 stderr 가 유실되는 듯, 예외도 안 나옴. 사용자 입장에선 "버튼이 작동 안 함" 으로만 보임.
+**배운 점**: Windows 에서 OS-level 동작 (탐색기·기본앱 launch) 은 `os.startfile(path)` 가 canonical. `subprocess.Popen([...])` 는 콘솔이 attach 된 상황에서만 신뢰 가능. 그리고 OS 분기 코드는 단일 wrapper 함수 `_launch_file_manager(abs_path) -> bool` 로 분리 + endpoint 는 결과 boolean 만 응답에 surface — 테스트가 wrapper 자체를 monkeypatch (Popen 은 OS 별 분기 다 따라가야 해서 brittle). `playbook.md#16` 참조. 같은 원칙은 `os.startfile`, `webbrowser.open`, 알림 라이브러리 등 OS 의존 호출 모두에 적용.

@@ -113,6 +113,7 @@ export interface RagNamespaceSummary {
   updated_at: string | null;
   by_source_type: Record<string, number>;
   is_default: boolean;
+  needs_reindex: boolean;
 }
 
 export interface RagNamespaceListResponse {
@@ -150,6 +151,73 @@ export interface RagDocumentUploadResponse {
 export interface RagNamespaceDeleteResponse {
   name: string;
   removed: boolean;
+}
+
+export type RagTreeEntryType = "folder" | "file";
+
+export interface RagTreeEntry {
+  type: RagTreeEntryType;
+  name: string;
+  size_bytes: number | null;
+  modified_at: string | null;
+  extension: string | null;
+  indexed: boolean | null;
+  chunk_count: number | null;
+  child_count: number | null;
+  needs_reindex: boolean | null;
+}
+
+export interface RagTreeResponse {
+  namespace: string;
+  path: string;
+  parent: string | null;
+  entries: RagTreeEntry[];
+}
+
+export interface RagFolderActionResponse {
+  namespace: string;
+  path: string;
+  removed: boolean;
+  created: boolean;
+}
+
+export interface RagOpenFolderResponse {
+  namespace: string;
+  path: string;
+  abs_path: string;
+  opened: boolean;
+}
+
+export interface RagRootOpenResponse {
+  abs_path: string;
+  opened: boolean;
+}
+
+export interface RagRootFileListResponse {
+  files: RagDocumentSummary[];
+}
+
+export interface RagSummaryRequestInput {
+  path?: string;
+  lang?: "en" | "ko";
+  sample_size?: number;
+  max_tokens?: number;
+}
+
+export interface RagSummaryResponse {
+  namespace: string;
+  path: string;
+  chunk_count: number;
+  chunks_in_namespace: number;
+  summary: string;
+  model: string | null;
+  usage: Record<string, number>;
+  generated_at: string;
+  is_stale: boolean;
+}
+
+export interface RagSummaryCachedResponse {
+  summary: RagSummaryResponse | null;
 }
 
 // ── Phase 10 P10-5 — Daily News ────────────────────────────────────────

@@ -422,6 +422,48 @@
     - **DO NOT 룰**: 라우트가 `from src.api import store as _store` 로만 접근 → 테스트가 `reset_stores()` 로 싱글턴을 비우면 새 env (`API_APP_DB=tmp_path`) 로 재초기화됨
   - **Phase 10 완료 — 다음 단계**: P1-1 (제안서 톤 조정) 또는 backlog 18 (Nemotron 검토) 또는 backlog 19 (패키지/배포). 추가 discover 실행 1~2회 (다른 RAG namespace 또는 ko 언어) 로 결과 일반화 검증
 
+- **Phase 10-9 ✅ — RAG 탭 filesystem-mirror UX 확장 (2026-05-01 ~ 02)**
+  - **배경**: P10-3 의 namespace 드롭다운 + 평탄 테이블 UX 가 비개발자에게 "namespace / chunks / manifest" 라는 백엔드 추상화를 그대로 노출. 사용자가 OS 탐색기를 못 여는 비개발자라는 페르소나에 안 맞음. RAG 탭의 단 하나의 목표는 "RAG 소스 파일을 파일시스템처럼 입력/조회/삭제" 로 재정의.
+  - **백엔드 (`src/api/routes/rag.py` + `schemas.py` + `src/rag/store.py` + 신규 prompts 2종)**
+    - 폴더 탐색 신규 3 endpoint — `GET /rag/namespaces/{ns}/tree?path=` (비재귀 listing, 폴더→파일 정렬, parent 포함) / `POST /rag/namespaces/{ns}/folders` (path 본문, 409 if exists) / `DELETE /rag/namespaces/{ns}/folders/{path:path}` (재귀, 루트 거부 422)
+    - `_validate_subpath` + `_resolve_subpath` 추가 — 슬래시/콜론/`..`/Win 드라이브 다 막는 검증 + `_resolve_inside` 이중 가드. 기존 `_validate_upload_filename` 은 leaf 전용으로 정리
+    - 업로드 path 확장 — `POST /rag/namespaces/{ns}/documents` 가 `path: Form("")` 받음. 기본 평탄 업로드 호환 유지
+    - OS 파일 매니저 신규 2 endpoint — `POST /rag/namespaces/{ns}/open?path=` / `POST /rag/root/open` (data/company_docs 자체). Windows 는 `os.startfile`, macOS `open`, Linux `xdg-open`. 분리된 `_launch_file_manager(abs_path) -> bool` 래퍼로 테스트 가능
+    - AI Summary 신규 — `POST /rag/namespaces/{ns}/summary {path,lang,sample_size,max_tokens}`. ChromaDB `_collection.get(limit=N)` 으로 query-less 청크 샘플링 → path 있으면 source_ref prefix 필터 → Sonnet `chat_once` (system+task split via `---TASK---`). 빈 namespace / 매칭 없는 path 는 LLM 호출 없이 안내 메시지. API 키 없으면 503
+    - `VectorStore.sample(limit, where=None)` 추가 — `_collection.get(limit=N)` 후 `_restore` 로 Chunk 복원. 다른 곳에서도 query-less 샘플링에 재사용 가능
+    - 신규 프롬프트 `src/prompts/{en,ko}/namespace_summary.txt` — 3~6 bullets, 굵은 라벨 + 한 줄 문장, "다양한 주제" 같은 모호 표현 금지
+    - root 파일 신규 3 endpoint — `GET /rag/root/files` (top-level 만, 확장자 필터) / `POST /rag/root/files` (multipart, leaf 검증) / `DELETE /rag/root/files/{filename}` (단계 leaf, traversal 차단). 비개발자가 README 같은 워크스페이스급 문서를 root 에 올리고 보고 삭제 가능
+    - 신규 schemas 9종 — `RagTreeEntry`/`RagTreeResponse`/`RagFolderCreate`/`RagFolderActionResponse`/`RagOpenFolderResponse`/`RagRootOpenResponse`/`RagSummaryRequest`/`RagSummaryResponse`/`RagRootFileListResponse`
+  - **프론트엔드 (`web/src/app/rag/page.tsx` 전면 재작성 + `RagDocumentDropzone.tsx` + `lib/{api,types}.ts`)**
+    - 3-column workspace shell (260px Explorer / 1fr 파일 테이블 / 320px AI Summary) — IDE 톤. `-mx-6 -my-8` 로 부모 max-w-6xl 풀-블리드. min-h-[calc(100vh-160px)]
+    - URL `?path=` 첫 세그먼트가 namespace, 나머지가 sub-path. `?path=""` 면 root 뷰 — `listRagNamespaces` + `listRootFiles` 결과를 합쳐 폴더+파일 통합 표시
+    - **"namespace" 단어 UI 에서 일절 제거** — "+ 새 폴더" 통일, 📦 아이콘·라벨 제거, Danger zone / NamespaceDeleteModal 제거 (`DELETE /rag/namespaces/{ns}` API 는 CLI/관리자용으로 유지)
+    - **ChromaDB 내부 필드 숨김** — `Chunks` 컬럼 / chunk 카운트 / manifest 경로 / 토큰 카운트 모두 제거. `Indexed/Pending` → **`Ready/Pending`**. 상단 badge 는 `X files` 만
+    - 좌측 lazy-load 폴더 트리 (root 노드 = `data/company_docs/`, 자식은 namespaces, 손자부터는 listRagTree). active path ancestor 자동 펼침
+    - 컴팩트 toolbar — 새 폴더 / 업로드 / 삭제 / 전체 선택 / Explorer 열기 / 새로고침 / Dry run / Re-index. 30px row height
+    - 폴더 선택 시 🗑 삭제 disabled (tooltip: "최상위 폴더는 OS 탐색기에서 삭제하세요"). root 파일 삭제는 `deleteRootFile`
+    - AI Summary pane — 수동 `✨ 생성` 버튼, (namespace, path) 별 세션 캐시. footer 의 청크/토큰 표시 제거. root 에서는 disabled + 안내
+    - dropzone `uploadAtRoot` prop — root 일 땐 `uploadRootFile`, 안에선 `uploadRagDocument`
+    - 인라인 에러/메시지 banner (워크스페이스 상단) — 이전엔 페이지 최하단이라 안 보였음
+  - **테스트**: `tests/test_api_rag_docs.py` 20→61 (+41) 신규 — tree 7건 / folders 9건 / upload-with-path 3건 / open 5건 / summary 6건 / root files 9건 / root open 1건 / launch failure 1건. 회귀: **416 → 447 → 455 passed all green**
+  - **DO NOT 룰**: 라우트가 `from src.config import loader as _config_loader` / `from src.llm import claude_client as _claude_client` / `from src.rag import retriever as _retriever` 모듈 경유. 테스트는 모듈 attr monkeypatch (`_rag_routes._claude_client.chat_once`, `_rag_routes._retriever._store`, `_rag_routes._launch_file_manager`)
+  - **남은 한계**: root 에 올린 파일은 인덱싱 안 됨 — `_root` namespace 신설 + indexer 변경은 명시적 out-of-scope (사용자 결정: 인덱싱 필요하면 폴더로 옮기면 됨). `migrate_flat_layout` 은 그대로
+
+- **Phase 10-9.1 ✅ — RAG 탭 UX 보강 (CORS / Namespace 라벨 / 재인덱싱 신호 / Summary 영속화) (2026-05-02)**
+  - **배경**: 10-9 운용 중 4개 마찰점 발견 — (0) 삭제/PATCH 가 브라우저에서 `Failed to fetch` (CORS allow_methods 에 DELETE/PATCH/PUT 누락), (1) 루트 `+ 새 폴더` 가 사실 namespace 생성인데 한글 입력 시 422 만 떨어짐, (2) 폴더에 새 파일이 있어도 재인덱싱 필요 신호 없음, (3) AI Summary 새로고침 시 사라짐 (서버측 캐시 부재).
+  - **`src/api/app.py:133`** — `allow_methods` 에 `PUT`/`PATCH`/`DELETE` 추가. `/rag/namespaces/{ns}/documents/{filename:path}` 등 모든 비-GET/POST 라우트가 브라우저에서 동작 복구
+  - **#3 — 루트 버튼 라벨링** (`web/src/app/rag/page.tsx`): `isRoot ? "Namespace 생성" : "새 폴더"` 동적 라벨 + 📦/📁 아이콘 분리 + prompt 메시지 (`"새 namespace 이름 (영문/숫자/-/_ 만)"`) + 빈 상태 안내문구 동기화
+  - **#4(a) — 재인덱싱 필요 뱃지**
+    - **백엔드** (`src/api/routes/rag.py`): `_indexed_local_files` 가 `{rel: _IndexedDoc(chunk_count, indexed_at)}` 반환으로 확장. `_folder_needs_reindex(folder, ns_root, lookup)` 신규 헬퍼 — 자손 파일 중 manifest 누락 또는 `mtime > indexed_at` 이면 True. `_format_folder_entry` / `_summarize` / `get_rag_tree` / `get_rag_namespaces` 가 stale flag 채움. `RagTreeEntry.needs_reindex` (folder-only) + `RagNamespaceSummary.needs_reindex` schemas 추가
+    - **프론트엔드** (`web/src/app/rag/page.tsx`): FileRow Status 컬럼 — 폴더이고 needs_reindex 면 `⚠ 재인덱싱` 앰버 뱃지, 아니면 기존 `—`. `namespaceToTreeEntry` 가 needs_reindex 매핑
+  - **#4(b) — AI Summary 영속화 + stale 검출**
+    - **DB** (`src/api/db.py`): `rag_summaries` 테이블 신규 — `(namespace, path)` PK + `summary/lang/model/usage_json/chunk_count/chunks_in_namespace/indexed_at_at_generation/generated_at`. `indexed_at_at_generation` 이 stale 판정 baseline (현재 폴더 last_indexed_at 와 비교)
+    - **백엔드** (`src/api/routes/rag.py`): `_get_cached_summary`/`_upsert_summary`/`_delete_namespace_summaries` 헬퍼 + `_folder_last_indexed_at(folder_rel, lookup)` 도우미. `POST /summary` 가 LLM 호출 후 SQLite 에 INSERT OR REPLACE. **신규 라우트 `GET /rag/namespaces/{ns}/summary?path=`** — 캐시 row 조회 + 현재 last_indexed_at 비교로 `is_stale` 계산. `delete_rag_namespace` 가 force 시 캐시 row 도 wipe
+    - **프론트엔드** (`web/src/app/rag/page.tsx` + `lib/api.ts`): `getCachedRagSummary` 신규. 폴더 path 변경 시 useEffect 가 캐시 자동 fetch → SummaryPane 즉시 표시. 버튼 라벨 `없음 → "✨ AI Summary 생성"` / `있고 stale 아님 → "다시 생성"` / `있고 stale → "Update ⚠"` (앰버 톤). 생성시점 `생성: YYYY-MM-DD HH:MM` 라벨 + stale 시 `재인덱싱 후 갱신 필요` 인라인 뱃지
+  - **테스트**: `tests/test_api_rag_docs.py` 61→68 (+7) — folder needs_reindex 2건 / namespace summary needs_reindex 1건 / summary cache GET null 1건 / summary persist roundtrip 1건 / summary stale after reindex 1건 / namespace delete clears summaries 1건. 회귀: **466 passed all green**
+  - **#5 (서브폴더 단위 retrieval 분리) 는 backlog 로 분리** — namespace 단위 검색 유지, 폴더는 정리용
+  - **DO NOT 룰**: 신규 helper 들도 모듈 경유 (`from src.api import db as _db`), `_app_db_path()` 가 `get_api_settings()` 를 lazy 호출 → 테스트가 `API_APP_DB` 만 override 하면 자동으로 새 DB 가리킴
+
 ## 다음 MVP 범위 (Phase 10 이후)
 - Phase 10 PR 시리즈 진행 (P10-1 ~ P10-8)
 - backlog 항목 18 — NVIDIA Nemotron 활용 검토 (4 sub-track: Exaone 대체 / Sonnet 대체 / synthetic data / multi-model 분업) — 별도 branch 실험

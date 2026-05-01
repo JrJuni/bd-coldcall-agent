@@ -17,6 +17,7 @@ layout from before P10-2a. `migrate_flat_layout()` moves those into
 """
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 from pathlib import Path
@@ -27,6 +28,9 @@ _LOGGER = logging.getLogger(__name__)
 
 DEFAULT_NAMESPACE = "default"
 MANIFEST_FILENAME = "manifest.json"
+# Schema version of manifest.json — single source of truth, imported by
+# `src.rag.indexer`. Bump when the manifest dict shape changes.
+MANIFEST_VERSION = 1
 
 # File extensions that the local connector indexes — used to decide which
 # flat files to migrate into <root>/default/.
@@ -77,11 +81,31 @@ def ensure_namespace(
     company_docs_root: Path | str,
     namespace: str,
 ) -> tuple[Path, Path]:
-    """Idempotently create the namespace's vectorstore + company_docs dirs."""
+    """Idempotently create the namespace's vectorstore + company_docs dirs.
+
+    Also writes a seed `manifest.json` when one is missing, so the
+    namespace is immediately discoverable by `list_namespaces` (which
+    keys off manifest presence). Without this, a freshly-created empty
+    namespace stays invisible until the first indexer pass writes a
+    manifest of its own.
+    """
     vs = vectorstore_root_for(vectorstore_root, namespace)
     cd = company_docs_root_for(company_docs_root, namespace)
     vs.mkdir(parents=True, exist_ok=True)
     cd.mkdir(parents=True, exist_ok=True)
+
+    manifest = vs / MANIFEST_FILENAME
+    if not manifest.exists():
+        seed = {
+            "version": MANIFEST_VERSION,
+            "updated_at": None,
+            "documents": {},
+        }
+        tmp = manifest.with_suffix(manifest.suffix + ".tmp")
+        tmp.write_text(
+            json.dumps(seed, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        tmp.replace(manifest)  # os.replace — atomic within a filesystem
     return vs, cd
 
 

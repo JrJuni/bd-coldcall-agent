@@ -120,3 +120,28 @@ class VectorStore:
         result = self._collection.get(include=["metadatas"])
         metas = result.get("metadatas") or []
         return {str(m.get("doc_id")) for m in metas if m and m.get("doc_id")}
+
+    def sample(
+        self, limit: int, where: dict[str, Any] | None = None
+    ) -> list[Chunk]:
+        """Return up to `limit` chunks without a query — for AI Summary.
+
+        Optionally filtered by ChromaDB `where` clause (e.g. doc_id prefix).
+        Order is whatever Chroma returns; callers shouldn't depend on it.
+        """
+        if limit <= 0 or self.count() == 0:
+            return []
+        kwargs: dict[str, Any] = {
+            "limit": int(limit),
+            "include": ["documents", "metadatas"],
+        }
+        if where:
+            kwargs["where"] = where
+        result = self._collection.get(**kwargs)
+        ids = result.get("ids") or []
+        docs = result.get("documents") or []
+        metas = result.get("metadatas") or []
+        out: list[Chunk] = []
+        for cid, text, meta in zip(ids, docs, metas):
+            out.append(_restore(cid, text or "", meta or {}))
+        return out

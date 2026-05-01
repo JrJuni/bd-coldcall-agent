@@ -27,6 +27,9 @@
 | `mvp-cut` `flat-schema` `human-review` `output-format` | [12. MVP 1-shot 산출은 flat 데이터 + grouped 리포트 페어](#12-mvp-1-shot-산출은-flat-데이터--grouped-리포트-페어) | 검증 없는 LLM 1회 산출이라도 flat yaml (편집·UI 친화) + 그룹 md (검수 친화) 두 형태로 동시 출력 |
 | `llm-output-budget` `max-tokens` `step-isolation` `truncate-failure` | [13. LLM step 별 max_tokens 별도 setting](#13-llm-step-별-max_tokens-별도-setting) | 새 step 추가 시 input 비슷해도 output 분포 별도 추정. setting 키 신설이 retry 보다 안전 |
 | `llm-judgment-decompose` `weighted-scoring` `external-yaml` `reproducibility` | [14. LLM 판단을 점수+규칙으로 분해](#14-llm-판단을-점수규칙으로-분해) | LLM hallucination 을 prompt 정교화로 누르기 전, 결정 가능한 수치를 코드로 빼낼 수 있는지 먼저 검토. weight 외부 yaml 화로 재현·재사용·재계산 0원 |
+| `non-dev-persona` `ui-design` `abstraction-leak` `internal-vs-external` | [15. 비개발자 UI 는 백엔드 추상화 노출 금지](#15-비개발자-ui-는-백엔드-추상화-노출-금지) | namespace / chunks / manifest 같은 내부 개념은 화면에서 빼라. 사용자가 본다고 의사결정 못 함 |
+| `os-launch` `windows` `headless` `testability-wrapper` | [16. OS 파일 매니저 호출은 래퍼로 분리](#16-os-파일-매니저-호출은-래퍼로-분리) | Windows 에선 subprocess.Popen 대신 os.startfile. 단일 함수로 묶어서 테스트 monkeypatch 가능하게 |
+| `manifest` `staleness` `derived-aggregate` `rag` `incremental` | [17. per-item 타임스탬프 → 폴더 단위 stale 검출](#17-per-item-타임스탬프--폴더-단위-stale-검출) | manifest.indexed_at + filesystem mtime 비교로 폴더 needs_reindex 파생. 메타 추가 없이 사용자 신호 추가 |
 
 항목이 늘어나면 태그 알파벳순으로 재정렬. 항목 제거는 패턴이 무효화됐을 때만 (이 경우 원인도 기록).
 
@@ -252,3 +255,95 @@ Phase 9.1 적용 사례:
 **Why it works**: 같은 LLM 응답 (`scores`) 으로 weight 만 바꿔 재계산 비용 = $0. 다른 제품 (Snowflake / Salesforce 등) 도 `products.<name>` override 추가만으로 재사용. "왜 S?" 질문에 차원별 점수 + weight 합산식 보여주면 답 끝. LLM 호출 단계가 격리돼서 hallucination 가 결정 단계로 누설되지 않음.
 
 **Reusable in**: tier 분류, 추천 엔진, 후보 우선순위, 평가·rubric 기반 채점 (LLM-as-judge backlog P2-6), 어떤 multi-criteria decision 도. 패턴 적용 가능 신호: (a) 결정이 여러 비교 가능한 차원의 합으로 표현 가능, (b) 도메인·고객별 weight 가 다를 가능성, (c) 같은 입력으로 재실행 시 결정 일관성이 가치 있음.
+
+---
+
+## 15. 비개발자 UI 는 백엔드 추상화 노출 금지
+
+**태그**: `non-dev-persona` `ui-design` `abstraction-leak` `internal-vs-external`
+
+**Problem**: P10-3 의 RAG 탭이 namespace 드롭다운 / "X chunks" / manifest 경로 / "Indexed/Pending" / Danger zone 등 백엔드 개념을 그대로 UI 에 노출. 개발자는 의미 알지만, 비개발자에게는 "이 숫자가 무슨 의미? 내가 뭘 해야 하지?" 만 남음. 페르소나 (OS 탐색기를 못 여는 비개발 BD) 와 UI 추상화가 어긋남.
+
+**Solution**: UI 가 보여주는 모든 라벨·필드·경고 문구를 다음 두 질문으로 필터:
+1. **"이 정보를 보고 사용자가 의사결정을 할 수 있는가?"** — yes 만 남김. chunk count / manifest 경로 / cache token 같은 건 사용자가 봐도 다음 액션이 안 정해짐 → 제거
+2. **"이 단어가 우리 시스템 내부에서만 의미를 가지는가?"** — yes 면 일반어로 환산. namespace → 폴더, indexed → Ready, "Re-index" 는 일상어라 OK 로 판단
+
+P10-9 (RAG 탭 filesystem-mirror UX) 적용 사례:
+- 단어 추방: namespace, chunks, manifest, "indexed" → 폴더, files, (제거), Ready
+- 컬럼 제거: Chunks (전체) / SummaryPane footer 의 token usage / ExplorerPane 의 manifest 경로
+- 라벨 환산: "Indexed/Pending" → "Ready/Pending"
+- 기능 제거: namespace 영구 삭제 모달 (사용자가 실수로 ChromaDB 통째 날릴 위험 + 실제 삭제 빈도 0 에 가까움) — 정 필요하면 OS 탐색기 (이미 버튼 있음)
+- 문구 통일: "+ 새 namespace" / "+ 새 폴더" 분기 → 항상 "+ 새 폴더". 백엔드는 namespace 생성을 호출하지만 사용자는 모름
+
+**Why it works**: 사용자가 보는 단어들이 사용자의 일상 어휘와 일치 → 학습 곡선 ~0. 노출되지 않은 추상화는 사용자가 굳이 이해할 필요가 없음 (격리). UI 단순화는 가짜 단순화가 아니라 "없어도 의사결정에 영향 없는 정보를 진짜로 제거" 하는 거라서 정보 손실 없음.
+
+**Reusable in**: 데이터·AI 도구의 비개발자 노출 모든 UI. 점검 트리거 — 백엔드에 새 개념 (cache layer, queue, shard 등) 이 추가될 때마다 "이게 UI 에 새 단어로 등장해도 되나?" 자문. 기본 답은 NO. 같은 원칙은 admin/dev console 과 user-facing UI 분리에도 적용 (admin 은 추상화 노출 OK).
+
+---
+
+## 16. OS 파일 매니저 호출은 래퍼로 분리
+
+**태그**: `os-launch` `windows` `headless` `testability-wrapper`
+
+**Problem**: 로컬 GUI 를 띄우는 백엔드 endpoint (예: "이 폴더를 OS 탐색기에서 열기") 구현 시 두 가지 함정. (1) Windows 에서 `subprocess.Popen(["explorer", path])` 가 콘솔 미부착 서버 (uvicorn 백그라운드) 컨텍스트에서 silent fail — stderr 는 유실되고 endpoint 는 200 반환하는데 정작 창이 안 뜸. (2) OS 별 분기 (Windows / macOS / Linux) 코드가 핸들러 안에 박혀 있으면 테스트가 실제 OS 호출을 트리거 → 테스트 실행 시 진짜 창이 떠버리거나 CI 에서 실패.
+
+**Solution**: 단일 래퍼 함수로 OS 분기 + 안전한 호출 + 실패 boolean 반환:
+
+```python
+def _launch_file_manager(abs_path: str) -> bool:
+    try:
+        if sys.platform.startswith("win"):
+            os.startfile(abs_path)  # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", abs_path])
+        else:
+            subprocess.Popen(["xdg-open", abs_path])
+        return True
+    except (OSError, FileNotFoundError, AttributeError) as exc:
+        _LOGGER.warning("...: %s", exc)
+        return False
+```
+
+Endpoint 는 `opened = _launch_file_manager(abs_path)` 결과만 응답에 실어 UI 가 명확한 메시지 표시. 테스트는 `monkeypatch.setattr(_routes, "_launch_file_manager", lambda p: True)` 로 함수 자체를 fake 치환 — `subprocess.Popen` patch 는 OS 별 분기 다 따라가야 해서 깨지기 쉬움.
+
+P10-9 적용:
+- Windows `os.startfile` (canonical) 채택. `Popen(["explorer", ...])` 는 detach·콘솔 미부착 시 silent fail 검증됨
+- 테스트 5건이 `_launch_file_manager` monkeypatch 로 실제 창 안 띄우면서도 호출 인자·반환값 검증
+
+**Why it works**: 래퍼가 OS 분기 + 예외 처리 + 결과 boolean 의 세 가지를 한 곳에 모음. endpoint 는 비즈니스 로직 (path 검증·resolve) 만 하고 OS 호출은 단일 진입점. 테스트는 한 줄 patch 로 부수효과 차단.
+
+**Reusable in**: 데스크톱 앱 백엔드 (FastAPI on localhost) 가 OS 기능 (탐색기 열기, 기본 브라우저로 URL, 시스템 알림 등) 을 호출하는 모든 곳. 같은 패턴은 클립보드 (`pyperclip`), 토스트 (`win10toast`/`pync`/`notify-send`) 등에도 적용. 핵심: "OS 분기 + 부수효과 + 테스트 가능성" 세 요건이 충돌할 때 단일 함수로 묶어라.
+
+---
+
+## 17. per-item 타임스탬프 → 폴더 단위 stale 검출
+
+**태그**: `manifest` `staleness` `derived-aggregate` `rag` `incremental`
+
+**Problem**: 증분 인덱싱 (incremental indexing) 시스템에서 사용자가 "이 폴더에 새로운 파일이 들어왔는데 아직 인덱싱 안 된 게 있나?" 를 알아야 함 (P10-9.1 RAG 탭 #4(a)). 단순한 접근은 폴더에 별도 메타 (`folder_indexed_at`) 추가 — 그러나 manifest 스키마 확장은 마이그레이션 + 기존 코드 (indexer / retriever / connectors) 다 건드림. 또 폴더는 사용자가 자유롭게 만들고 옮기므로 폴더 단위 메타는 동기화 부담이 큼.
+
+**Solution**: per-document 타임스탬프 (`manifest.documents[doc_id].indexed_at`) 를 source of truth 로 두고, 폴더 단위 staleness 는 **파생 집계** 로 계산:
+
+```python
+def _folder_needs_reindex(folder_abs, ns_root, indexed_lookup) -> bool:
+    """True if any descendant file is missing from manifest OR mtime > indexed_at."""
+    for child in folder_abs.rglob("*"):
+        if not child.is_file() or child.suffix not in _ALLOWED_EXTENSIONS:
+            continue
+        rel = child.resolve().relative_to(ns_root.resolve()).as_posix()
+        entry = indexed_lookup.get(rel)
+        if entry is None or not entry.indexed_at:
+            return True  # 새 파일
+        mtime_iso = datetime.fromtimestamp(child.stat().st_mtime, tz=utc).isoformat()
+        if mtime_iso > entry.indexed_at:
+            return True  # 수정 후 미반영
+    return False
+```
+
+폴더 단위 "마지막 인덱싱 시점" 도 같은 방식으로 파생: `MAX(indexed_at for rel in manifest if rel.startswith(folder_prefix))`. 이걸 AI Summary 영속화의 stale 베이스라인으로 활용 (`indexed_at_at_generation` 와 비교).
+
+`_IndexedDoc(NamedTuple)` 한 타입으로 chunk_count + indexed_at 묶어서 통과 — `dict[str, int]` → `dict[str, _IndexedDoc]` 한 번 바꾸면 호출자들도 깔끔하게 흡수.
+
+**Why it works**: (1) **스키마 변경 없음** — manifest 의 기존 `indexed_at` 키 그대로 활용, indexer / connectors / retriever 무영향. (2) **사용자가 자유롭게 폴더 조작해도 자동 정합** — 파일을 다른 폴더로 옮기면 `rglob` 가 새 부모에서 발견, 옛 부모는 자연스럽게 stale 안 됨. (3) **계산 비용 적당** — 폴더당 O(파일 수) stat 호출, 대부분 RAG 코퍼스 (수십~수백 파일) 수준이면 수십 ms. tree 응답에 자연스럽게 함께 채울 수 있음. (4) **mtime / indexed_at 같은 ISO timestamp string 비교는 lexicographic 으로 order-preserving** (둘 다 `datetime.isoformat(tz=utc)` 로 만들면 microsecond 까지 동일 포맷).
+
+**Reusable in**: 어떤 증분 처리 파이프라인이든 — RAG 인덱서 외에도 (a) 빌드 시스템의 "stale target" 검출 (Make / Bazel 의 timestamp 비교 일반화), (b) 캐시 무효화 (cached summary 가 underlying 데이터 갱신 후 stale), (c) ETL 파이프라인의 partition 단위 reprocess 결정. 핵심 원칙: **per-item state 를 source-of-truth 로 두면, 임의 그룹 (폴더 / partition / shard) 의 상태는 항상 파생 집계로 일관되게 계산 가능 — 그룹 단위 별도 메타를 만들지 마라**. 별도 메타는 동기화 버그의 진원지.

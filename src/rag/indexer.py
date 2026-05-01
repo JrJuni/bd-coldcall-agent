@@ -30,6 +30,7 @@ from src.rag.embeddings import embed_texts
 from src.rag.namespace import (
     DEFAULT_NAMESPACE,
     MANIFEST_FILENAME,
+    MANIFEST_VERSION,
     company_docs_root_for,
     ensure_namespace,
     list_namespaces,
@@ -42,8 +43,6 @@ from src.rag.types import Document
 
 
 _LOGGER = logging.getLogger(__name__)
-
-MANIFEST_VERSION = 1
 
 
 EmbedFn = Callable[[list[str]], np.ndarray]

@@ -20,9 +20,17 @@ import type {
   DashboardResponse,
   RagDocumentListResponse,
   RagDocumentUploadResponse,
+  RagFolderActionResponse,
   RagNamespaceDeleteResponse,
   RagNamespaceListResponse,
   RagNamespaceSummary,
+  RagOpenFolderResponse,
+  RagRootFileListResponse,
+  RagRootOpenResponse,
+  RagSummaryCachedResponse,
+  RagSummaryRequestInput,
+  RagSummaryResponse,
+  RagTreeResponse,
   RunCreateResponse,
   SecretsView,
   SettingsKind,
@@ -204,9 +212,11 @@ export async function listRagDocuments(
 export async function uploadRagDocument(
   namespace: string,
   file: File,
+  path: string = "",
 ): Promise<RagDocumentUploadResponse> {
   const fd = new FormData();
   fd.append("file", file, file.name);
+  if (path) fd.append("path", path);
   const r = await fetch(
     `${API_BASE}/rag/namespaces/${encodeURIComponent(namespace)}/documents`,
     { method: "POST", body: fd },
@@ -233,6 +243,155 @@ export async function deleteRagDocument(
     throw new Error(
       `DELETE /rag/namespaces/${namespace}/documents/${filename} ${r.status}`,
     );
+}
+
+function encodeSubpath(p: string): string {
+  return p.split("/").map(encodeURIComponent).join("/");
+}
+
+export async function listRagTree(
+  namespace: string,
+  path: string = "",
+): Promise<RagTreeResponse> {
+  const qs = path ? `?path=${encodeURIComponent(path)}` : "";
+  const r = await fetch(
+    `${API_BASE}/rag/namespaces/${encodeURIComponent(namespace)}/tree${qs}`,
+    { cache: "no-store" },
+  );
+  if (!r.ok)
+    throw new Error(
+      `GET /rag/namespaces/${namespace}/tree ${r.status}: ${await r.text()}`,
+    );
+  return r.json();
+}
+
+export async function createRagFolder(
+  namespace: string,
+  path: string,
+): Promise<RagFolderActionResponse> {
+  const r = await fetch(
+    `${API_BASE}/rag/namespaces/${encodeURIComponent(namespace)}/folders`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    },
+  );
+  if (!r.ok)
+    throw new Error(
+      `POST /rag/namespaces/${namespace}/folders ${r.status}: ${await r.text()}`,
+    );
+  return r.json();
+}
+
+export async function deleteRagFolder(
+  namespace: string,
+  path: string,
+): Promise<RagFolderActionResponse> {
+  const r = await fetch(
+    `${API_BASE}/rag/namespaces/${encodeURIComponent(namespace)}/folders/${encodeSubpath(path)}`,
+    { method: "DELETE" },
+  );
+  if (!r.ok)
+    throw new Error(
+      `DELETE /rag/namespaces/${namespace}/folders/${path} ${r.status}: ${await r.text()}`,
+    );
+  return r.json();
+}
+
+export async function openRagFolder(
+  namespace: string,
+  path: string = "",
+): Promise<RagOpenFolderResponse> {
+  const qs = path ? `?path=${encodeURIComponent(path)}` : "";
+  const r = await fetch(
+    `${API_BASE}/rag/namespaces/${encodeURIComponent(namespace)}/open${qs}`,
+    { method: "POST" },
+  );
+  if (!r.ok)
+    throw new Error(
+      `POST /rag/namespaces/${namespace}/open ${r.status}: ${await r.text()}`,
+    );
+  return r.json();
+}
+
+export async function openRagRoot(): Promise<RagRootOpenResponse> {
+  const r = await fetch(`${API_BASE}/rag/root/open`, { method: "POST" });
+  if (!r.ok)
+    throw new Error(`POST /rag/root/open ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+export async function listRootFiles(): Promise<RagRootFileListResponse> {
+  const r = await fetch(`${API_BASE}/rag/root/files`, { cache: "no-store" });
+  if (!r.ok)
+    throw new Error(`GET /rag/root/files ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+export async function uploadRootFile(
+  file: File,
+): Promise<RagDocumentUploadResponse> {
+  const fd = new FormData();
+  fd.append("file", file, file.name);
+  const r = await fetch(`${API_BASE}/rag/root/files`, {
+    method: "POST",
+    body: fd,
+  });
+  if (!r.ok)
+    throw new Error(`POST /rag/root/files ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+export async function deleteRootFile(filename: string): Promise<void> {
+  const r = await fetch(
+    `${API_BASE}/rag/root/files/${encodeURIComponent(filename)}`,
+    { method: "DELETE" },
+  );
+  if (!r.ok && r.status !== 204)
+    throw new Error(
+      `DELETE /rag/root/files/${filename} ${r.status}: ${await r.text()}`,
+    );
+}
+
+export async function getCachedRagSummary(
+  namespace: string,
+  path: string = "",
+): Promise<RagSummaryCachedResponse> {
+  const qs = path ? `?path=${encodeURIComponent(path)}` : "";
+  const r = await fetch(
+    `${API_BASE}/rag/namespaces/${encodeURIComponent(namespace)}/summary${qs}`,
+    { cache: "no-store" },
+  );
+  if (!r.ok)
+    throw new Error(
+      `GET /rag/namespaces/${namespace}/summary ${r.status}: ${await r.text()}`,
+    );
+  return r.json();
+}
+
+export async function summarizeRagPath(
+  namespace: string,
+  body: RagSummaryRequestInput = {},
+): Promise<RagSummaryResponse> {
+  const r = await fetch(
+    `${API_BASE}/rag/namespaces/${encodeURIComponent(namespace)}/summary`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        path: body.path ?? "",
+        lang: body.lang ?? "ko",
+        sample_size: body.sample_size ?? 20,
+        max_tokens: body.max_tokens ?? 900,
+      }),
+    },
+  );
+  if (!r.ok)
+    throw new Error(
+      `POST /rag/namespaces/${namespace}/summary ${r.status}: ${await r.text()}`,
+    );
+  return r.json();
 }
 
 // ── Phase 10 P10-5 — Daily News ────────────────────────────────────────

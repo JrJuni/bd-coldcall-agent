@@ -22,6 +22,8 @@
 
 ### 2. UX 사용성 개선 — 웹 drag-and-drop 입출력
 
+- **상태 (2026-05-02)**: **P10-3 (drag-drop + namespace UI) + P10-9 (filesystem-mirror UX 확장: 폴더 탐색·root 파일·AI Summary·OS 탐색기 launch) 로 흡수 완료.** 이 항목은 close. 후속 (Notion 토글·인덱싱 타임라인·root 파일 자동 인덱싱) 은 별도 backlog 항목으로 분기 필요 시 추가.
+- (이전 스케치 — 참고용 보존)
 - **왜**: 현재 RAG 문서는 `data/company_docs/` 에 수동 배치 → `python -m src.rag.indexer` 실행. CLI 비사용 BD 인력에게 진입 장벽. 핵심은 "OS 파일탐색기 거치지 말고 브라우저에서 바로" 입출력.
 - **구현 스케치**:
   - 프론트 `/rag` 페이지에 drag-drop zone 추가 (`react-dropzone` 또는 native HTML5).
@@ -29,7 +31,6 @@
   - `GET /ingest/documents` — 인덱싱된 문서 목록 (manifest 기반).
   - `DELETE /ingest/documents/{doc_id}` — 단건 삭제.
   - proposal 결과 다운로드 버튼 (`.md` 우선, 추후 `.pdf` / `.docx`).
-- **의존성**: Phase 7 인프라 위에 순수 추가. `src/rag/connectors/local_file.py` 재활용.
 - **범위 밖 (당분간)**: Notion 페이지 개별 토글, 인덱싱 타임라인 UI, 실행 이력 목록·자동완성 (사용자가 "나중"으로 분류).
 
 ### 3. 뉴스 스크래퍼 확장 (Brave 대체)
@@ -106,6 +107,18 @@
 
 - **상태 (2026-04-28)**: **Phase 8 Related 채널이 흡수.** intent 티어리스트 (S/A/B/C) 기반의 정적 multi-intent 쿼리가 `src/search/channels/related.py` 에 구현됨. 추가 작업 없으면 close.
 - (이전 스케치) `bilingual.py` 앞단에 intent-split — 의도 3~5개별 쿼리 생성 → 각각 Brave 호출 → URL 기준 merge + dedup.
+
+### 21. RAG 폴더 단위 검색 분리 (sub-namespace retrieval scope)
+
+- **상태 (2026-05-02)**: P10-9 / P10-9.1 에서 명시적 out-of-scope. 현재는 namespace 단위만 검색 분리, 폴더는 정리용일 뿐 (같은 namespace 안의 `customers/acme/spec.md` 와 `competitors/foo/spec.md` 가 retrieval 결과에 섞임). AI Summary 만 path prefix client-side 필터.
+- **왜**: 한 namespace 안에 여러 사용 맥락 (고객사 / 경쟁사 / 사내 자료) 이 섞여 있을 때 사용자가 "고객사 폴더만 검색" 같은 의도를 자연스럽게 표현할 수 있어야 함. 현재는 namespace 를 더 잘게 쪼개라고 가이드하지만, 검색이 한 폴더 안에서만 일어나야 의미가 있는 use case (예: 같은 고객사의 여러 문서) 가 늘어남.
+- **구현 스케치**:
+  - `src/rag/retriever.py::retrieve(query, top_k, where=None)` 가 ChromaDB `where` 절 통과 — `source_ref` LIKE prefix 또는 metadata `folder` 필드 기반
+  - 인덱서가 chunk metadata 에 `folder_path` 별도 필드 추가 (현재 `source_ref` 는 파일 경로 전체)
+  - 라우트 / 그래프 노드에 `path` 인자 전파 — `POST /runs` body 에 `rag_folder?` 옵션
+  - UI: RAG 탭 폴더 드롭다운 / 검색 scope 선택 UI
+- **의존성**: P10-9.1 (folder needs_reindex) 에서 도입한 `_folder_last_indexed_at` 헬퍼 패턴 재사용 가능. retriever 의 `where` clause 통과는 `chromadb` 의 prefix matching 미지원이라 client-side filter 또는 별도 metadata 필드 필요
+- **범위 밖**: 동적 path 변경 시 ChromaDB metadata reindex 자동화 (현재는 사용자가 폴더 옮기면 Re-index 수동). 이건 더 큰 과제
 
 ### 10. 다국어 확장 (ja / zh)
 
