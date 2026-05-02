@@ -6,13 +6,14 @@ import { useDropzone, type FileRejection } from "react-dropzone";
 import { uploadRagDocument, uploadRootFile } from "@/lib/api";
 
 type Props = {
+  wsSlug: string;
   namespace: string;
   onUploaded: () => void;
   path?: string;
   compact?: boolean;
   /**
-   * When true, files are uploaded to the workspace root (namespace + path
-   * are ignored). Used by the RAG tab when the user is at the top level.
+   * When true, files are uploaded to the workspace's docs root (namespace
+   * + path are ignored). Used by the RAG tab at the workspace level.
    */
   uploadAtRoot?: boolean;
 };
@@ -24,6 +25,7 @@ const ACCEPT = {
 };
 
 export default function RagDocumentDropzone({
+  wsSlug,
   namespace,
   onUploaded,
   path = "",
@@ -45,9 +47,9 @@ export default function RagDocumentDropzone({
         setProgress(`(${i + 1}/${accepted.length}) ${f.name} 업로드 중...`);
         try {
           if (uploadAtRoot) {
-            await uploadRootFile(f);
+            await uploadRootFile(wsSlug, f);
           } else {
-            await uploadRagDocument(namespace, f, path);
+            await uploadRagDocument(wsSlug, namespace, f, path);
           }
         } catch (err) {
           failed.push(`${f.name} — ${err instanceof Error ? err.message : String(err)}`);
@@ -60,7 +62,7 @@ export default function RagDocumentDropzone({
       }
       onUploaded();
     },
-    [namespace, onUploaded, path, uploadAtRoot],
+    [wsSlug, namespace, onUploaded, path, uploadAtRoot],
   );
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({

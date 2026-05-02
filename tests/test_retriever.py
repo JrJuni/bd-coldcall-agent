@@ -52,7 +52,9 @@ def patched_store(tmp_path, monkeypatch):
 
     retriever_mod.reset_store_singleton()
     monkeypatch.setattr(
-        retriever_mod, "_store", lambda namespace="default": store
+        retriever_mod,
+        "_store",
+        lambda ws_slug="default", namespace="default": store,
     )
 
     # Default query-embedding stub: caller can override via monkeypatch

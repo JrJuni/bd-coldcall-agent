@@ -1,4 +1,4 @@
-"""Phase 10 P10-2a — /rag/namespaces tests.
+"""Phase 10 P10-2a — /rag/workspaces/default/namespaces tests.
 
 Verifies:
 - Empty vectorstore → still surfaces `default` (so the dropdown is never empty)
@@ -74,7 +74,7 @@ def _patch_settings(monkeypatch, vs_dir):
 def test_rag_namespaces_empty_returns_default_only(client, monkeypatch, tmp_path):
     vs_dir = tmp_path / "vs"
     _patch_settings(monkeypatch, vs_dir)
-    r = client.get("/rag/namespaces")
+    r = client.get("/rag/workspaces/default/namespaces")
     assert r.status_code == 200
     body = r.json()
     assert body["default"] == "default"
@@ -111,7 +111,7 @@ def test_rag_namespaces_lists_each_with_metadata(client, monkeypatch, tmp_path):
         )
 
     _patch_settings(monkeypatch, vs_dir)
-    r = client.get("/rag/namespaces")
+    r = client.get("/rag/workspaces/default/namespaces")
     assert r.status_code == 200
     body = r.json()
     names = sorted(ns["name"] for ns in body["namespaces"])
@@ -141,7 +141,7 @@ def test_rag_namespaces_default_inserted_when_only_others_exist(
     )
 
     _patch_settings(monkeypatch, vs_dir)
-    r = client.get("/rag/namespaces")
+    r = client.get("/rag/workspaces/default/namespaces")
     assert r.status_code == 200
     names = [ns["name"] for ns in r.json()["namespaces"]]
     assert "default" in names

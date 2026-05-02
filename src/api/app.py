@@ -38,6 +38,7 @@ from src.api.routes import rag as rag_routes
 from src.api.routes import runs as runs_routes
 from src.api.routes import settings as settings_routes
 from src.api.routes import targets as targets_routes
+from src.api.routes import workspaces as workspaces_routes
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -144,6 +145,7 @@ def create_app() -> FastAPI:
     app.include_router(interactions_routes.router, tags=["interactions"])
     app.include_router(settings_routes.router, tags=["settings"])
     app.include_router(dashboard_routes.router, tags=["dashboard"])
+    app.include_router(workspaces_routes.router, tags=["workspaces"])
 
     return app
 

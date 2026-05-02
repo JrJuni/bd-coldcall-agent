@@ -12,6 +12,8 @@ belongs to the post-MVP backlog (see `docs/status.md` 장기 과제).
 from __future__ import annotations
 
 import json
+import re
+import sqlite3
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -801,12 +803,212 @@ class NewsStore:
         return [self._row_to_dict(r) for r in rows]
 
 
+class WorkspaceStore:
+    """Phase 11 P11-0 — SQLite-backed CRUD over the `workspaces` table.
+
+    The built-in `default` workspace is seeded by `init_db` and protected
+    from deletion. External workspaces let users register arbitrary local
+    paths (e.g. D:\\my-docs\\) as additional roots in the RAG tree.
+
+    Slug is auto-generated from label; collisions get -2/-3 suffixes.
+    abs_path is validated (absolute + exists + is_dir + not inside the
+    project's data/ directory). abs_path is immutable post-create — only
+    label can be patched.
+    """
+
+    def __init__(self, db_path: Path | str) -> None:
+        self._db_path = Path(db_path)
+
+    @staticmethod
+    def _row_to_dict(row: Any) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "slug": row["slug"],
+            "label": row["label"],
+            "abs_path": row["abs_path"],
+            "is_builtin": bool(row["is_builtin"]),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    @staticmethod
+    def _slugify(label: str) -> str:
+        s = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")
+        return s or "workspace"
+
+    @staticmethod
+    def _validate_abs_path(abs_path: str) -> Path:
+        """Return resolved Path on success; raise ValueError otherwise.
+
+        Rules: absolute + exists + is_dir + NOT inside <PROJECT_ROOT>/data
+        (registering anywhere under data/ would collide with the built-in
+        default workspace and the vectorstore).
+        """
+        if not abs_path or not abs_path.strip():
+            raise ValueError("abs_path must not be empty")
+        p = Path(abs_path)
+        if not p.is_absolute():
+            raise ValueError(f"abs_path must be absolute: {abs_path}")
+        try:
+            resolved = p.resolve(strict=False)
+        except OSError as e:
+            raise ValueError(f"abs_path could not be resolved: {e}")
+        if not resolved.exists():
+            raise ValueError(f"abs_path does not exist: {abs_path}")
+        if not resolved.is_dir():
+            raise ValueError(f"abs_path must be a directory: {abs_path}")
+        from src.config.loader import PROJECT_ROOT
+
+        data_root = (PROJECT_ROOT / "data").resolve()
+        try:
+            resolved.relative_to(data_root)
+            inside_data = True
+        except ValueError:
+            inside_data = False
+        if inside_data:
+            raise ValueError(
+                f"abs_path must not be inside the project's data/ directory: "
+                f"{abs_path}"
+            )
+        return resolved
+
+    def _next_slug(self, conn: sqlite3.Connection, label: str) -> str:
+        base = self._slugify(label)
+        candidate = base
+        n = 2
+        while True:
+            row = conn.execute(
+                "SELECT id FROM workspaces WHERE slug=?", (candidate,)
+            ).fetchone()
+            if row is None:
+                return candidate
+            candidate = f"{base}-{n}"
+            n += 1
+
+    def list(self) -> list[dict[str, Any]]:
+        with _db.connect(self._db_path) as conn:
+            rows = conn.execute(
+                "SELECT * FROM workspaces"
+                " ORDER BY is_builtin DESC, id ASC"
+            ).fetchall()
+        return [self._row_to_dict(r) for r in rows]
+
+    def create(self, *, label: str, abs_path: str) -> dict[str, Any]:
+        resolved = self._validate_abs_path(abs_path)
+        ts = _now_iso()
+        with _db.connect(self._db_path) as conn:
+            slug = self._next_slug(conn, label)
+            try:
+                cur = conn.execute(
+                    "INSERT INTO workspaces"
+                    " (slug, label, abs_path, is_builtin, created_at, updated_at)"
+                    " VALUES (?,?,?,?,?,?)",
+                    (slug, label, str(resolved), 0, ts, ts),
+                )
+            except sqlite3.IntegrityError as e:
+                # abs_path UNIQUE collision — another workspace already
+                # registered this exact directory.
+                raise ValueError(
+                    f"abs_path is already registered as a workspace: {abs_path}"
+                ) from e
+            new_id = cur.lastrowid
+            row = conn.execute(
+                "SELECT * FROM workspaces WHERE id=?", (new_id,)
+            ).fetchone()
+        return self._row_to_dict(row)
+
+    def get(self, workspace_id: int) -> dict[str, Any] | None:
+        with _db.connect(self._db_path) as conn:
+            row = conn.execute(
+                "SELECT * FROM workspaces WHERE id=?", (workspace_id,)
+            ).fetchone()
+        return self._row_to_dict(row) if row else None
+
+    def get_by_slug(self, slug: str) -> dict[str, Any] | None:
+        with _db.connect(self._db_path) as conn:
+            row = conn.execute(
+                "SELECT * FROM workspaces WHERE slug=?", (slug,)
+            ).fetchone()
+        return self._row_to_dict(row) if row else None
+
+    def update(
+        self, workspace_id: int, *, label: str | None = None
+    ) -> dict[str, Any] | None:
+        # Only label is mutable. abs_path is intentionally immutable —
+        # changing it would orphan the workspace's vectorstore directory
+        # and confuse existing manifests.
+        if label is None:
+            return self.get(workspace_id)
+        ts = _now_iso()
+        with _db.connect(self._db_path) as conn:
+            cur = conn.execute(
+                "UPDATE workspaces SET label=?, updated_at=? WHERE id=?",
+                (label, ts, workspace_id),
+            )
+            if cur.rowcount == 0:
+                return None
+            row = conn.execute(
+                "SELECT * FROM workspaces WHERE id=?", (workspace_id,)
+            ).fetchone()
+        return self._row_to_dict(row) if row else None
+
+    def delete(self, workspace_id: int, *, wipe_index: bool = False) -> bool:
+        """Remove the workspace registration.
+
+        The user-registered abs_path (source files) is NEVER touched —
+        this method only mutates the project's own state.
+
+        When `wipe_index=True`, the workspace's vectorstore directory
+        (`data/vectorstore/<slug>/`) is also recursively removed and any
+        cached AI summaries scoped to this slug are dropped. When False,
+        those artifacts stay on disk so re-adding the same path with
+        the same label restores the index for free.
+        """
+        import shutil
+
+        with _db.connect(self._db_path) as conn:
+            row = conn.execute(
+                "SELECT slug, is_builtin FROM workspaces WHERE id=?",
+                (workspace_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            if row["is_builtin"]:
+                raise ValueError(
+                    "the built-in `default` workspace cannot be deleted"
+                )
+            slug = row["slug"]
+            if wipe_index:
+                conn.execute(
+                    "DELETE FROM rag_summaries WHERE ws_slug=?", (slug,)
+                )
+            cur = conn.execute(
+                "DELETE FROM workspaces WHERE id=?", (workspace_id,)
+            )
+            removed = cur.rowcount > 0
+        # Wipe the vectorstore on-disk AFTER the DB commit so a tree-walk
+        # failure never leaves the registry pointing at a half-removed dir.
+        if removed and wipe_index:
+            from src.rag.workspaces import _resolve_vectorstore_root
+
+            try:
+                vs_dir = _resolve_vectorstore_root() / slug
+                if vs_dir.exists():
+                    shutil.rmtree(vs_dir, ignore_errors=True)
+            except Exception:
+                # Best-effort — the DB row is already gone, so the UI
+                # will show the workspace as removed regardless.
+                pass
+        return removed
+
+
 _run_store: RunStore | None = None
 _ingest_store: IngestStore | None = None
 _target_store: TargetStore | None = None
 _discovery_store: DiscoveryStore | None = None
 _news_store: NewsStore | None = None
 _interaction_store: InteractionStore | None = None
+_workspace_store: WorkspaceStore | None = None
 
 
 def get_run_store() -> RunStore:
@@ -867,13 +1069,24 @@ def get_interaction_store() -> InteractionStore:
     return _interaction_store
 
 
+def get_workspace_store() -> WorkspaceStore:
+    """Return a WorkspaceStore bound to the configured app DB path."""
+    global _workspace_store
+    if _workspace_store is None:
+        from src.api.config import get_api_settings
+
+        _workspace_store = WorkspaceStore(get_api_settings().app_db)
+    return _workspace_store
+
+
 def reset_stores() -> None:
     """Test hook — drop cached singletons so each test starts empty."""
     global _run_store, _ingest_store, _target_store, _discovery_store
-    global _news_store, _interaction_store
+    global _news_store, _interaction_store, _workspace_store
     _run_store = None
     _ingest_store = None
     _target_store = None
     _discovery_store = None
     _news_store = None
     _interaction_store = None
+    _workspace_store = None

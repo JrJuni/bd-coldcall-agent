@@ -299,7 +299,7 @@ def test_retriever_caches_per_namespace(tmp_path, monkeypatch):
 
     fake_stores = {"databricks": db_store, "snowflake": sf_store}
 
-    def fake_lookup(namespace=DEFAULT_NAMESPACE):
+    def fake_lookup(ws_slug="default", namespace=DEFAULT_NAMESPACE):
         return fake_stores[namespace]
 
     monkeypatch.setattr(retriever_mod, "_store", fake_lookup)

@@ -34,6 +34,7 @@ from src.core.discover_types import (
 from src.llm.claude_client import USAGE_KEYS, chat_cached
 from src.rag import indexer as _indexer
 from src.rag import retriever as _retriever
+from src.rag import workspaces as _workspaces
 from src.rag.namespace import DEFAULT_NAMESPACE, vectorstore_root_for
 from src.rag.types import RetrievedChunk
 
@@ -125,18 +126,22 @@ def _render_volatile(
     return "\n\n".join(parts)
 
 
-def _read_seed_meta(namespace: str = DEFAULT_NAMESPACE) -> tuple[int, int]:
+def _read_seed_meta(
+    ws_slug: str = "default",
+    namespace: str = DEFAULT_NAMESPACE,
+) -> tuple[int, int]:
     """Return `(doc_count, chunk_count)` from the indexer manifest.
 
     Missing or corrupt manifest → (0, 0) + warn. The function still proceeds
     so a developer running on a fresh checkout sees a discovery report
     annotated with `seed_doc_count=0` rather than a crash.
     """
-    settings = get_settings()
-    vectorstore_path = Path(settings.rag.vectorstore_path)
-    if not vectorstore_path.is_absolute():
-        vectorstore_path = PROJECT_ROOT / vectorstore_path
-    ns_path = vectorstore_root_for(vectorstore_path, namespace)
+    try:
+        ws_vs_root, _cd_root = _workspaces.workspace_paths(ws_slug)
+    except KeyError:
+        # Unregistered workspace — caller will fall through to (0, 0).
+        return 0, 0
+    ns_path = vectorstore_root_for(ws_vs_root, namespace)
     manifest_path = _indexer.manifest_path_for(ns_path)
     manifest = _indexer.load_manifest(manifest_path)
     docs = manifest.get("documents", {}) or {}
@@ -276,6 +281,7 @@ def discover_targets(
     seed_query: str = _DEFAULT_SEED_QUERY,
     product: str = "databricks",
     region: Literal["any", "ko", "us", "eu", "global"] = "any",
+    ws_slug: str = "default",
     namespace: str = DEFAULT_NAMESPACE,
     include_sector_leaders: bool = True,
     output_root: Path | None = None,
@@ -308,7 +314,7 @@ def discover_targets(
     task = task_template.format(**fmt_kwargs)
 
     chunks = _retriever.retrieve(
-        seed_query, namespace=namespace, top_k=top_k
+        seed_query, ws_slug=ws_slug, namespace=namespace, top_k=top_k
     )
     if not chunks:
         _LOGGER.warning(
@@ -332,7 +338,7 @@ def discover_targets(
         region=region,
     )
 
-    seed_doc_count, seed_chunk_count = _read_seed_meta(namespace)
+    seed_doc_count, seed_chunk_count = _read_seed_meta(ws_slug, namespace)
 
     base_temp = settings.llm.claude_temperature
     temperatures = [base_temp, min(base_temp + 0.1, 1.0)]

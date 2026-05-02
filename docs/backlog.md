@@ -108,6 +108,19 @@
 - **상태 (2026-04-28)**: **Phase 8 Related 채널이 흡수.** intent 티어리스트 (S/A/B/C) 기반의 정적 multi-intent 쿼리가 `src/search/channels/related.py` 에 구현됨. 추가 작업 없으면 close.
 - (이전 스케치) `bilingual.py` 앞단에 intent-split — 의도 3~5개별 쿼리 생성 → 각각 Brave 호출 → URL 기준 merge + dedup.
 
+### 22. Phase 11 후속 — multi-workspace 마무리 (UI/CLI 격차)
+
+- **상태 (2026-05-02)**: Phase 11 (multi-workspace RAG) merge 됨 — default + 외부 워크스페이스 추가/제거 + ws-prefixed `/rag/*` 라우트 + 3-segment URL 인코딩 + AddWorkspaceModal/RemoveWorkspaceModal 까지 동작. 단 Re-index UI 와 일부 다른 페이지가 여전히 default ws 하드코딩.
+- **잔여 격차**:
+  1. **Re-index UI 가 default ws 고정** — `triggerIngest` (POST /ingest) 가 `--workspace` 플래그 안 보내므로 외부 ws 인덱싱은 CLI (`python main.py ingest --workspace <slug>` 또는 `--all-workspaces`) 만 가능. `IngestTriggerRequest` 에 `workspace?: string` 또는 `all_workspaces?: bool` 필드 추가 + `src/api/runner.py::execute_ingest` argv forwarding + `/rag` 페이지 Re-index 버튼이 현재 ws_slug 자동 전달
+  2. **Discovery / News 탭 namespace 드롭다운 ws 미인지** — `listRagNamespaces()` default 인자로 default ws 만 보여줌. 외부 ws 의 namespace 도 선택 가능하게 ws 드롭다운 + namespace 드롭다운 2단계로 분리하거나, 하나로 묶어 `<ws_slug>/<ns>` 표기
+  3. **Dashboard `rag` aggregate 가 default ws 만 집계** — 외부 ws 의 manifest 도 합산. `/dashboard` route 가 `list_workspaces` 순회
+  4. **외부 ws 시나리오 백엔드 테스트 5건** — `tests/test_api_rag_docs.py` 에 외부 ws 등록 → upload → tree → AI Summary → delete 흐름. 현재 18건 워크스페이스 테스트는 `/workspaces` CRUD 만 커버
+  5. **워크스페이스 메타데이터** (선택) — description / 색상 라벨 / 태그. 워크스페이스가 늘면 구분 needs
+- **의존성**: 없음. (1)·(3)·(4) 가 사용자 즉시 가치, (2) 는 discovery/news 활용 빈도 따라
+- **범위 밖**: Notion 워크스페이스 (현재는 `data/company_docs` 한정), 멀티유저 권한 (P4 인증 필요)
+- **참고**: `docs/playbook.md` #18 (multi-tenant default tier 보존) + #19 (display-only 등록) 패턴
+
 ### 21. RAG 폴더 단위 검색 분리 (sub-namespace retrieval scope)
 
 - **상태 (2026-05-02)**: P10-9 / P10-9.1 에서 명시적 out-of-scope. 현재는 namespace 단위만 검색 분리, 폴더는 정리용일 뿐 (같은 namespace 안의 `customers/acme/spec.md` 와 `competitors/foo/spec.md` 가 retrieval 결과에 섞임). AI Summary 만 path prefix client-side 필터.

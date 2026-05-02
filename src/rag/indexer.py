@@ -40,6 +40,7 @@ from src.rag.namespace import (
 from src.rag.normalize import normalize_content
 from src.rag.store import VectorStore
 from src.rag.types import Document
+from src.rag.workspaces import list_workspace_slugs, workspace_paths
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -331,18 +332,36 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    from src.config.loader import PROJECT_ROOT, get_settings
+    from src.config.loader import get_settings
 
     parser = argparse.ArgumentParser(
         description="Index local + Notion docs into ChromaDB with incremental hashing"
+    )
+    parser.add_argument(
+        "--workspace",
+        type=str,
+        default="default",
+        help=(
+            "Workspace slug — picks the source root + per-ws vectorstore "
+            "(default: 'default' which maps to data/company_docs)"
+        ),
+    )
+    parser.add_argument(
+        "--all-workspaces",
+        action="store_true",
+        help=(
+            "Index every registered workspace in turn. Overrides --workspace. "
+            "Only the local connector is run per workspace; --notion still "
+            "applies on top of whatever workspace is currently being indexed."
+        ),
     )
     parser.add_argument(
         "--namespace",
         type=str,
         default=DEFAULT_NAMESPACE,
         help=(
-            "Workspace namespace — separates ChromaDB persist dir + manifest "
-            f"per workspace (default: {DEFAULT_NAMESPACE!r})"
+            "Sub-namespace inside the workspace — separates ChromaDB persist "
+            f"dir + manifest per sub-folder (default: {DEFAULT_NAMESPACE!r})"
         ),
     )
     parser.add_argument(
@@ -393,84 +412,105 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     settings = get_settings()
-    vs_root_raw = Path(settings.rag.vectorstore_path)
-    if not vs_root_raw.is_absolute():
-        vs_root_raw = PROJECT_ROOT / vs_root_raw
-    cd_root_raw = PROJECT_ROOT / "data" / "company_docs"
 
-    # ── Maintenance commands (no indexing) ─────────────────────────────
-    if args.list_namespaces:
-        for name in list_namespaces(vs_root_raw):
-            print(name)
-        return 0
-    if args.create_namespace is not None:
-        vs_dir, cd_dir = ensure_namespace(
-            vectorstore_root=vs_root_raw,
-            company_docs_root=cd_root_raw,
-            namespace=args.create_namespace,
+    def _run_one_workspace(ws_slug: str) -> int:
+        try:
+            ws_vs_root, ws_cd_root = workspace_paths(ws_slug)
+        except KeyError:
+            print(f"workspace not found: {ws_slug!r}", file=sys.stderr)
+            return 1
+
+        # Best-effort migration for legacy flat layout — only meaningful for
+        # the default workspace, where Phase 10 P10-2a left flat data behind.
+        if ws_slug == "default":
+            mig = migrate_flat_layout(
+                vectorstore_root=ws_vs_root,
+                company_docs_root=ws_cd_root,
+            )
+            if any(v for k, v in mig.items() if k != "errors"):
+                _LOGGER.info("namespace migration: %s", mig)
+
+        # ── Maintenance commands (no indexing) ─────────────────────────
+        if args.list_namespaces:
+            for name in list_namespaces(ws_vs_root):
+                print(f"{ws_slug}: {name}" if args.all_workspaces else name)
+            return 0
+        if args.create_namespace is not None:
+            vs_dir, cd_dir = ensure_namespace(
+                vectorstore_root=ws_vs_root,
+                company_docs_root=ws_cd_root,
+                namespace=args.create_namespace,
+            )
+            print(f"[{ws_slug}] created vectorstore: {vs_dir}")
+            print(f"[{ws_slug}] created docs:        {cd_dir}")
+            return 0
+
+        # ── Resolve namespace-scoped paths ─────────────────────────────
+        namespace = args.namespace
+        ns_vs_path = vectorstore_root_for(ws_vs_root, namespace)
+        ns_vs_path.mkdir(parents=True, exist_ok=True)
+        mpath = manifest_path_for(ns_vs_path)
+
+        if args.local_dir is None:
+            local_dir_default = company_docs_root_for(ws_cd_root, namespace)
+        else:
+            local_dir_default = args.local_dir
+
+        store = VectorStore(
+            persist_path=ns_vs_path,
+            collection_name=settings.rag.collection_name,
         )
-        print(f"created vectorstore: {vs_dir}")
-        print(f"created docs:        {cd_dir}")
+
+        if args.verify:
+            result = verify(store, mpath)
+            print(
+                f"verify [{ws_slug}/{namespace}]: matched={result['matched']} "
+                f"manifest_only={len(result['manifest_only'])} "
+                f"store_only={len(result['store_only'])}"
+            )
+            for doc_id in result["manifest_only"]:
+                print(f"  manifest_only: {doc_id}")
+            for doc_id in result["store_only"]:
+                print(f"  store_only:    {doc_id}")
+            return 0
+
+        local_dir = None if args.no_local else local_dir_default
+        connectors = _build_connectors(
+            local_dir=local_dir, use_notion=args.notion
+        )
+        if not connectors:
+            print(
+                f"[{ws_slug}] No connectors enabled — pass --notion or supply "
+                "--local-dir pointing at an existing directory.",
+                file=sys.stderr,
+            )
+            return 1
+
+        report = run_indexer(
+            connectors,
+            store=store,
+            manifest_path=mpath,
+            chunk_size=settings.rag.chunk_size,
+            chunk_overlap=settings.rag.chunk_overlap,
+            min_document_chars=settings.rag.min_document_chars,
+            force=args.force,
+            dry_run=args.dry_run,
+        )
+        tag = " (dry-run)" if args.dry_run else ""
+        print(f"indexer{tag} [{ws_slug}/{namespace}]: {report.describe()}")
         return 0
 
-    # ── Best-effort migration for legacy flat layout ───────────────────
-    mig = migrate_flat_layout(
-        vectorstore_root=vs_root_raw,
-        company_docs_root=cd_root_raw,
-    )
-    if any(v for k, v in mig.items() if k != "errors"):
-        _LOGGER.info("namespace migration: %s", mig)
-
-    # ── Resolve namespace-scoped paths ─────────────────────────────────
-    namespace = args.namespace
-    ns_vs_path = vectorstore_root_for(vs_root_raw, namespace)
-    ns_vs_path.mkdir(parents=True, exist_ok=True)
-    mpath = manifest_path_for(ns_vs_path)
-
-    if args.local_dir is None:
-        local_dir_default = company_docs_root_for(cd_root_raw, namespace)
+    if args.all_workspaces:
+        slugs = list_workspace_slugs() or ["default"]
     else:
-        local_dir_default = args.local_dir
+        slugs = [args.workspace]
 
-    store = VectorStore(
-        persist_path=ns_vs_path,
-        collection_name=settings.rag.collection_name,
-    )
-
-    if args.verify:
-        result = verify(store, mpath)
-        print(
-            f"verify (namespace={namespace}): matched={result['matched']} "
-            f"manifest_only={len(result['manifest_only'])} "
-            f"store_only={len(result['store_only'])}"
-        )
-        for doc_id in result["manifest_only"]:
-            print(f"  manifest_only: {doc_id}")
-        for doc_id in result["store_only"]:
-            print(f"  store_only:    {doc_id}")
-        return 0
-
-    local_dir = None if args.no_local else local_dir_default
-    connectors = _build_connectors(local_dir=local_dir, use_notion=args.notion)
-    if not connectors:
-        raise SystemExit(
-            "No connectors enabled — pass --notion or supply --local-dir "
-            "pointing at an existing directory."
-        )
-
-    report = run_indexer(
-        connectors,
-        store=store,
-        manifest_path=mpath,
-        chunk_size=settings.rag.chunk_size,
-        chunk_overlap=settings.rag.chunk_overlap,
-        min_document_chars=settings.rag.min_document_chars,
-        force=args.force,
-        dry_run=args.dry_run,
-    )
-    tag = " (dry-run)" if args.dry_run else ""
-    print(f"indexer{tag} [ns={namespace}]: {report.describe()}")
-    return 0
+    final_rc = 0
+    for slug in slugs:
+        rc = _run_one_workspace(slug)
+        if rc != 0:
+            final_rc = rc
+    return final_rc
 
 
 if __name__ == "__main__":

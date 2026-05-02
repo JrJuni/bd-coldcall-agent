@@ -1,14 +1,14 @@
 """Phase 10 P10-3 — RAG namespace + document management API tests.
 
 Coverage:
-- POST /rag/namespaces — happy path, duplicate 409, invalid name 422
-- DELETE /rag/namespaces/{ns} — default protection, not-found,
+- POST /rag/workspaces/default/namespaces — happy path, duplicate 409, invalid name 422
+- DELETE /rag/workspaces/default/namespaces/{ns} — default protection, not-found,
   non-empty refusal, force=true override
-- GET /rag/namespaces/{ns}/documents — empty, populated with mixed
+- GET /rag/workspaces/default/namespaces/{ns}/documents — empty, populated with mixed
   manifest indexed/unindexed states
-- POST /rag/namespaces/{ns}/documents — upload success, traversal-block,
+- POST /rag/workspaces/default/namespaces/{ns}/documents — upload success, traversal-block,
   unsupported extension
-- DELETE /rag/namespaces/{ns}/documents/{filename} — success, 404,
+- DELETE /rag/workspaces/default/namespaces/{ns}/documents/{filename} — success, 404,
   traversal-block
 
 DO NOT rule: only module-attribute monkeypatching, no `from X import Y`
@@ -87,7 +87,11 @@ def patched_paths(monkeypatch, tmp_path):
     monkeypatch.setattr(
         _rag_routes._config_loader, "get_settings", lambda: _FakeSettings()
     )
-    monkeypatch.setattr(_rag_routes, "_company_docs_root", lambda: cd_root)
+    monkeypatch.setattr(
+        _rag_routes,
+        "_company_docs_root",
+        lambda ws_slug="default": cd_root,
+    )
     return vs_root, cd_root
 
 
@@ -106,12 +110,12 @@ def _seed_manifest(vs_root, namespace, documents: dict):
     )
 
 
-# ── POST /rag/namespaces ────────────────────────────────────────────────
+# ── POST /rag/workspaces/default/namespaces ────────────────────────────────────────────────
 
 
 def test_create_namespace_201(client, patched_paths):
     vs_root, cd_root = patched_paths
-    r = client.post("/rag/namespaces", json={"name": "snowflake"})
+    r = client.post("/rag/workspaces/default/namespaces", json={"name": "snowflake"})
     assert r.status_code == 201, r.text
     body = r.json()
     assert body["name"] == "snowflake"
@@ -125,33 +129,33 @@ def test_create_namespace_201(client, patched_paths):
 def test_create_namespace_duplicate_409(client, patched_paths):
     vs_root, _ = patched_paths
     (vs_root / "databricks").mkdir()
-    r = client.post("/rag/namespaces", json={"name": "databricks"})
+    r = client.post("/rag/workspaces/default/namespaces", json={"name": "databricks"})
     assert r.status_code == 409
     assert "already exists" in r.json()["detail"]
 
 
 def test_create_namespace_invalid_name_422(client, patched_paths):
-    r = client.post("/rag/namespaces", json={"name": "../escape"})
+    r = client.post("/rag/workspaces/default/namespaces", json={"name": "../escape"})
     assert r.status_code == 422
 
 
 def test_create_namespace_blank_name_422(client, patched_paths):
-    r = client.post("/rag/namespaces", json={"name": ""})
+    r = client.post("/rag/workspaces/default/namespaces", json={"name": ""})
     # Pydantic min_length=1 catches this first
     assert r.status_code == 422
 
 
-# ── DELETE /rag/namespaces/{namespace} ──────────────────────────────────
+# ── DELETE /rag/workspaces/default/namespaces/{namespace} ──────────────────────────────────
 
 
 def test_delete_default_namespace_refused(client, patched_paths):
-    r = client.delete("/rag/namespaces/default")
+    r = client.delete("/rag/workspaces/default/namespaces/default")
     assert r.status_code == 400
     assert "default" in r.json()["detail"]
 
 
 def test_delete_namespace_not_found(client, patched_paths):
-    r = client.delete("/rag/namespaces/missing")
+    r = client.delete("/rag/workspaces/default/namespaces/missing")
     assert r.status_code == 404
 
 
@@ -159,7 +163,7 @@ def test_delete_namespace_non_empty_refused(client, patched_paths):
     vs_root, cd_root = patched_paths
     (cd_root / "snowflake").mkdir()
     (cd_root / "snowflake" / "doc.md").write_text("hi", encoding="utf-8")
-    r = client.delete("/rag/namespaces/snowflake")
+    r = client.delete("/rag/workspaces/default/namespaces/snowflake")
     assert r.status_code == 409
     assert "force" in r.json()["detail"]
     # Still on disk
@@ -175,7 +179,7 @@ def test_delete_namespace_force_removes(client, patched_paths):
         "snowflake",
         {"local:doc.md": {"source_type": "local", "chunk_count": 2}},
     )
-    r = client.delete("/rag/namespaces/snowflake?force=true")
+    r = client.delete("/rag/workspaces/default/namespaces/snowflake?force=true")
     assert r.status_code == 200
     assert r.json()["removed"] is True
     assert not (cd_root / "snowflake").exists()
@@ -186,18 +190,18 @@ def test_delete_empty_namespace_succeeds_without_force(client, patched_paths):
     vs_root, cd_root = patched_paths
     (cd_root / "snowflake").mkdir()
     (vs_root / "snowflake").mkdir()
-    r = client.delete("/rag/namespaces/snowflake")
+    r = client.delete("/rag/workspaces/default/namespaces/snowflake")
     assert r.status_code == 200
     assert not (cd_root / "snowflake").exists()
 
 
-# ── GET /rag/namespaces/{namespace}/documents ───────────────────────────
+# ── GET /rag/workspaces/default/namespaces/{namespace}/documents ───────────────────────────
 
 
 def test_list_documents_empty(client, patched_paths):
     vs_root, cd_root = patched_paths
     (cd_root / "default").mkdir()
-    r = client.get("/rag/namespaces/default/documents")
+    r = client.get("/rag/workspaces/default/namespaces/default/documents")
     assert r.status_code == 200
     body = r.json()
     assert body["namespace"] == "default"
@@ -220,7 +224,7 @@ def test_list_documents_marks_indexed(client, patched_paths):
         },
     )
 
-    r = client.get("/rag/namespaces/databricks/documents")
+    r = client.get("/rag/workspaces/default/namespaces/databricks/documents")
     assert r.status_code == 200
     body = r.json()
     assert body["namespace"] == "databricks"
@@ -233,13 +237,13 @@ def test_list_documents_marks_indexed(client, patched_paths):
     assert body["indexed_doc_count"] == 1
 
 
-# ── POST /rag/namespaces/{namespace}/documents ──────────────────────────
+# ── POST /rag/workspaces/default/namespaces/{namespace}/documents ──────────────────────────
 
 
 def test_upload_document_success(client, patched_paths):
     vs_root, cd_root = patched_paths
     files = {"file": ("notes.md", io.BytesIO(b"# hello"), "text/markdown")}
-    r = client.post("/rag/namespaces/default/documents", files=files)
+    r = client.post("/rag/workspaces/default/namespaces/default/documents", files=files)
     assert r.status_code == 201, r.text
     body = r.json()
     assert body["filename"] == "notes.md"
@@ -253,20 +257,20 @@ def test_upload_document_creates_namespace_dir(client, patched_paths):
     """Upload to a brand-new namespace (auto-created if missing)."""
     vs_root, cd_root = patched_paths
     files = {"file": ("one.txt", io.BytesIO(b"data"), "text/plain")}
-    r = client.post("/rag/namespaces/fresh/documents", files=files)
+    r = client.post("/rag/workspaces/default/namespaces/fresh/documents", files=files)
     assert r.status_code == 201
     assert (cd_root / "fresh" / "one.txt").exists()
 
 
 def test_upload_document_traversal_blocked(client, patched_paths):
     files = {"file": ("../evil.md", io.BytesIO(b"x"), "text/markdown")}
-    r = client.post("/rag/namespaces/default/documents", files=files)
+    r = client.post("/rag/workspaces/default/namespaces/default/documents", files=files)
     assert r.status_code == 422
 
 
 def test_upload_document_unsupported_extension(client, patched_paths):
     files = {"file": ("x.exe", io.BytesIO(b"binary"), "application/octet-stream")}
-    r = client.post("/rag/namespaces/default/documents", files=files)
+    r = client.post("/rag/workspaces/default/namespaces/default/documents", files=files)
     assert r.status_code == 415
 
 
@@ -274,11 +278,11 @@ def test_upload_document_path_separator_blocked(client, patched_paths):
     files = {
         "file": ("sub/dir.md", io.BytesIO(b"x"), "text/markdown")
     }
-    r = client.post("/rag/namespaces/default/documents", files=files)
+    r = client.post("/rag/workspaces/default/namespaces/default/documents", files=files)
     assert r.status_code == 422
 
 
-# ── DELETE /rag/namespaces/{namespace}/documents/{filename} ─────────────
+# ── DELETE /rag/workspaces/default/namespaces/{namespace}/documents/{filename} ─────────────
 
 
 def test_delete_document_success(client, patched_paths):
@@ -286,7 +290,7 @@ def test_delete_document_success(client, patched_paths):
     ns = cd_root / "databricks"
     ns.mkdir()
     (ns / "doc.md").write_text("hi", encoding="utf-8")
-    r = client.delete("/rag/namespaces/databricks/documents/doc.md")
+    r = client.delete("/rag/workspaces/default/namespaces/databricks/documents/doc.md")
     assert r.status_code == 204
     assert not (ns / "doc.md").exists()
     # Other files preserved
@@ -297,7 +301,7 @@ def test_delete_document_success(client, patched_paths):
 def test_delete_document_not_found(client, patched_paths):
     vs_root, cd_root = patched_paths
     (cd_root / "databricks").mkdir()
-    r = client.delete("/rag/namespaces/databricks/documents/nope.md")
+    r = client.delete("/rag/workspaces/default/namespaces/databricks/documents/nope.md")
     assert r.status_code == 404
 
 
@@ -311,18 +315,18 @@ def test_delete_document_traversal_blocked(client, patched_paths):
     # Path traversal attempt; FastAPI's `:path` converter passes the
     # slash through.
     r = client.delete(
-        "/rag/namespaces/databricks/documents/..%2Fvictim.md"
+        "/rag/workspaces/default/namespaces/databricks/documents/..%2Fvictim.md"
     )
     assert r.status_code in (404, 422)
     assert sibling.exists()
 
 
 def test_delete_document_namespace_missing(client, patched_paths):
-    r = client.delete("/rag/namespaces/missing/documents/x.md")
+    r = client.delete("/rag/workspaces/default/namespaces/missing/documents/x.md")
     assert r.status_code == 404
 
 
-# ── GET /rag/namespaces/{namespace}/tree (P10-3+ folder UX) ─────────────
+# ── GET /rag/workspaces/default/namespaces/{namespace}/tree (P10-3+ folder UX) ─────────────
 
 
 def test_tree_root_lists_folders_and_files(client, patched_paths):
@@ -334,7 +338,7 @@ def test_tree_root_lists_folders_and_files(client, patched_paths):
     (ns / "ai" / "nvidia.md").write_text("x", encoding="utf-8")
     (ns / "reports" / "q3.txt").write_text("y", encoding="utf-8")
     (ns / "top.md").write_text("z", encoding="utf-8")
-    r = client.get("/rag/namespaces/default/tree")
+    r = client.get("/rag/workspaces/default/namespaces/default/tree")
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["namespace"] == "default"
@@ -356,7 +360,7 @@ def test_tree_subpath_returns_parent(client, patched_paths):
     ns = cd_root / "default"
     (ns / "ai" / "deep").mkdir(parents=True)
     (ns / "ai" / "amd.md").write_text("hi", encoding="utf-8")
-    r = client.get("/rag/namespaces/default/tree", params={"path": "ai"})
+    r = client.get("/rag/workspaces/default/namespaces/default/tree", params={"path": "ai"})
     assert r.status_code == 200
     body = r.json()
     assert body["path"] == "ai"
@@ -369,7 +373,7 @@ def test_tree_deep_subpath_parent_chain(client, patched_paths):
     vs_root, cd_root = patched_paths
     (cd_root / "default" / "a" / "b" / "c").mkdir(parents=True)
     r = client.get(
-        "/rag/namespaces/default/tree", params={"path": "a/b/c"}
+        "/rag/workspaces/default/namespaces/default/tree", params={"path": "a/b/c"}
     )
     assert r.status_code == 200
     body = r.json()
@@ -380,7 +384,7 @@ def test_tree_deep_subpath_parent_chain(client, patched_paths):
 def test_tree_path_traversal_rejected(client, patched_paths):
     (patched_paths[1] / "default").mkdir()
     r = client.get(
-        "/rag/namespaces/default/tree", params={"path": "../escape"}
+        "/rag/workspaces/default/namespaces/default/tree", params={"path": "../escape"}
     )
     assert r.status_code == 422
 
@@ -397,7 +401,7 @@ def test_tree_marks_indexed_files(client, patched_paths):
         {"local:ai/indexed.md": {"source_type": "local", "chunk_count": 3}},
     )
     r = client.get(
-        "/rag/namespaces/databricks/tree", params={"path": "ai"}
+        "/rag/workspaces/default/namespaces/databricks/tree", params={"path": "ai"}
     )
     assert r.status_code == 200
     entry = r.json()["entries"][0]
@@ -408,7 +412,7 @@ def test_tree_marks_indexed_files(client, patched_paths):
 
 def test_tree_namespace_without_docs_dir(client, patched_paths):
     """Brand-new namespace whose company_docs dir hasn't been created yet."""
-    r = client.get("/rag/namespaces/fresh/tree")
+    r = client.get("/rag/workspaces/default/namespaces/fresh/tree")
     assert r.status_code == 200
     assert r.json()["entries"] == []
 
@@ -419,18 +423,18 @@ def test_tree_path_not_a_directory(client, patched_paths):
     ns.mkdir()
     (ns / "x.md").write_text("hi", encoding="utf-8")
     r = client.get(
-        "/rag/namespaces/default/tree", params={"path": "x.md"}
+        "/rag/workspaces/default/namespaces/default/tree", params={"path": "x.md"}
     )
     assert r.status_code == 404
 
 
-# ── POST /rag/namespaces/{namespace}/folders ────────────────────────────
+# ── POST /rag/workspaces/default/namespaces/{namespace}/folders ────────────────────────────
 
 
 def test_create_folder_at_root(client, patched_paths):
     vs_root, cd_root = patched_paths
     r = client.post(
-        "/rag/namespaces/default/folders", json={"path": "reports"}
+        "/rag/workspaces/default/namespaces/default/folders", json={"path": "reports"}
     )
     assert r.status_code == 201, r.text
     assert r.json()["created"] is True
@@ -440,7 +444,7 @@ def test_create_folder_at_root(client, patched_paths):
 def test_create_folder_nested(client, patched_paths):
     vs_root, cd_root = patched_paths
     r = client.post(
-        "/rag/namespaces/default/folders",
+        "/rag/workspaces/default/namespaces/default/folders",
         json={"path": "ai/reports/q3"},
     )
     assert r.status_code == 201
@@ -451,7 +455,7 @@ def test_create_folder_already_exists_409(client, patched_paths):
     vs_root, cd_root = patched_paths
     (cd_root / "default" / "reports").mkdir(parents=True)
     r = client.post(
-        "/rag/namespaces/default/folders", json={"path": "reports"}
+        "/rag/workspaces/default/namespaces/default/folders", json={"path": "reports"}
     )
     assert r.status_code == 409
 
@@ -459,18 +463,18 @@ def test_create_folder_already_exists_409(client, patched_paths):
 def test_create_folder_traversal_rejected(client, patched_paths):
     for bad in ("../escape", "..\\escape", "/abs", "C:/abs"):
         r = client.post(
-            "/rag/namespaces/default/folders", json={"path": bad}
+            "/rag/workspaces/default/namespaces/default/folders", json={"path": bad}
         )
         assert r.status_code == 422, f"path={bad!r}"
 
 
 def test_create_folder_blank_rejected(client, patched_paths):
-    r = client.post("/rag/namespaces/default/folders", json={"path": ""})
+    r = client.post("/rag/workspaces/default/namespaces/default/folders", json={"path": ""})
     # Pydantic min_length=1 catches this.
     assert r.status_code == 422
 
 
-# ── DELETE /rag/namespaces/{namespace}/folders/{path:path} ──────────────
+# ── DELETE /rag/workspaces/default/namespaces/{namespace}/folders/{path:path} ──────────────
 
 
 def test_delete_folder_recursive(client, patched_paths):
@@ -478,7 +482,7 @@ def test_delete_folder_recursive(client, patched_paths):
     deep = cd_root / "default" / "ai" / "reports"
     deep.mkdir(parents=True)
     (deep / "q3.md").write_text("x", encoding="utf-8")
-    r = client.delete("/rag/namespaces/default/folders/ai")
+    r = client.delete("/rag/workspaces/default/namespaces/default/folders/ai")
     assert r.status_code == 200, r.text
     assert r.json()["removed"] is True
     assert not (cd_root / "default" / "ai").exists()
@@ -488,13 +492,13 @@ def test_delete_folder_namespace_root_rejected(client, patched_paths):
     # Empty path via a trailing slash → 404 (FastAPI doesn't match)
     # The semantically relevant case is the dedicated namespace DELETE.
     # Here we verify the {path:path} converter still requires content.
-    r = client.delete("/rag/namespaces/default/folders/")
+    r = client.delete("/rag/workspaces/default/namespaces/default/folders/")
     assert r.status_code in (404, 405, 422)
 
 
 def test_delete_folder_not_found(client, patched_paths):
     (patched_paths[1] / "default").mkdir()
-    r = client.delete("/rag/namespaces/default/folders/missing")
+    r = client.delete("/rag/workspaces/default/namespaces/default/folders/missing")
     assert r.status_code == 404
 
 
@@ -503,19 +507,19 @@ def test_delete_folder_traversal_rejected(client, patched_paths):
     (cd_root / "default").mkdir()
     sibling = cd_root / "victim.md"
     sibling.write_text("DO NOT DELETE", encoding="utf-8")
-    r = client.delete("/rag/namespaces/default/folders/..%2Fvictim.md")
+    r = client.delete("/rag/workspaces/default/namespaces/default/folders/..%2Fvictim.md")
     assert r.status_code in (404, 422)
     assert sibling.exists()
 
 
-# ── POST /rag/namespaces/{namespace}/documents — path form field ────────
+# ── POST /rag/workspaces/default/namespaces/{namespace}/documents — path form field ────────
 
 
 def test_upload_with_subpath_creates_dirs(client, patched_paths):
     vs_root, cd_root = patched_paths
     files = {"file": ("nvidia.md", io.BytesIO(b"# hi"), "text/markdown")}
     r = client.post(
-        "/rag/namespaces/default/documents",
+        "/rag/workspaces/default/namespaces/default/documents",
         files=files,
         data={"path": "ai/reports"},
     )
@@ -531,7 +535,7 @@ def test_upload_subpath_traversal_rejected(client, patched_paths):
     files = {"file": ("x.md", io.BytesIO(b"x"), "text/markdown")}
     for bad in ("../escape", "/abs", "C:/abs", "a/../b"):
         r = client.post(
-            "/rag/namespaces/default/documents",
+            "/rag/workspaces/default/namespaces/default/documents",
             files=files,
             data={"path": bad},
         )
@@ -542,13 +546,13 @@ def test_upload_subpath_default_empty_unchanged(client, patched_paths):
     """Verifies the existing flat-upload code path still works."""
     vs_root, cd_root = patched_paths
     files = {"file": ("flat.md", io.BytesIO(b"x"), "text/markdown")}
-    r = client.post("/rag/namespaces/default/documents", files=files)
+    r = client.post("/rag/workspaces/default/namespaces/default/documents", files=files)
     assert r.status_code == 201
     assert r.json()["filename"] == "flat.md"
     assert (cd_root / "default" / "flat.md").exists()
 
 
-# ── POST /rag/namespaces/{namespace}/open ───────────────────────────────
+# ── POST /rag/workspaces/default/namespaces/{namespace}/open ───────────────────────────────
 
 
 def test_open_folder_returns_abs_path(client, patched_paths, monkeypatch):
@@ -564,7 +568,7 @@ def test_open_folder_returns_abs_path(client, patched_paths, monkeypatch):
 
     vs_root, cd_root = patched_paths
     (cd_root / "default").mkdir()
-    r = client.post("/rag/namespaces/default/open")
+    r = client.post("/rag/workspaces/default/namespaces/default/open")
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["opened"] is True
@@ -585,7 +589,7 @@ def test_open_folder_subpath(client, patched_paths, monkeypatch):
     vs_root, cd_root = patched_paths
     (cd_root / "default" / "ai").mkdir(parents=True)
     r = client.post(
-        "/rag/namespaces/default/open", params={"path": "ai"}
+        "/rag/workspaces/default/namespaces/default/open", params={"path": "ai"}
     )
     assert r.status_code == 200
     assert r.json()["path"] == "ai"
@@ -603,7 +607,7 @@ def test_open_folder_not_found(client, patched_paths, monkeypatch):
     )
     (patched_paths[1] / "default").mkdir()
     r = client.post(
-        "/rag/namespaces/default/open", params={"path": "missing"}
+        "/rag/workspaces/default/namespaces/default/open", params={"path": "missing"}
     )
     assert r.status_code == 404
 
@@ -617,7 +621,7 @@ def test_open_folder_traversal_rejected(client, patched_paths, monkeypatch):
         lambda p: (_ for _ in ()).throw(AssertionError("must not be called")),
     )
     r = client.post(
-        "/rag/namespaces/default/open", params={"path": "../escape"}
+        "/rag/workspaces/default/namespaces/default/open", params={"path": "../escape"}
     )
     assert r.status_code == 422
 
@@ -634,14 +638,14 @@ def test_open_folder_launch_failure_returns_opened_false(
     )
     vs_root, cd_root = patched_paths
     (cd_root / "default").mkdir()
-    r = client.post("/rag/namespaces/default/open")
+    r = client.post("/rag/workspaces/default/namespaces/default/open")
     assert r.status_code == 200
     body = r.json()
     assert body["opened"] is False
     assert body["abs_path"].endswith("default")
 
 
-# ── POST /rag/root/open ─────────────────────────────────────────────────
+# ── POST /rag/workspaces/default/root/open ─────────────────────────────────────────────────
 
 
 def test_open_root(client, patched_paths, monkeypatch):
@@ -654,7 +658,7 @@ def test_open_root(client, patched_paths, monkeypatch):
         lambda p: (calls.append(p), True)[1],
     )
     vs_root, cd_root = patched_paths
-    r = client.post("/rag/root/open")
+    r = client.post("/rag/workspaces/default/root/open")
     assert r.status_code == 200
     body = r.json()
     assert body["opened"] is True
@@ -663,7 +667,7 @@ def test_open_root(client, patched_paths, monkeypatch):
     assert len(calls) == 1
 
 
-# ── POST /rag/namespaces/{namespace}/summary ────────────────────────────
+# ── POST /rag/workspaces/default/namespaces/{namespace}/summary ────────────────────────────
 
 
 def _make_chunk(doc_id: str, source_ref: str, text: str, idx: int = 0):
@@ -701,7 +705,9 @@ def test_summary_empty_namespace_returns_hint(
     from src.api.routes import rag as _rag_routes
 
     fake = _FakeStore([])
-    monkeypatch.setattr(_rag_routes._retriever, "_store", lambda ns: fake)
+    monkeypatch.setattr(
+        _rag_routes._retriever, "_store", lambda ws, ns: fake
+    )
     monkeypatch.setattr(
         _rag_routes._claude_client,
         "chat_once",
@@ -710,7 +716,7 @@ def test_summary_empty_namespace_returns_hint(
         ),
     )
     r = client.post(
-        "/rag/namespaces/default/summary", json={"path": "", "lang": "ko"}
+        "/rag/workspaces/default/namespaces/default/summary", json={"path": "", "lang": "ko"}
     )
     assert r.status_code == 200, r.text
     body = r.json()
@@ -727,7 +733,9 @@ def test_summary_namespace_calls_llm(client, patched_paths, monkeypatch):
         _make_chunk("doc2", "reports/q3.md", "Q3 results summary"),
     ]
     fake = _FakeStore(chunks)
-    monkeypatch.setattr(_rag_routes._retriever, "_store", lambda ns: fake)
+    monkeypatch.setattr(
+        _rag_routes._retriever, "_store", lambda ws, ns: fake
+    )
 
     captured: dict = {}
 
@@ -745,7 +753,7 @@ def test_summary_namespace_calls_llm(client, patched_paths, monkeypatch):
     )
 
     r = client.post(
-        "/rag/namespaces/default/summary",
+        "/rag/workspaces/default/namespaces/default/summary",
         json={"path": "", "lang": "ko", "sample_size": 5},
     )
     assert r.status_code == 200, r.text
@@ -771,7 +779,9 @@ def test_summary_path_filters_chunks(client, patched_paths, monkeypatch):
         _make_chunk("d4", "ai/deep/x.md", "deep"),
     ]
     fake = _FakeStore(chunks)
-    monkeypatch.setattr(_rag_routes._retriever, "_store", lambda ns: fake)
+    monkeypatch.setattr(
+        _rag_routes._retriever, "_store", lambda ws, ns: fake
+    )
 
     captured: dict = {}
 
@@ -788,7 +798,7 @@ def test_summary_path_filters_chunks(client, patched_paths, monkeypatch):
     )
 
     r = client.post(
-        "/rag/namespaces/default/summary",
+        "/rag/workspaces/default/namespaces/default/summary",
         json={"path": "ai", "lang": "en", "sample_size": 10},
     )
     assert r.status_code == 200
@@ -809,7 +819,9 @@ def test_summary_path_no_matching_chunks(
 
     chunks = [_make_chunk("d1", "reports/q3.md", "Q3")]
     fake = _FakeStore(chunks)
-    monkeypatch.setattr(_rag_routes._retriever, "_store", lambda ns: fake)
+    monkeypatch.setattr(
+        _rag_routes._retriever, "_store", lambda ws, ns: fake
+    )
     monkeypatch.setattr(
         _rag_routes._claude_client,
         "chat_once",
@@ -818,7 +830,7 @@ def test_summary_path_no_matching_chunks(
         ),
     )
     r = client.post(
-        "/rag/namespaces/default/summary",
+        "/rag/workspaces/default/namespaces/default/summary",
         json={"path": "ai", "lang": "ko"},
     )
     assert r.status_code == 200
@@ -830,7 +842,7 @@ def test_summary_path_no_matching_chunks(
 
 def test_summary_subpath_traversal_rejected(client, patched_paths):
     r = client.post(
-        "/rag/namespaces/default/summary",
+        "/rag/workspaces/default/namespaces/default/summary",
         json={"path": "../escape", "lang": "ko"},
     )
     assert r.status_code == 422
@@ -842,14 +854,16 @@ def test_summary_no_api_key_returns_503(
     from src.api.routes import rag as _rag_routes
 
     fake = _FakeStore([_make_chunk("d1", "x.md", "hi")])
-    monkeypatch.setattr(_rag_routes._retriever, "_store", lambda ns: fake)
+    monkeypatch.setattr(
+        _rag_routes._retriever, "_store", lambda ws, ns: fake
+    )
 
     def _raise_no_key(**k):
         raise RuntimeError("ANTHROPIC_API_KEY not set in .env")
 
     monkeypatch.setattr(_rag_routes._claude_client, "chat_once", _raise_no_key)
     r = client.post(
-        "/rag/namespaces/default/summary",
+        "/rag/workspaces/default/namespaces/default/summary",
         json={"path": "", "lang": "ko"},
     )
     assert r.status_code == 503
@@ -868,7 +882,7 @@ def test_root_files_list_only_top_level(client, patched_paths):
     # subdirectory + file inside — must not appear in root list
     (cd_root / "default").mkdir()
     (cd_root / "default" / "inside.md").write_text("nested", encoding="utf-8")
-    r = client.get("/rag/root/files")
+    r = client.get("/rag/workspaces/default/root/files")
     assert r.status_code == 200, r.text
     body = r.json()
     names = {f["filename"] for f in body["files"]}
@@ -884,7 +898,7 @@ def test_root_files_list_filters_extensions(client, patched_paths):
     (cd_root / "ok.md").write_text("yes", encoding="utf-8")
     (cd_root / "x.exe").write_bytes(b"binary")
     (cd_root / "noext").write_text("hmm", encoding="utf-8")
-    r = client.get("/rag/root/files")
+    r = client.get("/rag/workspaces/default/root/files")
     assert r.status_code == 200
     names = {f["filename"] for f in r.json()["files"]}
     assert names == {"ok.md"}
@@ -897,7 +911,7 @@ def test_root_files_list_empty_when_root_missing(client, patched_paths):
     import shutil
 
     shutil.rmtree(cd_root)
-    r = client.get("/rag/root/files")
+    r = client.get("/rag/workspaces/default/root/files")
     assert r.status_code == 200
     assert r.json()["files"] == []
 
@@ -907,7 +921,7 @@ def test_upload_root_file_success(client, patched_paths):
     files = {
         "file": ("README.md", io.BytesIO(b"# Workspace"), "text/markdown")
     }
-    r = client.post("/rag/root/files", files=files)
+    r = client.post("/rag/workspaces/default/root/files", files=files)
     assert r.status_code == 201, r.text
     body = r.json()
     assert body["filename"] == "README.md"
@@ -919,26 +933,26 @@ def test_upload_root_file_success(client, patched_paths):
 
 def test_upload_root_file_traversal_blocked(client, patched_paths):
     files = {"file": ("../evil.md", io.BytesIO(b"x"), "text/markdown")}
-    r = client.post("/rag/root/files", files=files)
+    r = client.post("/rag/workspaces/default/root/files", files=files)
     assert r.status_code == 422
 
 
 def test_upload_root_file_unsupported_extension(client, patched_paths):
     files = {"file": ("x.exe", io.BytesIO(b"x"), "application/octet-stream")}
-    r = client.post("/rag/root/files", files=files)
+    r = client.post("/rag/workspaces/default/root/files", files=files)
     assert r.status_code == 415
 
 
 def test_delete_root_file_success(client, patched_paths):
     vs_root, cd_root = patched_paths
     (cd_root / "doomed.md").write_text("bye", encoding="utf-8")
-    r = client.delete("/rag/root/files/doomed.md")
+    r = client.delete("/rag/workspaces/default/root/files/doomed.md")
     assert r.status_code == 204
     assert not (cd_root / "doomed.md").exists()
 
 
 def test_delete_root_file_not_found_404(client, patched_paths):
-    r = client.delete("/rag/root/files/nope.md")
+    r = client.delete("/rag/workspaces/default/root/files/nope.md")
     assert r.status_code == 404
 
 
@@ -946,17 +960,17 @@ def test_delete_root_file_traversal_blocked(client, patched_paths):
     vs_root, cd_root = patched_paths
     sibling = cd_root.parent / "victim.md"
     sibling.write_text("DO NOT DELETE", encoding="utf-8")
-    r = client.delete("/rag/root/files/..%2Fvictim.md")
+    r = client.delete("/rag/workspaces/default/root/files/..%2Fvictim.md")
     assert r.status_code in (404, 422)
     assert sibling.exists()
 
 
 def test_delete_root_file_rejects_directory(client, patched_paths):
     """Deleting a top-level folder via the file endpoint must be refused —
-    UI uses a different mechanism for folders (DELETE /rag/namespaces/...)."""
+    UI uses a different mechanism for folders (DELETE /rag/workspaces/default/namespaces/...)."""
     vs_root, cd_root = patched_paths
     (cd_root / "default").mkdir()
-    r = client.delete("/rag/root/files/default")
+    r = client.delete("/rag/workspaces/default/root/files/default")
     # Either 404 (not a file) or 422 — never silently rmdir
     assert r.status_code in (404, 422)
     assert (cd_root / "default").is_dir()
@@ -1003,7 +1017,7 @@ def test_tree_folder_marks_needs_reindex_when_file_added(
             }
         },
     )
-    r = client.get("/rag/namespaces/databricks/tree", params={"path": ""})
+    r = client.get("/rag/workspaces/default/namespaces/databricks/tree", params={"path": ""})
     assert r.status_code == 200
     folder = next(e for e in r.json()["entries"] if e["name"] == "ai")
     assert folder["type"] == "folder"
@@ -1034,7 +1048,7 @@ def test_tree_folder_clean_when_all_files_indexed(client, patched_paths):
             }
         },
     )
-    r = client.get("/rag/namespaces/databricks/tree", params={"path": ""})
+    r = client.get("/rag/workspaces/default/namespaces/databricks/tree", params={"path": ""})
     assert r.status_code == 200
     folder = next(e for e in r.json()["entries"] if e["name"] == "ai")
     assert folder["needs_reindex"] is False
@@ -1052,7 +1066,7 @@ def test_namespaces_list_marks_needs_reindex(client, patched_paths):
         "stale",
         {},  # nothing indexed yet
     )
-    r = client.get("/rag/namespaces")
+    r = client.get("/rag/workspaces/default/namespaces")
     assert r.status_code == 200, r.text
     by_name = {n["name"]: n for n in r.json()["namespaces"]}
     assert by_name["stale"]["needs_reindex"] is True
@@ -1080,7 +1094,7 @@ def _stub_summary_llm(monkeypatch, text: str = "- **stub**: summary"):
 def test_summary_get_returns_null_when_no_cache(client, patched_paths):
     """GET before any POST returns summary=null (200, not 404)."""
     r = client.get(
-        "/rag/namespaces/default/summary", params={"path": ""}
+        "/rag/workspaces/default/namespaces/default/summary", params={"path": ""}
     )
     assert r.status_code == 200, r.text
     assert r.json() == {"summary": None}
@@ -1094,12 +1108,12 @@ def test_summary_persisted_and_returned_on_get(
 
     chunks = [_make_chunk("d1", "ai/x.md", "hi")]
     monkeypatch.setattr(
-        _rag_routes._retriever, "_store", lambda ns: _FakeStore(chunks)
+        _rag_routes._retriever, "_store", lambda ws, ns: _FakeStore(chunks)
     )
     _stub_summary_llm(monkeypatch, text="- **first**: cached")
 
     r = client.post(
-        "/rag/namespaces/default/summary",
+        "/rag/workspaces/default/namespaces/default/summary",
         json={"path": "ai", "lang": "ko", "sample_size": 5},
     )
     assert r.status_code == 200, r.text
@@ -1107,7 +1121,7 @@ def test_summary_persisted_and_returned_on_get(
     assert "first" in posted["summary"]
 
     r2 = client.get(
-        "/rag/namespaces/default/summary", params={"path": "ai"}
+        "/rag/workspaces/default/namespaces/default/summary", params={"path": "ai"}
     )
     assert r2.status_code == 200, r2.text
     cached = r2.json()["summary"]
@@ -1140,12 +1154,12 @@ def test_summary_is_stale_after_reindex(
 
     chunks = [_make_chunk("d1", "ai/x.md", "hi")]
     monkeypatch.setattr(
-        _rag_routes._retriever, "_store", lambda ns: _FakeStore(chunks)
+        _rag_routes._retriever, "_store", lambda ws, ns: _FakeStore(chunks)
     )
     _stub_summary_llm(monkeypatch)
 
     r = client.post(
-        "/rag/namespaces/default/summary",
+        "/rag/workspaces/default/namespaces/default/summary",
         json={"path": "ai", "lang": "ko"},
     )
     assert r.status_code == 200
@@ -1163,7 +1177,7 @@ def test_summary_is_stale_after_reindex(
         },
     )
     r2 = client.get(
-        "/rag/namespaces/default/summary", params={"path": "ai"}
+        "/rag/workspaces/default/namespaces/default/summary", params={"path": "ai"}
     )
     assert r2.status_code == 200
     cached = r2.json()["summary"]
@@ -1195,25 +1209,25 @@ def test_namespace_delete_clears_summaries(
 
     chunks = [_make_chunk("d1", "x.md", "hi")]
     monkeypatch.setattr(
-        _rag_routes._retriever, "_store", lambda ns_: _FakeStore(chunks)
+        _rag_routes._retriever, "_store", lambda ws_, ns_: _FakeStore(chunks)
     )
     _stub_summary_llm(monkeypatch)
 
     # Cache a summary.
     r = client.post(
-        "/rag/namespaces/doomed/summary",
+        "/rag/workspaces/default/namespaces/doomed/summary",
         json={"path": "", "lang": "ko"},
     )
     assert r.status_code == 200
     # Sanity: it's there.
-    r1 = client.get("/rag/namespaces/doomed/summary")
+    r1 = client.get("/rag/workspaces/default/namespaces/doomed/summary")
     assert r1.json()["summary"] is not None
 
     # Drop the namespace.
-    r2 = client.delete("/rag/namespaces/doomed?force=true")
+    r2 = client.delete("/rag/workspaces/default/namespaces/doomed?force=true")
     assert r2.status_code == 200, r2.text
 
     # Cache row should be gone.
-    r3 = client.get("/rag/namespaces/doomed/summary")
+    r3 = client.get("/rag/workspaces/default/namespaces/doomed/summary")
     assert r3.status_code == 200
     assert r3.json()["summary"] is None

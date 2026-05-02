@@ -131,6 +131,33 @@ class TargetListResponse(BaseModel):
     targets: list[TargetSummary]
 
 
+# ── Phase 11 P11-0 — Workspaces ──────────────────────────────────────────
+
+
+class WorkspaceCreate(BaseModel):
+    label: str = Field(..., min_length=1, max_length=80)
+    abs_path: str = Field(..., min_length=1, max_length=500)
+
+
+class WorkspaceUpdate(BaseModel):
+    # abs_path is intentionally not patchable — see WorkspaceStore.update().
+    label: str | None = Field(default=None, min_length=1, max_length=80)
+
+
+class WorkspaceSummary(BaseModel):
+    id: int
+    slug: str
+    label: str
+    abs_path: str
+    is_builtin: bool
+    created_at: str
+    updated_at: str
+
+
+class WorkspaceListResponse(BaseModel):
+    workspaces: list[WorkspaceSummary]
+
+
 # ── Phase 10 P10-2a — RAG namespaces ─────────────────────────────────────
 
 

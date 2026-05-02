@@ -1,3 +1,22 @@
+// ── Phase 11 P11-0/2 — Workspaces ───────────────────────────────────────
+
+export interface Workspace {
+  id: number;
+  slug: string;
+  label: string;
+  abs_path: string;
+  is_builtin: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkspaceListResponse {
+  workspaces: Workspace[];
+}
+
+export const DEFAULT_WS_SLUG = "default";
+
+
 export type RunStatus = "queued" | "running" | "completed" | "failed";
 
 export interface RunSummary {

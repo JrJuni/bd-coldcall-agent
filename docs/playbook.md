@@ -30,6 +30,8 @@
 | `non-dev-persona` `ui-design` `abstraction-leak` `internal-vs-external` | [15. 비개발자 UI 는 백엔드 추상화 노출 금지](#15-비개발자-ui-는-백엔드-추상화-노출-금지) | namespace / chunks / manifest 같은 내부 개념은 화면에서 빼라. 사용자가 본다고 의사결정 못 함 |
 | `os-launch` `windows` `headless` `testability-wrapper` | [16. OS 파일 매니저 호출은 래퍼로 분리](#16-os-파일-매니저-호출은-래퍼로-분리) | Windows 에선 subprocess.Popen 대신 os.startfile. 단일 함수로 묶어서 테스트 monkeypatch 가능하게 |
 | `manifest` `staleness` `derived-aggregate` `rag` `incremental` | [17. per-item 타임스탬프 → 폴더 단위 stale 검출](#17-per-item-타임스탬프--폴더-단위-stale-검출) | manifest.indexed_at + filesystem mtime 비교로 폴더 needs_reindex 파생. 메타 추가 없이 사용자 신호 추가 |
+| `multi-tenant` `path-resolution` `legacy-preserve` `asymmetric-default` | [18. multi-tenant 도입 시 default tier 만 레거시 layout 보존](#18-multi-tenant-도입-시-default-tier-만-레거시-layout-보존) | 새 prefix 를 추가할 때 default 만 "no suffix" 처리하면 기존 데이터 0건 이동으로 호환 |
+| `display-toggle` `optional-cleanup` `non-destructive-default` `recover-by-readd` | [19. display-only 등록 + opt-in cleanup](#19-display-only-등록--opt-in-cleanup) | 등록/제거는 DB row 만 건드리고, 부수 artifact 정리는 명시 옵션. 사용자 실수 복구 = 같은 이름 재등록 |
 
 항목이 늘어나면 태그 알파벳순으로 재정렬. 항목 제거는 패턴이 무효화됐을 때만 (이 경우 원인도 기록).
 
@@ -347,3 +349,64 @@ def _folder_needs_reindex(folder_abs, ns_root, indexed_lookup) -> bool:
 **Why it works**: (1) **스키마 변경 없음** — manifest 의 기존 `indexed_at` 키 그대로 활용, indexer / connectors / retriever 무영향. (2) **사용자가 자유롭게 폴더 조작해도 자동 정합** — 파일을 다른 폴더로 옮기면 `rglob` 가 새 부모에서 발견, 옛 부모는 자연스럽게 stale 안 됨. (3) **계산 비용 적당** — 폴더당 O(파일 수) stat 호출, 대부분 RAG 코퍼스 (수십~수백 파일) 수준이면 수십 ms. tree 응답에 자연스럽게 함께 채울 수 있음. (4) **mtime / indexed_at 같은 ISO timestamp string 비교는 lexicographic 으로 order-preserving** (둘 다 `datetime.isoformat(tz=utc)` 로 만들면 microsecond 까지 동일 포맷).
 
 **Reusable in**: 어떤 증분 처리 파이프라인이든 — RAG 인덱서 외에도 (a) 빌드 시스템의 "stale target" 검출 (Make / Bazel 의 timestamp 비교 일반화), (b) 캐시 무효화 (cached summary 가 underlying 데이터 갱신 후 stale), (c) ETL 파이프라인의 partition 단위 reprocess 결정. 핵심 원칙: **per-item state 를 source-of-truth 로 두면, 임의 그룹 (폴더 / partition / shard) 의 상태는 항상 파생 집계로 일관되게 계산 가능 — 그룹 단위 별도 메타를 만들지 마라**. 별도 메타는 동기화 버그의 진원지.
+
+
+---
+
+## 18. multi-tenant 도입 시 default tier 만 레거시 layout 보존
+
+**태그**: `multi-tenant` `path-resolution` `legacy-preserve` `asymmetric-default`
+
+**Problem**: 단일 root (`data/vectorstore/<namespace>/`) 로 운영 중인 시스템에 multi-tenant 개념 (워크스페이스) 추가. 새 prefix `<ws_slug>` 를 모든 path 에 끼워 넣으면 기존 데이터를 `data/vectorstore/default/<namespace>/` 로 이동 + 모든 manifest path 재작성 + 사용자 인덱스 무효화 = 충격 큼.
+
+**Solution**: tier resolution 함수 (`src/rag/workspaces.py::workspace_paths`) 가 default tier 만 **asymmetric** 으로 처리:
+
+```python
+def workspace_paths(ws_slug: str) -> tuple[Path, Path]:
+    if ws_slug == "default":
+        # 레거시 layout 그대로: 기존 data/vectorstore/<ns>/ 가 곧 그 자리
+        vs_root = _resolve_vectorstore_root()      # = data/vectorstore
+        cd_root = PROJECT_ROOT / "data" / "company_docs"
+    else:
+        # 새 외부 tier: per-slug prefix
+        vs_root = _resolve_vectorstore_root() / ws_slug
+        cd_root = Path(workspace_row["abs_path"])
+    return vs_root, cd_root
+```
+
+호출자 (retriever/indexer/route) 는 `vectorstore_root_for(ws_root, namespace)` 를 일관되게 사용 — default tier 면 결과가 `data/vectorstore/<ns>/` (no slug), 외부 tier 면 `data/vectorstore/<slug>/<ns>/` 로 자연스럽게 분기. 코드 한 군데만 분기를 안고 나머지는 깨끗.
+
+**Why it works**: (1) **기존 데이터 이동 0 건** — `default` 의 layout 이 그대로 의미를 유지. (2) **새 외부 tier 는 per-slug 격리** — slug 충돌 없으면 충돌 위험 없음. (3) **호출자가 분기를 알 필요 없음** — `workspace_paths(slug)` 만 부르면 결과가 슬롯 인터페이스. (4) **migration 함수도 default 에만** — `migrate_flat_layout` 은 default tier 에서만 실행 (외부 tier 는 평면 레거시 데이터 자체가 없음).
+
+이 비대칭은 의도적 transitional 상태. 미래에 일관된 prefix 로 정상화하고 싶으면 그때 한 번 데이터 이동 + 함수 단순화. 그 전까지는 user-facing breakage 없이 multi-tenant 진입.
+
+**Reusable in**: 단일 → 멀티 tenant 전환의 모든 경우 — 멀티 DB 분리, 멀티 워크스페이스, 멀티 프로젝트, 멀티 organization. 파일 path 외에도 DB schema (default tenant 행은 tenant_id NULL 허용 → 새 tenant 만 NOT NULL) 등 동일 원칙 적용 가능. **핵심**: legacy 가 default 로 자연스럽게 매핑되면, breaking change 없이 새 tenant 만 격리 추가.
+
+---
+
+## 19. display-only 등록 + opt-in cleanup
+
+**태그**: `display-toggle` `optional-cleanup` `non-destructive-default` `recover-by-readd`
+
+**Problem**: 사용자가 "이 폴더를 RAG 트리에 추가하고 싶다" 고 할 때 백엔드는 두 가지 부수효과를 동반: (a) DB 에 워크스페이스 행 등록 (b) 인덱싱 후 `data/vectorstore/<slug>/` 에 chroma + manifest 생성. 제거 시 어디까지 되돌릴지가 결정 필요. 모두 다 지우면 사용자 실수에 복구 불가, 안 지우면 disk leak.
+
+**Solution**: 등록/제거는 기본적으로 **DB row 만** 건드림. 부수 artifact (vectorstore 디렉토리 등) 정리는 **명시적 opt-in 옵션** (`?wipe_index=true` 또는 모달 체크박스) 으로 분리. 사용자 source 폴더 (등록한 abs_path) 는 어느 경우에도 절대 안 건드림.
+
+```python
+def delete(self, workspace_id, *, wipe_index: bool = False) -> bool:
+    # ... DB row 삭제 ...
+    if removed and wipe_index:
+        # opt-in: 인덱스 + 캐시 wipe
+        rmtree(vectorstore_root / slug, ignore_errors=True)
+        conn.execute("DELETE FROM rag_summaries WHERE ws_slug=?", (slug,))
+    return removed
+```
+
+UI 흐름:
+- "Remove" 버튼 → 모달 표시 (제거 대상 + abs_path + "절대 삭제 안 됨" 안내)
+- 체크박스 (기본 unchecked): "인덱스도 함께 삭제 (체크하지 않으면 vectorstore 보존 — 같은 이름으로 다시 추가 시 인덱스 재사용 가능)"
+- [취소] [제거]
+
+**Why it works**: (1) **사용자 실수 복구 = 같은 이름으로 재등록** — slug 가 label 에서 자동 파생되므로, label 만 일치시키면 같은 slug 가 재생성되고 보존된 인덱스에 즉시 매핑됨. (2) **Disk leak 우려는 명시 토글로 해결** — 청소 의지가 있는 사용자는 체크 한 번. (3) **destructive 와 non-destructive 의 경계가 UI 에 가시적** — 체크박스 + 안내 문구가 사용자 동의의 단일 지점. (4) **테스트 가능** — `wipe_index=True/False` 둘 다 별도 테스트 케이스로 잠금 (`test_delete_wipe_index_removes_vectorstore` / `test_delete_without_wipe_keeps_vectorstore`).
+
+**Reusable in**: "사용자 등록 + 부수 artifact" 패턴이 있는 모든 곳. (a) 클라우드 콘솔의 리소스 삭제 (DB 인스턴스 vs 백업 vs 스냅샷), (b) 패키지 매니저의 uninstall (`apt remove` vs `apt purge`), (c) VCS 의 branch delete (`-d` vs `-D` vs working tree), (d) container orchestration 의 service vs volume. 핵심 원칙: **default 는 항상 non-destructive, destructive 는 명시 옵션 + 결과 가시화**.

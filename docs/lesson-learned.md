@@ -33,6 +33,16 @@ conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/ms
 **결과**: 응답 JSON에는 정상 UTF-8로 한글이 들어있으나 콘솔은 cp949 코드페이지로 디코딩해 모지바케 발생. 파일 리디렉션해도 동일.
 **배운 점**: CLI 진입점에서 최초에 `sys.stdout.reconfigure(encoding="utf-8")` 로 강제. `PYTHONIOENCODING=utf-8` 환경변수도 가능하지만 엔트리포인트에 직접 박는 게 재현성이 좋음. 이후 모든 CLI (`main.py`, `src/cli/*`) 에 동일 처리 필요.
 
+## [2026-05-02] Tailwind 클래스 순서가 CSS specificity 를 좌우 — primary 버튼이 흰색-on-흰색
+**시도**: `ToolbarButton` 의 base className 에 `bg-white` 를 두고, primary tone 에서는 `bg-slate-900 hover:bg-slate-800` 를 toneCls 로 덧붙임. 직관적으로는 `${toneCls}` 가 마지막에 있으니 우선해야 한다고 가정.
+**결과**: primary 버튼이 hover 외엔 흰색 (= 흰 배경에 흰 텍스트 = 안 보임) 으로 렌더. 사용자가 "Re-index 와 Add Workspace 가 안 보인다" 보고. 원인은 className 문자열의 토큰 순서가 아니라 Tailwind 가 생성한 CSS 파일에서 `.bg-white { ... }` 와 `.bg-slate-900 { ... }` 가 같은 specificity 일 때 **CSS 파일 내 등장 순서** 가 결정한다는 점. 보통 알파벳/숫자 정렬이라 `bg-slate-900` 이 먼저 나오고 `bg-white` 가 나중에 나와 이긴다.
+**배운 점**: tone 별로 `bg-*` 를 토글하는 컴포넌트는 base className 에 `bg-*` 를 절대 박아두지 말고, 모든 bg 를 toneCls 안으로 옮긴다. default tone 에 `bg-white` 를 명시하고, primary/danger 도 자기 bg 를 가져가는 식. 같은 함정은 `text-*`, `border-*` 에도 적용 — base 와 modifier 가 같은 카테고리 utility 를 동시 명시하면 결과가 className 문자열 순서가 아니라 생성된 CSS 순서로 결정됨.
+
+## [2026-05-02] 기존 app.db 가 schema 변경 후 lifespan init 실패 — `_SCHEMA_SQL` 의 inline CREATE INDEX 가 ALTER 보다 먼저 실행
+**시도**: P10-5 에서 `news_runs` 테이블에 `namespace` 컬럼을 ADD 하면서 `CREATE TABLE IF NOT EXISTS news_runs (..., namespace TEXT ...)` 를 `_SCHEMA_SQL` 에 업데이트하고, 같이 `CREATE INDEX IF NOT EXISTS idx_news_runs_namespace_generated ON news_runs(namespace, ...)` 도 같은 SQL 스크립트에 넣음. 추가로 `_migrate_news_runs` 가 동일 인덱스를 한 번 더 만들도록 (idempotent) 작성.
+**결과**: P10-5 이후 신규 DB 에선 정상 동작. 그런데 P10-0 시점부터 살아 있던 기존 `data/app.db` (사용자 환경) 에선 `init_db` 가 `OperationalError: no such column: namespace` 로 실패. 이유: `CREATE TABLE IF NOT EXISTS` 는 기존 테이블에 컬럼을 추가하지 않는 no-op. 그 다음 줄 `CREATE INDEX ... ON news_runs(namespace, ...)` 가 실행되면서 namespace 컬럼이 없는 기존 테이블을 참조해 죽음. `_migrate_news_runs` 의 `ALTER TABLE ADD COLUMN` 은 이 시점에 아직 실행 안 됨 (init_db 가 executescript 후 호출).
+**배운 점**: `_SCHEMA_SQL` 안에는 **fresh DB 가 처음 만들어질 때 즉시 합법적인 statement 만** 둔다. 컬럼 추가가 필요한 인덱스는 `_migrate_*` 안으로 옮겨서 `ALTER TABLE ADD COLUMN` 다음에 실행되도록. `CREATE INDEX IF NOT EXISTS` 는 idempotent 이므로 fresh DB 에서도 한 번 더 실행되는 게 무해함. 더 일반적으로: schema 변경에 의존하는 statement 는 모두 migration helper 책임으로 통일하고, `_SCHEMA_SQL` 은 "v1 fresh schema 시점" 의 모습만 유지.
+
 ## [2026-04-20] 스니펫만으로는 BD 요약 불가능 — trafilatura 본문 추출 불가피
 **시도**: Brave Search API 응답의 `description` (150~300자 snippet) 을 그대로 Exaone 에 넣어 구조화 JSON 요약을 생성하는 최초 설계.
 **결과**: Snippet 만으로는 BD 관점 key_events / business_signals / pain_points 를 추출할 맥락이 부족. 7.8B급 LLM 은 빈 공간을 채우려 hallucinate 할 확률이 높다고 판단.

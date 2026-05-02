@@ -316,10 +316,58 @@ GET  /ingest/tasks/{task_id}   → 상태
 - 환경변수가 이미 설정되어 있으면 `.env` 값보다 우선
 
 ## 데이터 영속성
-- 벡터스토어: `data/vectorstore/<namespace>/` (ChromaDB persistent, P10-2a 부터 namespace-scoped — `default` 가 기본)
-- 원본 문서: `data/company_docs/<namespace>/` (로컬) + Notion (원격 페이지 ID 관리)
-- 매니페스트: `data/vectorstore/<namespace>/manifest.json` (namespace 별)
+- 벡터스토어: `data/vectorstore/<namespace>/` (ChromaDB persistent, P10-2a 부터 namespace-scoped — `default` 가 기본). Phase 11 부터 외부 워크스페이스는 `data/vectorstore/<ws_slug>/<namespace>/` 로 한 단계 더 prefix
+- 원본 문서: default ws 는 `data/company_docs/<namespace>/`, 외부 ws 는 사용자 등록 abs_path 그 자체 (`D:\my-docs\` 등). Notion 은 별도 (페이지 ID)
+- 매니페스트: `data/vectorstore/<ws>/<namespace>/manifest.json` (default ws 는 `<ws>` 부분 생략 — 레거시 호환)
 - 마이그레이션: 첫 부팅 / `indexer.main()` 시 평면 layout (`data/vectorstore/{chroma.sqlite3, manifest.json}` + `data/company_docs/*.pdf`) 가 감지되면 `migrate_flat_layout` 이 자동으로 `<root>/default/` 로 이동 (idempotent)
 - 결과물: `outputs/{company}_{YYYYMMDD}.md`
 - 중간 산출물: `outputs/{company}_{date}/intermediate/` (원시 기사, 요약 JSON, 검색 결과)
 - 로그: `logs/` (일자별 파일)
+
+---
+
+## Phase 11 — Multi-workspace RAG (2026-05-02)
+
+`data/company_docs/` 단일 루트 가정을 깨고 사용자가 임의 abs path (`D:\my-docs\` 등) 를 RAG 트리에 추가할 수 있도록 확장.
+
+### 워크스페이스 레지스트리 (`src/api/db.py::workspaces` 테이블 + `src/api/store.py::WorkspaceStore`)
+- 컬럼: `id PK / slug UNIQUE / label / abs_path UNIQUE / is_builtin / created_at / updated_at`
+- `init_db` 의 `_seed_default_workspace` 가 `slug='default', label='Project Docs', abs_path=PROJECT_ROOT/data/company_docs, is_builtin=1` 을 idempotent 시드
+- `WorkspaceStore.create` — slug 자동 생성 (`_slugify(label)` + `-2/-3` 충돌 회피), `_validate_abs_path` (절대·exists·is_dir·`PROJECT_ROOT/data` 내부 거부), abs_path UNIQUE 충돌 → `ValueError`
+- `WorkspaceStore.delete(id, *, wipe_index=False)` — DB row 만 삭제가 기본, `wipe_index=True` 시 `data/vectorstore/<slug>/` rmtree + `rag_summaries` 의 ws_slug 행 삭제. 사용자 source 폴더 (등록 abs_path) 는 절대 안 건드림. `is_builtin=1` 행은 ValueError 로 거부
+
+### Path resolution layer (`src/rag/workspaces.py`)
+- `workspace_paths(ws_slug) -> (vs_root, cd_root)` — slug 별 vectorstore + source 디렉토리 매핑
+- **Asymmetric default-ws** (의도적 transitional 처리, `playbook.md` #18 참고):
+  - `default` → `(settings.rag.vectorstore_path, data/company_docs)` 그대로 — 기존 namespaces 가 `data/vectorstore/<ns>/` 에 살아 있는 layout 보존
+  - 외부 ws → `(settings.rag.vectorstore_path/<slug>, row.abs_path)` — per-slug prefix
+- DO NOT 룰: `from src.config import loader as _config_loader` 모듈경유로 `get_settings` 호출 (테스트 monkeypatch flow 보존)
+
+### Retriever / Indexer / Discover 통합
+- `src/rag/retriever.py::_STORES` cache 키가 `tuple[str, str]` `(ws_slug, namespace)` 로 확장. `retrieve(query, *, ws_slug='default', namespace='default', top_k=None)`
+- `src/rag/indexer.py` — `--workspace <slug>` (default `'default'`) + `--all-workspaces` 플래그. body 가 `_run_one_workspace(slug)` 로 ws-iterate. `migrate_flat_layout` 은 default 에서만 호출
+- `src/core/discover.py::discover_targets(*, ws_slug='default', namespace=DEFAULT_NAMESPACE, ...)` — `_read_seed_meta` / `_retriever.retrieve` 모두 ws_slug 통과
+- `main.py ingest` typer 가 `--workspace` / `--all-workspaces` 포워딩
+
+### API 라우트 (`src/api/routes/workspaces.py` + `/rag/*` 전체 ws-prefix)
+- 신규 5 endpoint: `GET/POST /workspaces`, `GET /workspaces/{id}`, `PATCH /workspaces/{id}`, `DELETE /workspaces/{id}?wipe_index=true|false`
+- 기존 17개 RAG endpoint 가 모두 `/rag/workspaces/{ws_slug}/...` 로 prefix 변경. 핸들러가 `ws_slug` path param 받아 `_vectorstore_root(ws_slug)` / `_company_docs_root(ws_slug)` / `_get_cached_summary(ws_slug, ns, path)` / `_upsert_summary(ws_slug, ...)` / `_delete_namespace_summaries(ws_slug, ns)` / `_retriever._store(ws_slug, ns)` 로 forwarding. 기존 path 는 삭제 (single-user dev tool, compat layer 가치 없음)
+- `rag_summaries` 테이블에 `ws_slug TEXT NOT NULL DEFAULT 'default'` 컬럼 ALTER ADD. PK 는 SQLite ALTER 한계로 기존 `(namespace, path)` 유지 — 코드의 INSERT/UPDATE/DELETE SQL 이 PK shape 에 의존하지 않도록 `DELETE → INSERT` 패턴 사용
+
+### Frontend (`web/src/app/rag/page.tsx` + 신규 컴포넌트)
+- URL `?path=` 가 `<ws_slug>/<ns>/<sub>` 3-segment. `splitFullPath(fullPath) -> { ws, ns, sub }`
+- 3 view level 분해:
+  - **wsLevel** (`ws=""`) — 워크스페이스 리스트 표시. toolbar 가 `[+ Add Workspace]` (primary) + `[− Remove (N)]` (danger) + 새로고침 만 노출 (다른 file-ops 버튼 숨김)
+  - **nsLevel** (`ws!="" && ns=""`) — namespace + root file 리스트. toolbar 는 namespace 생성·업로드·delete·explorer
+  - **inside** (`ws!="" && ns!=""`) — 일반 폴더/파일 뷰
+- `Breadcrumb` 첫 segment 는 slug → workspace.label 매핑 (사용자에게 친화적)
+- `FolderTree` 루트 노드 `Workspaces`, 자식이 등록된 ws 들 (📦 + label), 손자가 namespace, 손손자부터 `listRagTree(ws, ns, sub)`
+- `AddWorkspaceModal` — label + abs_path 입력 + server 422 inline 표시 + 성공 시 즉시 새 ws 로 navigate
+- `RemoveWorkspaceModal` — 제거 대상 라벨 + abs_path 리스트 + "등록된 폴더는 절대 삭제되지 않습니다" 안내 + "인덱스도 함께 삭제" 체크박스 (기본 unchecked) → `deleteWorkspace(id, { wipe_index: true })` 옵션
+- `RagDocumentDropzone` `wsSlug` prop 받음, `uploadAtRoot=nsLevel`
+
+### 미해결 격차 (backlog 항목 22 로 분리)
+- Re-index UI 가 default ws 고정 (`triggerIngest` 가 `--workspace` 미전달)
+- Discovery/News 탭 namespace 드롭다운이 default ws 만 표시
+- Dashboard `rag` aggregate 가 default ws 만 집계
+- 외부 ws 시나리오 백엔드 테스트 5건 추가 필요

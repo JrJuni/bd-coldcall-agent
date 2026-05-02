@@ -110,10 +110,12 @@ CREATE TABLE IF NOT EXISTS news_runs (
     error_message TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
-CREATE INDEX IF NOT EXISTS idx_news_runs_namespace_generated
-    ON news_runs(namespace, generated_at DESC);
+-- idx_news_runs_namespace_generated is created by _migrate_news_runs
+-- AFTER the ALTER TABLE ADD COLUMN namespace step, so that pre-P10-5
+-- databases (which lacked the namespace column) don't blow up here.
 
 CREATE TABLE IF NOT EXISTS rag_summaries (
+    ws_slug TEXT NOT NULL DEFAULT 'default',
     namespace TEXT NOT NULL,
     path TEXT NOT NULL DEFAULT '',
     summary TEXT NOT NULL,
@@ -126,8 +128,24 @@ CREATE TABLE IF NOT EXISTS rag_summaries (
     -- compared against the current value to detect stale summaries.
     indexed_at_at_generation TEXT,
     generated_at TEXT NOT NULL,
-    PRIMARY KEY (namespace, path)
+    PRIMARY KEY (ws_slug, namespace, path)
 );
+
+-- Phase 11 P11-0: workspaces registry.
+-- The built-in `default` workspace (slug='default', is_builtin=1) is
+-- seeded on first init_db() and points to <PROJECT_ROOT>/data/company_docs.
+-- External workspaces let users register arbitrary local paths as
+-- additional roots in the RAG Folders tree.
+CREATE TABLE IF NOT EXISTS workspaces (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug TEXT NOT NULL UNIQUE,
+    label TEXT NOT NULL,
+    abs_path TEXT NOT NULL UNIQUE,
+    is_builtin INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workspaces_slug ON workspaces(slug);
 
 CREATE INDEX IF NOT EXISTS idx_discovery_candidates_run_id
     ON discovery_candidates(run_id);
@@ -148,6 +166,7 @@ SCHEMA_TABLES = (
     "interactions",
     "news_runs",
     "rag_summaries",
+    "workspaces",
 )
 
 
@@ -219,6 +238,53 @@ def _migrate_news_runs(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_rag_summaries(conn: sqlite3.Connection) -> None:
+    """Phase 11 P11-2 — add ws_slug column to rag_summaries.
+
+    SQLite can't ALTER PRIMARY KEY in place, so we only ADD the new
+    column with default 'default'. Any pre-P11-2 row keeps working
+    because every legacy lookup goes through ws_slug='default'.
+
+    The composite PK from _SCHEMA_SQL only takes effect on freshly
+    created tables; existing tables keep their old (namespace, path) PK
+    until a future explicit rebuild. The application-level upsert SQL
+    in routes/rag.py is written to be PK-shape-agnostic so this is safe.
+    """
+    existing = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(rag_summaries)").fetchall()
+    }
+    if "ws_slug" not in existing:
+        conn.execute(
+            "ALTER TABLE rag_summaries ADD COLUMN "
+            "ws_slug TEXT NOT NULL DEFAULT 'default'"
+        )
+
+
+def _seed_default_workspace(conn: sqlite3.Connection) -> None:
+    """Idempotently insert the built-in `default` workspace row.
+
+    abs_path always points to <PROJECT_ROOT>/data/company_docs (resolved at
+    seed time). is_builtin=1 makes it un-deletable via the API.
+    """
+    existing = conn.execute(
+        "SELECT id FROM workspaces WHERE slug='default'"
+    ).fetchone()
+    if existing is not None:
+        return
+    from datetime import datetime, timezone
+    from src.config.loader import PROJECT_ROOT
+
+    abs_path = str((PROJECT_ROOT / "data" / "company_docs").resolve())
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    conn.execute(
+        "INSERT INTO workspaces"
+        " (slug, label, abs_path, is_builtin, created_at, updated_at)"
+        " VALUES (?,?,?,?,?,?)",
+        ("default", "Project Docs", abs_path, 1, ts, ts),
+    )
+
+
 def init_db(db_path: Path | str) -> None:
     """Create tables idempotently. Safe to call on every boot.
 
@@ -233,3 +299,5 @@ def init_db(db_path: Path | str) -> None:
         conn.executescript(_SCHEMA_SQL)
         _migrate_discovery_runs(conn)
         _migrate_news_runs(conn)
+        _migrate_rag_summaries(conn)
+        _seed_default_workspace(conn)

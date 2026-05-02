@@ -41,6 +41,8 @@ import type {
   TargetCreateInput,
   TargetListResponse,
   TargetUpdateInput,
+  Workspace,
+  WorkspaceListResponse,
 } from "./types";
 
 const API_BASE =
@@ -156,60 +158,126 @@ export async function deleteTarget(id: number): Promise<void> {
     throw new Error(`DELETE /targets/${id} ${r.status}`);
 }
 
-// ── Phase 10 P10-2a — RAG namespaces ────────────────────────────────────
+// ── Phase 11 P11-0/2 — Workspaces (multi-root RAG) ─────────────────────
 
-export async function listRagNamespaces(): Promise<RagNamespaceListResponse> {
-  const r = await fetch(`${API_BASE}/rag/namespaces`, { cache: "no-store" });
-  if (!r.ok) throw new Error(`GET /rag/namespaces ${r.status}`);
+export async function listWorkspaces(): Promise<WorkspaceListResponse> {
+  const r = await fetch(`${API_BASE}/workspaces`, { cache: "no-store" });
+  if (!r.ok) throw new Error(`GET /workspaces ${r.status}`);
+  return r.json();
+}
+
+export async function createWorkspace(body: {
+  label: string;
+  abs_path: string;
+}): Promise<Workspace> {
+  const r = await fetch(`${API_BASE}/workspaces`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok)
+    throw new Error(`POST /workspaces ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+export async function patchWorkspace(
+  workspaceId: number,
+  body: { label?: string },
+): Promise<Workspace> {
+  const r = await fetch(`${API_BASE}/workspaces/${workspaceId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok)
+    throw new Error(
+      `PATCH /workspaces/${workspaceId} ${r.status}: ${await r.text()}`,
+    );
+  return r.json();
+}
+
+export async function deleteWorkspace(
+  workspaceId: number,
+  opts?: { wipe_index?: boolean },
+): Promise<void> {
+  const qs = opts?.wipe_index ? "?wipe_index=true" : "";
+  const r = await fetch(`${API_BASE}/workspaces/${workspaceId}${qs}`, {
+    method: "DELETE",
+  });
+  if (!r.ok && r.status !== 204)
+    throw new Error(
+      `DELETE /workspaces/${workspaceId} ${r.status}: ${await r.text()}`,
+    );
+}
+
+// ── Phase 10 P10-2a — RAG namespaces (now ws-prefixed) ──────────────────
+
+const _wsBase = (slug: string) =>
+  `${API_BASE}/rag/workspaces/${encodeURIComponent(slug)}`;
+
+export async function listRagNamespaces(
+  wsSlug: string = "default",
+): Promise<RagNamespaceListResponse> {
+  const r = await fetch(`${_wsBase(wsSlug)}/namespaces`, {
+    cache: "no-store",
+  });
+  if (!r.ok)
+    throw new Error(`GET ${_wsBase(wsSlug)}/namespaces ${r.status}`);
   return r.json();
 }
 
 // ── Phase 10 P10-3 — RAG documents ──────────────────────────────────────
 
 export async function createRagNamespace(
+  wsSlug: string,
   name: string,
 ): Promise<RagNamespaceSummary> {
-  const r = await fetch(`${API_BASE}/rag/namespaces`, {
+  const r = await fetch(`${_wsBase(wsSlug)}/namespaces`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name }),
   });
   if (!r.ok)
-    throw new Error(`POST /rag/namespaces ${r.status}: ${await r.text()}`);
+    throw new Error(
+      `POST ${_wsBase(wsSlug)}/namespaces ${r.status}: ${await r.text()}`,
+    );
   return r.json();
 }
 
 export async function deleteRagNamespace(
+  wsSlug: string,
   name: string,
   opts?: { force?: boolean },
 ): Promise<RagNamespaceDeleteResponse> {
   const qs = opts?.force ? "?force=true" : "";
   const r = await fetch(
-    `${API_BASE}/rag/namespaces/${encodeURIComponent(name)}${qs}`,
+    `${_wsBase(wsSlug)}/namespaces/${encodeURIComponent(name)}${qs}`,
     { method: "DELETE" },
   );
   if (!r.ok)
     throw new Error(
-      `DELETE /rag/namespaces/${name} ${r.status}: ${await r.text()}`,
+      `DELETE ${_wsBase(wsSlug)}/namespaces/${name} ${r.status}: ${await r.text()}`,
     );
   return r.json();
 }
 
 export async function listRagDocuments(
+  wsSlug: string,
   namespace: string,
 ): Promise<RagDocumentListResponse> {
   const r = await fetch(
-    `${API_BASE}/rag/namespaces/${encodeURIComponent(namespace)}/documents`,
+    `${_wsBase(wsSlug)}/namespaces/${encodeURIComponent(namespace)}/documents`,
     { cache: "no-store" },
   );
   if (!r.ok)
     throw new Error(
-      `GET /rag/namespaces/${namespace}/documents ${r.status}`,
+      `GET ${_wsBase(wsSlug)}/namespaces/${namespace}/documents ${r.status}`,
     );
   return r.json();
 }
 
 export async function uploadRagDocument(
+  wsSlug: string,
   namespace: string,
   file: File,
   path: string = "",
@@ -218,22 +286,23 @@ export async function uploadRagDocument(
   fd.append("file", file, file.name);
   if (path) fd.append("path", path);
   const r = await fetch(
-    `${API_BASE}/rag/namespaces/${encodeURIComponent(namespace)}/documents`,
+    `${_wsBase(wsSlug)}/namespaces/${encodeURIComponent(namespace)}/documents`,
     { method: "POST", body: fd },
   );
   if (!r.ok)
     throw new Error(
-      `POST /rag/namespaces/${namespace}/documents ${r.status}: ${await r.text()}`,
+      `POST ${_wsBase(wsSlug)}/namespaces/${namespace}/documents ${r.status}: ${await r.text()}`,
     );
   return r.json();
 }
 
 export async function deleteRagDocument(
+  wsSlug: string,
   namespace: string,
   filename: string,
 ): Promise<void> {
   const r = await fetch(
-    `${API_BASE}/rag/namespaces/${encodeURIComponent(namespace)}/documents/${filename
+    `${_wsBase(wsSlug)}/namespaces/${encodeURIComponent(namespace)}/documents/${filename
       .split("/")
       .map(encodeURIComponent)
       .join("/")}`,
@@ -241,7 +310,7 @@ export async function deleteRagDocument(
   );
   if (!r.ok && r.status !== 204)
     throw new Error(
-      `DELETE /rag/namespaces/${namespace}/documents/${filename} ${r.status}`,
+      `DELETE ${_wsBase(wsSlug)}/namespaces/${namespace}/documents/${filename} ${r.status}`,
     );
 }
 
@@ -250,27 +319,29 @@ function encodeSubpath(p: string): string {
 }
 
 export async function listRagTree(
+  wsSlug: string,
   namespace: string,
   path: string = "",
 ): Promise<RagTreeResponse> {
   const qs = path ? `?path=${encodeURIComponent(path)}` : "";
   const r = await fetch(
-    `${API_BASE}/rag/namespaces/${encodeURIComponent(namespace)}/tree${qs}`,
+    `${_wsBase(wsSlug)}/namespaces/${encodeURIComponent(namespace)}/tree${qs}`,
     { cache: "no-store" },
   );
   if (!r.ok)
     throw new Error(
-      `GET /rag/namespaces/${namespace}/tree ${r.status}: ${await r.text()}`,
+      `GET ${_wsBase(wsSlug)}/namespaces/${namespace}/tree ${r.status}: ${await r.text()}`,
     );
   return r.json();
 }
 
 export async function createRagFolder(
+  wsSlug: string,
   namespace: string,
   path: string,
 ): Promise<RagFolderActionResponse> {
   const r = await fetch(
-    `${API_BASE}/rag/namespaces/${encodeURIComponent(namespace)}/folders`,
+    `${_wsBase(wsSlug)}/namespaces/${encodeURIComponent(namespace)}/folders`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -279,103 +350,123 @@ export async function createRagFolder(
   );
   if (!r.ok)
     throw new Error(
-      `POST /rag/namespaces/${namespace}/folders ${r.status}: ${await r.text()}`,
+      `POST ${_wsBase(wsSlug)}/namespaces/${namespace}/folders ${r.status}: ${await r.text()}`,
     );
   return r.json();
 }
 
 export async function deleteRagFolder(
+  wsSlug: string,
   namespace: string,
   path: string,
 ): Promise<RagFolderActionResponse> {
   const r = await fetch(
-    `${API_BASE}/rag/namespaces/${encodeURIComponent(namespace)}/folders/${encodeSubpath(path)}`,
+    `${_wsBase(wsSlug)}/namespaces/${encodeURIComponent(namespace)}/folders/${encodeSubpath(path)}`,
     { method: "DELETE" },
   );
   if (!r.ok)
     throw new Error(
-      `DELETE /rag/namespaces/${namespace}/folders/${path} ${r.status}: ${await r.text()}`,
+      `DELETE ${_wsBase(wsSlug)}/namespaces/${namespace}/folders/${path} ${r.status}: ${await r.text()}`,
     );
   return r.json();
 }
 
 export async function openRagFolder(
+  wsSlug: string,
   namespace: string,
   path: string = "",
 ): Promise<RagOpenFolderResponse> {
   const qs = path ? `?path=${encodeURIComponent(path)}` : "";
   const r = await fetch(
-    `${API_BASE}/rag/namespaces/${encodeURIComponent(namespace)}/open${qs}`,
+    `${_wsBase(wsSlug)}/namespaces/${encodeURIComponent(namespace)}/open${qs}`,
     { method: "POST" },
   );
   if (!r.ok)
     throw new Error(
-      `POST /rag/namespaces/${namespace}/open ${r.status}: ${await r.text()}`,
+      `POST ${_wsBase(wsSlug)}/namespaces/${namespace}/open ${r.status}: ${await r.text()}`,
     );
   return r.json();
 }
 
-export async function openRagRoot(): Promise<RagRootOpenResponse> {
-  const r = await fetch(`${API_BASE}/rag/root/open`, { method: "POST" });
+export async function openRagRoot(
+  wsSlug: string,
+): Promise<RagRootOpenResponse> {
+  const r = await fetch(`${_wsBase(wsSlug)}/root/open`, { method: "POST" });
   if (!r.ok)
-    throw new Error(`POST /rag/root/open ${r.status}: ${await r.text()}`);
+    throw new Error(
+      `POST ${_wsBase(wsSlug)}/root/open ${r.status}: ${await r.text()}`,
+    );
   return r.json();
 }
 
-export async function listRootFiles(): Promise<RagRootFileListResponse> {
-  const r = await fetch(`${API_BASE}/rag/root/files`, { cache: "no-store" });
+export async function listRootFiles(
+  wsSlug: string,
+): Promise<RagRootFileListResponse> {
+  const r = await fetch(`${_wsBase(wsSlug)}/root/files`, {
+    cache: "no-store",
+  });
   if (!r.ok)
-    throw new Error(`GET /rag/root/files ${r.status}: ${await r.text()}`);
+    throw new Error(
+      `GET ${_wsBase(wsSlug)}/root/files ${r.status}: ${await r.text()}`,
+    );
   return r.json();
 }
 
 export async function uploadRootFile(
+  wsSlug: string,
   file: File,
 ): Promise<RagDocumentUploadResponse> {
   const fd = new FormData();
   fd.append("file", file, file.name);
-  const r = await fetch(`${API_BASE}/rag/root/files`, {
+  const r = await fetch(`${_wsBase(wsSlug)}/root/files`, {
     method: "POST",
     body: fd,
   });
   if (!r.ok)
-    throw new Error(`POST /rag/root/files ${r.status}: ${await r.text()}`);
+    throw new Error(
+      `POST ${_wsBase(wsSlug)}/root/files ${r.status}: ${await r.text()}`,
+    );
   return r.json();
 }
 
-export async function deleteRootFile(filename: string): Promise<void> {
+export async function deleteRootFile(
+  wsSlug: string,
+  filename: string,
+): Promise<void> {
   const r = await fetch(
-    `${API_BASE}/rag/root/files/${encodeURIComponent(filename)}`,
+    `${_wsBase(wsSlug)}/root/files/${encodeURIComponent(filename)}`,
     { method: "DELETE" },
   );
   if (!r.ok && r.status !== 204)
     throw new Error(
-      `DELETE /rag/root/files/${filename} ${r.status}: ${await r.text()}`,
+      `DELETE ${_wsBase(wsSlug)}/root/files/${filename} ${r.status}: ${await r.text()}`,
     );
 }
 
 export async function getCachedRagSummary(
+  wsSlug: string,
   namespace: string,
   path: string = "",
 ): Promise<RagSummaryCachedResponse> {
   const qs = path ? `?path=${encodeURIComponent(path)}` : "";
   const r = await fetch(
-    `${API_BASE}/rag/namespaces/${encodeURIComponent(namespace)}/summary${qs}`,
+    `${_wsBase(wsSlug)}/namespaces/${encodeURIComponent(namespace)}/summary${qs}`,
     { cache: "no-store" },
   );
   if (!r.ok)
     throw new Error(
-      `GET /rag/namespaces/${namespace}/summary ${r.status}: ${await r.text()}`,
+      `GET ${_wsBase(wsSlug)}/namespaces/${namespace}/summary ${r.status}: ${await r.text()}`,
     );
   return r.json();
 }
 
 export async function summarizeRagPath(
+  wsSlug: string,
   namespace: string,
   body: RagSummaryRequestInput = {},
 ): Promise<RagSummaryResponse> {
   const r = await fetch(
-    `${API_BASE}/rag/namespaces/${encodeURIComponent(namespace)}/summary`,
+    `${_wsBase(wsSlug)}/namespaces/${encodeURIComponent(namespace)}/summary`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -389,7 +480,7 @@ export async function summarizeRagPath(
   );
   if (!r.ok)
     throw new Error(
-      `POST /rag/namespaces/${namespace}/summary ${r.status}: ${await r.text()}`,
+      `POST ${_wsBase(wsSlug)}/namespaces/${namespace}/summary ${r.status}: ${await r.text()}`,
     );
   return r.json();
 }

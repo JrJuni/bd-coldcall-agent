@@ -89,20 +89,41 @@ router = APIRouter()
 # ── Path helpers (monkeypatchable) ──────────────────────────────────────
 
 
-def _vectorstore_root() -> Path:
-    settings = _config_loader.get_settings()
-    root = Path(settings.rag.vectorstore_path)
-    if not root.is_absolute():
-        root = _config_loader.PROJECT_ROOT / root
-    return root
+def _vectorstore_root(ws_slug: str = "default") -> Path:
+    """Per-workspace ChromaDB persist root.
+
+    Phase 11 P11-1: defaulted to the built-in `default` workspace so call
+    sites that haven't migrated to ws-prefixed routing yet still resolve
+    to the legacy single-root path.
+    """
+    from src.rag.workspaces import workspace_paths
+
+    try:
+        vs_root, _cd_root = workspace_paths(ws_slug)
+        return vs_root
+    except KeyError:
+        # Workspaces table not yet seeded (early lifespan / tests that
+        # bypass init_db). Fall back to the bare project layout.
+        settings = _config_loader.get_settings()
+        root = Path(settings.rag.vectorstore_path)
+        if not root.is_absolute():
+            root = _config_loader.PROJECT_ROOT / root
+        return root / ws_slug
 
 
-def _company_docs_root() -> Path:
-    """Where source files live before indexing.
+def _company_docs_root(ws_slug: str = "default") -> Path:
+    """Where source files live before indexing, per workspace.
 
     Tests override this via monkeypatch to redirect into tmp_path.
     """
-    return _config_loader.PROJECT_ROOT / "data" / "company_docs"
+    from src.rag.workspaces import workspace_paths
+
+    try:
+        _vs_root, cd_root = workspace_paths(ws_slug)
+        return cd_root
+    except KeyError:
+        # Same fallback as _vectorstore_root above.
+        return _config_loader.PROJECT_ROOT / "data" / "company_docs"
 
 
 def _validate_namespace_name(name: str) -> str:
@@ -378,14 +399,15 @@ def _row_to_summary(row) -> RagSummaryResponse:
     )
 
 
-def _get_cached_summary(namespace: str, path: str) -> tuple[
-    RagSummaryResponse | None, str | None
-]:
+def _get_cached_summary(
+    ws_slug: str, namespace: str, path: str
+) -> tuple[RagSummaryResponse | None, str | None]:
     """Return (cached summary, indexed_at_at_generation) for the row, or (None, None)."""
     with _db.connect(_app_db_path()) as conn:
         row = conn.execute(
-            "SELECT * FROM rag_summaries WHERE namespace = ? AND path = ?",
-            (namespace, path),
+            "SELECT * FROM rag_summaries"
+            " WHERE ws_slug = ? AND namespace = ? AND path = ?",
+            (ws_slug, namespace, path),
         ).fetchone()
     if row is None:
         return None, None
@@ -393,21 +415,32 @@ def _get_cached_summary(namespace: str, path: str) -> tuple[
 
 
 def _upsert_summary(
+    ws_slug: str,
     summary: RagSummaryResponse,
     *,
     lang: str,
     indexed_at_at_generation: str | None,
 ) -> None:
     with _db.connect(_app_db_path()) as conn:
+        # First DELETE the existing row (if any) — INSERT OR REPLACE
+        # would honor the original (namespace, path) PK on databases
+        # that pre-date the ws_slug column, accidentally clobbering
+        # another workspace's row with the same (ns, path).
+        conn.execute(
+            "DELETE FROM rag_summaries"
+            " WHERE ws_slug = ? AND namespace = ? AND path = ?",
+            (ws_slug, summary.namespace, summary.path),
+        )
         conn.execute(
             """
-            INSERT OR REPLACE INTO rag_summaries (
-                namespace, path, summary, lang, model, usage_json,
+            INSERT INTO rag_summaries (
+                ws_slug, namespace, path, summary, lang, model, usage_json,
                 chunk_count, chunks_in_namespace,
                 indexed_at_at_generation, generated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                ws_slug,
                 summary.namespace,
                 summary.path,
                 summary.summary,
@@ -422,20 +455,24 @@ def _upsert_summary(
         )
 
 
-def _delete_namespace_summaries(namespace: str) -> None:
+def _delete_namespace_summaries(ws_slug: str, namespace: str) -> None:
     with _db.connect(_app_db_path()) as conn:
         conn.execute(
-            "DELETE FROM rag_summaries WHERE namespace = ?", (namespace,)
+            "DELETE FROM rag_summaries WHERE ws_slug = ? AND namespace = ?",
+            (ws_slug, namespace),
         )
 
 
 # ── Namespace endpoints ─────────────────────────────────────────────────
 
 
-@router.get("/rag/namespaces", response_model=RagNamespaceListResponse)
-async def get_rag_namespaces() -> RagNamespaceListResponse:
-    vs_root = _vectorstore_root()
-    cd_root = _company_docs_root()
+@router.get(
+    "/rag/workspaces/{ws_slug}/namespaces",
+    response_model=RagNamespaceListResponse,
+)
+async def get_rag_namespaces(ws_slug: str) -> RagNamespaceListResponse:
+    vs_root = _vectorstore_root(ws_slug)
+    cd_root = _company_docs_root(ws_slug)
     names = list_namespaces(vs_root)
     # Always surface DEFAULT_NAMESPACE so the dropdown is never empty
     # even before the first index pass.
@@ -448,16 +485,16 @@ async def get_rag_namespaces() -> RagNamespaceListResponse:
 
 
 @router.post(
-    "/rag/namespaces",
+    "/rag/workspaces/{ws_slug}/namespaces",
     response_model=RagNamespaceSummary,
     status_code=status.HTTP_201_CREATED,
 )
 async def create_rag_namespace(
-    payload: RagNamespaceCreate,
+    ws_slug: str, payload: RagNamespaceCreate,
 ) -> RagNamespaceSummary:
     name = _validate_namespace_name(payload.name)
-    vs_root = _vectorstore_root()
-    cd_root = _company_docs_root()
+    vs_root = _vectorstore_root(ws_slug)
+    cd_root = _company_docs_root(ws_slug)
 
     vs_dir = vectorstore_root_for(vs_root, name)
     cd_dir = company_docs_root_for(cd_root, name)
@@ -473,11 +510,11 @@ async def create_rag_namespace(
 
 
 @router.delete(
-    "/rag/namespaces/{namespace}",
+    "/rag/workspaces/{ws_slug}/namespaces/{namespace}",
     response_model=RagNamespaceDeleteResponse,
 )
 async def delete_rag_namespace(
-    namespace: str, force: bool = False
+    ws_slug: str, namespace: str, force: bool = False
 ) -> RagNamespaceDeleteResponse:
     name = _validate_namespace_name(namespace)
     if name == DEFAULT_NAMESPACE:
@@ -486,8 +523,8 @@ async def delete_rag_namespace(
             detail="the default namespace cannot be deleted",
         )
 
-    vs_root = _vectorstore_root()
-    cd_root = _company_docs_root()
+    vs_root = _vectorstore_root(ws_slug)
+    cd_root = _company_docs_root(ws_slug)
     vs_dir = vectorstore_root_for(vs_root, name)
     cd_dir = company_docs_root_for(cd_root, name)
 
@@ -523,7 +560,7 @@ async def delete_rag_namespace(
         shutil.rmtree(cd_dir, ignore_errors=True)
     # Drop any cached summaries — orphan rows would mislead the UI after
     # someone recreates a namespace with the same name.
-    _delete_namespace_summaries(name)
+    _delete_namespace_summaries(ws_slug, name)
     return RagNamespaceDeleteResponse(name=name, removed=True)
 
 
@@ -531,13 +568,15 @@ async def delete_rag_namespace(
 
 
 @router.get(
-    "/rag/namespaces/{namespace}/documents",
+    "/rag/workspaces/{ws_slug}/namespaces/{namespace}/documents",
     response_model=RagDocumentListResponse,
 )
-async def list_rag_documents(namespace: str) -> RagDocumentListResponse:
+async def list_rag_documents(
+    ws_slug: str, namespace: str
+) -> RagDocumentListResponse:
     name = _validate_namespace_name(namespace)
-    vs_root = _vectorstore_root()
-    cd_root = _company_docs_root()
+    vs_root = _vectorstore_root(ws_slug)
+    cd_root = _company_docs_root(ws_slug)
     cd_dir = company_docs_root_for(cd_root, name)
 
     indexed = _indexed_local_files(vs_root, name)
@@ -582,11 +621,12 @@ async def list_rag_documents(namespace: str) -> RagDocumentListResponse:
 
 
 @router.post(
-    "/rag/namespaces/{namespace}/documents",
+    "/rag/workspaces/{ws_slug}/namespaces/{namespace}/documents",
     response_model=RagDocumentUploadResponse,
     status_code=status.HTTP_201_CREATED,
 )
 async def upload_rag_document(
+    ws_slug: str,
     namespace: str,
     file: UploadFile = File(...),
     path: str = Form(""),
@@ -595,7 +635,7 @@ async def upload_rag_document(
     filename = _validate_upload_filename(file.filename or "")
     subpath = _validate_subpath(path)
 
-    cd_root = _company_docs_root()
+    cd_root = _company_docs_root(ws_slug)
     cd_dir = company_docs_root_for(cd_root, name)
     cd_dir.mkdir(parents=True, exist_ok=True)
 
@@ -632,12 +672,14 @@ async def upload_rag_document(
 
 
 @router.delete(
-    "/rag/namespaces/{namespace}/documents/{filename:path}",
+    "/rag/workspaces/{ws_slug}/namespaces/{namespace}/documents/{filename:path}",
     status_code=status.HTTP_204_NO_CONTENT,
 )
-async def delete_rag_document(namespace: str, filename: str) -> None:
+async def delete_rag_document(
+    ws_slug: str, namespace: str, filename: str
+) -> None:
     name = _validate_namespace_name(namespace)
-    cd_root = _company_docs_root()
+    cd_root = _company_docs_root(ws_slug)
     cd_dir = company_docs_root_for(cd_root, name)
     if not cd_dir.exists():
         raise HTTPException(status_code=404, detail="namespace not found")
@@ -700,14 +742,16 @@ def _format_folder_entry(
 
 
 @router.get(
-    "/rag/namespaces/{namespace}/tree",
+    "/rag/workspaces/{ws_slug}/namespaces/{namespace}/tree",
     response_model=RagTreeResponse,
 )
-async def get_rag_tree(namespace: str, path: str = "") -> RagTreeResponse:
+async def get_rag_tree(
+    ws_slug: str, namespace: str, path: str = ""
+) -> RagTreeResponse:
     name = _validate_namespace_name(namespace)
     subpath = _validate_subpath(path)
-    vs_root = _vectorstore_root()
-    cd_root = _company_docs_root()
+    vs_root = _vectorstore_root(ws_slug)
+    cd_root = _company_docs_root(ws_slug)
     cd_dir = company_docs_root_for(cd_root, name)
     if not cd_dir.exists():
         # Empty tree for a namespace that has no docs root yet.
@@ -755,19 +799,19 @@ async def get_rag_tree(namespace: str, path: str = "") -> RagTreeResponse:
 
 
 @router.post(
-    "/rag/namespaces/{namespace}/folders",
+    "/rag/workspaces/{ws_slug}/namespaces/{namespace}/folders",
     response_model=RagFolderActionResponse,
     status_code=status.HTTP_201_CREATED,
 )
 async def create_rag_folder(
-    namespace: str, payload: RagFolderCreate
+    ws_slug: str, namespace: str, payload: RagFolderCreate
 ) -> RagFolderActionResponse:
     name = _validate_namespace_name(namespace)
     subpath = _validate_subpath(payload.path)
     if not subpath:
         raise HTTPException(status_code=422, detail="folder path is required")
 
-    cd_root = _company_docs_root()
+    cd_root = _company_docs_root(ws_slug)
     cd_dir = company_docs_root_for(cd_root, name)
     cd_dir.mkdir(parents=True, exist_ok=True)
 
@@ -783,11 +827,11 @@ async def create_rag_folder(
 
 
 @router.delete(
-    "/rag/namespaces/{namespace}/folders/{path:path}",
+    "/rag/workspaces/{ws_slug}/namespaces/{namespace}/folders/{path:path}",
     response_model=RagFolderActionResponse,
 )
 async def delete_rag_folder(
-    namespace: str, path: str
+    ws_slug: str, namespace: str, path: str
 ) -> RagFolderActionResponse:
     name = _validate_namespace_name(namespace)
     subpath = _validate_subpath(path)
@@ -798,7 +842,7 @@ async def delete_rag_folder(
             detail="folder path is required (use namespace DELETE for root)",
         )
 
-    cd_root = _company_docs_root()
+    cd_root = _company_docs_root(ws_slug)
     cd_dir = company_docs_root_for(cd_root, name)
     if not cd_dir.exists():
         raise HTTPException(status_code=404, detail="namespace not found")
@@ -836,11 +880,11 @@ def _launch_file_manager(abs_path: str) -> bool:
 
 
 @router.post(
-    "/rag/namespaces/{namespace}/open",
+    "/rag/workspaces/{ws_slug}/namespaces/{namespace}/open",
     response_model=RagOpenFolderResponse,
 )
 async def open_rag_folder(
-    namespace: str, path: str = ""
+    ws_slug: str, namespace: str, path: str = ""
 ) -> RagOpenFolderResponse:
     """Launch the OS file explorer at the namespace folder (localhost only).
 
@@ -849,7 +893,7 @@ async def open_rag_folder(
     """
     name = _validate_namespace_name(namespace)
     subpath = _validate_subpath(path)
-    cd_root = _company_docs_root()
+    cd_root = _company_docs_root(ws_slug)
     cd_dir = company_docs_root_for(cd_root, name)
     cd_dir.mkdir(parents=True, exist_ok=True)
     target = _resolve_subpath(cd_dir, subpath)
@@ -865,10 +909,13 @@ async def open_rag_folder(
     )
 
 
-@router.post("/rag/root/open", response_model=RagRootOpenResponse)
-async def open_rag_root() -> RagRootOpenResponse:
-    """Launch the OS file explorer at `data/company_docs/` (the root)."""
-    cd_root = _company_docs_root()
+@router.post(
+    "/rag/workspaces/{ws_slug}/root/open",
+    response_model=RagRootOpenResponse,
+)
+async def open_rag_root(ws_slug: str) -> RagRootOpenResponse:
+    """Launch the OS file explorer at the workspace's docs root."""
+    cd_root = _company_docs_root(ws_slug)
     cd_root.mkdir(parents=True, exist_ok=True)
     abs_path = str(cd_root.resolve())
     opened = _launch_file_manager(abs_path)
@@ -878,14 +925,18 @@ async def open_rag_root() -> RagRootOpenResponse:
 # ── Root-level files (for filesystem-mirror UX) ─────────────────────────
 
 
-@router.get("/rag/root/files", response_model=RagRootFileListResponse)
-async def list_rag_root_files() -> RagRootFileListResponse:
-    """List files directly under `data/company_docs/` (top-level only).
+@router.get(
+    "/rag/workspaces/{ws_slug}/root/files",
+    response_model=RagRootFileListResponse,
+)
+async def list_rag_root_files(ws_slug: str) -> RagRootFileListResponse:
+    """List files directly under the workspace's docs root (top-level).
 
     Subdirectories (= namespaces) are NOT included — those are surfaced
-    via `GET /rag/namespaces`. The RAG tab combines both client-side.
+    via `GET /rag/workspaces/{ws_slug}/namespaces`. The RAG tab combines
+    both client-side.
     """
-    cd_root = _company_docs_root()
+    cd_root = _company_docs_root(ws_slug)
     if not cd_root.exists():
         return RagRootFileListResponse(files=[])
     files: list[RagDocumentSummary] = []
@@ -918,16 +969,17 @@ async def list_rag_root_files() -> RagRootFileListResponse:
 
 
 @router.post(
-    "/rag/root/files",
+    "/rag/workspaces/{ws_slug}/root/files",
     response_model=RagDocumentUploadResponse,
     status_code=status.HTTP_201_CREATED,
 )
 async def upload_rag_root_file(
+    ws_slug: str,
     file: UploadFile = File(...),
 ) -> RagDocumentUploadResponse:
-    """Upload a file directly under `data/company_docs/` (top-level)."""
+    """Upload a file directly under the workspace's docs root (top-level)."""
     filename = _validate_upload_filename(file.filename or "")
-    cd_root = _company_docs_root()
+    cd_root = _company_docs_root(ws_slug)
     cd_root.mkdir(parents=True, exist_ok=True)
     target = _resolve_inside(cd_root, filename)
 
@@ -956,11 +1008,11 @@ async def upload_rag_root_file(
 
 
 @router.delete(
-    "/rag/root/files/{filename:path}",
+    "/rag/workspaces/{ws_slug}/root/files/{filename:path}",
     status_code=status.HTTP_204_NO_CONTENT,
 )
-async def delete_rag_root_file(filename: str) -> None:
-    cd_root = _company_docs_root()
+async def delete_rag_root_file(ws_slug: str, filename: str) -> None:
+    cd_root = _company_docs_root(ws_slug)
     if not cd_root.exists():
         raise HTTPException(status_code=404, detail="root not found")
     # leaf-only — no slashes / traversal
@@ -1022,13 +1074,13 @@ def _build_chunks_block(chunks: list, max_chars_per_chunk: int = 1200) -> str:
 
 
 @router.get(
-    "/rag/namespaces/{namespace}/summary",
+    "/rag/workspaces/{ws_slug}/namespaces/{namespace}/summary",
     response_model=RagSummaryCachedResponse,
 )
 async def get_cached_rag_summary(
-    namespace: str, path: str = ""
+    ws_slug: str, namespace: str, path: str = ""
 ) -> RagSummaryCachedResponse:
-    """Return the cached AI summary for `(namespace, path)` or `null`.
+    """Return the cached AI summary for `(ws_slug, namespace, path)` or `null`.
 
     `is_stale` flips to True when the folder's current `last_indexed_at`
     is greater than the value captured at generation time — i.e. the
@@ -1036,11 +1088,11 @@ async def get_cached_rag_summary(
     """
     name = _validate_namespace_name(namespace)
     subpath = _validate_subpath(path)
-    cached, indexed_at_at_gen = _get_cached_summary(name, subpath)
+    cached, indexed_at_at_gen = _get_cached_summary(ws_slug, name, subpath)
     if cached is None:
         return RagSummaryCachedResponse(summary=None)
 
-    vs_root = _vectorstore_root()
+    vs_root = _vectorstore_root(ws_slug)
     indexed = _indexed_local_files(vs_root, name)
     current = _folder_last_indexed_at(subpath, indexed)
     is_stale = bool(
@@ -1051,16 +1103,16 @@ async def get_cached_rag_summary(
 
 
 @router.post(
-    "/rag/namespaces/{namespace}/summary",
+    "/rag/workspaces/{ws_slug}/namespaces/{namespace}/summary",
     response_model=RagSummaryResponse,
 )
 async def generate_rag_summary(
-    namespace: str, payload: RagSummaryRequest
+    ws_slug: str, namespace: str, payload: RagSummaryRequest
 ) -> RagSummaryResponse:
     name = _validate_namespace_name(namespace)
     subpath = _validate_subpath(payload.path)
 
-    store = _retriever._store(name)
+    store = _retriever._store(ws_slug, name)
     total = store.count()
     if total == 0:
         return RagSummaryResponse(
@@ -1147,12 +1199,15 @@ async def generate_rag_summary(
 
     # Persist for reload + stale detection. The folder's last_indexed_at
     # at generation time becomes the staleness baseline for future GETs.
-    vs_root = _vectorstore_root()
+    vs_root = _vectorstore_root(ws_slug)
     indexed = _indexed_local_files(vs_root, name)
     indexed_at_now = _folder_last_indexed_at(subpath, indexed)
     try:
         _upsert_summary(
-            response, lang=payload.lang, indexed_at_at_generation=indexed_at_now
+            ws_slug,
+            response,
+            lang=payload.lang,
+            indexed_at_at_generation=indexed_at_now,
         )
     except Exception as exc:  # noqa: BLE001 — cache is best-effort
         _LOGGER.warning("rag: summary cache write failed: %s", exc)

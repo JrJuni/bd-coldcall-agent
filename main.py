@@ -233,10 +233,20 @@ def discover_cmd(
 
 @app.command("ingest")
 def ingest_cmd(
+    workspace: str = typer.Option(
+        "default",
+        "--workspace",
+        help="Workspace slug (default: 'default' = data/company_docs).",
+    ),
+    all_workspaces: bool = typer.Option(
+        False,
+        "--all-workspaces",
+        help="Index every registered workspace in turn.",
+    ),
     local_dir: Optional[Path] = typer.Option(
         None,
         "--local-dir",
-        help="Root for the local connector (default: data/company_docs).",
+        help="Override the local connector root (default: workspace's abs_path).",
     ),
     no_local: bool = typer.Option(False, "--no-local", help="Disable the local connector entirely."),
     notion: bool = typer.Option(False, "--notion", help="Enable the Notion connector."),
@@ -248,6 +258,10 @@ def ingest_cmd(
     from src.rag.indexer import main as indexer_main
 
     argv: list[str] = []
+    if all_workspaces:
+        argv.append("--all-workspaces")
+    elif workspace != "default":
+        argv += ["--workspace", workspace]
     if local_dir is not None:
         argv += ["--local-dir", str(local_dir)]
     if no_local:

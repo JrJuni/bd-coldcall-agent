@@ -464,6 +464,59 @@
   - **#5 (서브폴더 단위 retrieval 분리) 는 backlog 로 분리** — namespace 단위 검색 유지, 폴더는 정리용
   - **DO NOT 룰**: 신규 helper 들도 모듈 경유 (`from src.api import db as _db`), `_app_db_path()` 가 `get_api_settings()` 를 lazy 호출 → 테스트가 `API_APP_DB` 만 override 하면 자동으로 새 DB 가리킴
 
+- **Phase 11 ✅ — Multi-workspace RAG (Add Workspace) (2026-05-02)**
+  - **배경**: 10-9 까지의 RAG 트리는 `data/company_docs/` 단일 루트로 고정. 사용자가 PC 의 임의 폴더 (`D:\my-docs\`, `C:\Users\<u>\Documents\proj\` 등) 를 RAG 에 태우려면 직접 복사·업로드가 필요했음. 비-개발자에게는 부담 → "사용자 폴더를 그대로 워크스페이스로 등록"이 목표
+  - **결정 4종 잠금** (사용자 응답): (1) 외부 ws 의 vectorstore = `data/vectorstore/<ws_slug>/<ns>/` (project 안 집중) (2) 식별자 = label → auto slug + `-2` suffix (3) `python -m src.rag.indexer` no-flag = default ws 만 / 외부는 `--workspace <slug>` / `--all-workspaces` (4) built-in 정책 = 삭제만 차단, label 변경 허용. URL path 인코딩: `?path=` 가 `<ns>/<sub>` → `<ws_slug>/<ns>/<sub>` 3-segment
+  - **Stream P11-0 ✅** — workspaces 테이블 + WorkspaceStore + `/workspaces` CRUD
+    - `src/api/db.py` — `workspaces(id PK, slug UNIQUE, label, abs_path UNIQUE, is_builtin, created_at, updated_at)` + `idx_workspaces_slug` + `_seed_default_workspace` (`init_db` 끝에서 default ws idempotent 시드: `slug='default', label='Project Docs', abs_path=PROJECT_ROOT/data/company_docs, is_builtin=1`). 기존 `news_runs` CREATE INDEX 가 _SCHEMA_SQL 에 inline 으로 있어서 pre-P10-5 app.db 에서 column 부재로 실패하던 latent 버그도 같이 fix (인덱스 생성을 `_migrate_news_runs` 단독 책임으로 통일)
+    - `src/api/store.py::WorkspaceStore` — TargetStore 패턴 mirror. `_slugify(label)` (lowercase + non-alnum → `-`) + `-2` 충돌 회피 루프, `_validate_abs_path` (절대·exists·is_dir·data/ 내부 거부), abs_path UNIQUE collision IntegrityError → 사용자 친화 ValueError. `delete()` 가 `is_builtin=1` 행에 ValueError. `update()` 는 label 만 변경 가능 (abs_path 영구 immutable). `get_by_slug` 추가 (P11-1 retriever 가 사용)
+    - `src/api/schemas.py` — WorkspaceCreate(label, abs_path) / WorkspaceUpdate(label?) / WorkspaceSummary / WorkspaceListResponse
+    - `src/api/routes/workspaces.py` 신규 — 5 endpoint (targets.py 패턴 그대로). 422 (validation), 400 (built-in delete), 404 (not found)
+    - `src/api/app.py` — workspaces_routes 등록
+    - 테스트: `tests/test_api_workspaces.py` 15건 — default 시드 / 정상 생성 / slug 충돌 -2 / 4 종 abs_path 422 (없음·파일·상대·data/ 내부) / 중복 abs_path 422 / list 정렬 (default first) / patch label / abs_path 변경 거부 / built-in delete 차단 / 외부 ws delete / 404
+    - 회귀: 466 → **481 passed all green** (+15)
+  - **Stream P11-1 ✅** — ws-aware path resolution layer (backend internals)
+    - `src/rag/workspaces.py` 신규 — `workspace_paths(ws_slug) -> (vs_root, cd_root)` + `list_workspace_slugs()`. Asymmetric default-ws 처리 (default → `(settings.rag.vectorstore_path, data/company_docs)` 그대로 / external → `(vectorstore_path/<slug>, abs_path)`) — 기존 데이터 그대로 사용. DO NOT 룰: `from src.config import loader as _config_loader` 모듈경유로 `get_settings` 호출 (테스트 monkeypatch 가 그대로 흘러감)
+    - `src/rag/retriever.py` — `_STORES` 키를 `tuple[str, str]` (ws_slug, namespace) 로 변경. `_store(ws_slug='default', namespace='default')` / `retrieve(query, *, ws_slug='default', namespace='default', top_k=None)` (default value 로 backwards-compat 유지)
+    - `src/rag/indexer.py` — `--workspace <slug>` (default `'default'`) + `--all-workspaces` 플래그 추가. body 가 `_run_one_workspace(ws_slug)` 함수로 분리되어 ws iterate. `migrate_flat_layout` 은 default ws 에서만 실행 (외부 ws 는 평면 레거시 데이터 없음). PROJECT_ROOT import 제거 (이제 모든 경로가 workspace_paths 경유)
+    - `src/core/discover.py` — `discover_targets(*, ws_slug='default', namespace=DEFAULT_NAMESPACE, ...)` 시그니처 확장. `_read_seed_meta(ws_slug, namespace)` 가 `workspace_paths` 경유. 미등록 ws_slug 는 `(0, 0)` fallback
+    - `src/api/routes/rag.py` — `_vectorstore_root(ws_slug='default')` / `_company_docs_root(ws_slug='default')` 시그니처 확장 (default 값으로 backwards-compat). 호출처는 P11-2 에서 일괄 수정
+    - `main.py::ingest` typer — `--workspace` / `--all-workspaces` 포워딩
+    - 테스트: `tests/test_rag_workspaces.py` 6건 신규 (default 레거시 layout / external per-slug prefix / 미등록 KeyError / list 정렬 / resolved abs_path normalize). 기존 fixture 들 (`test_retriever`, `test_discover`, `test_rag_namespace::test_retriever_caches_per_namespace`, `test_api_rag_docs::patch_settings`) 의 `lambda namespace=...` 시그니처를 `(ws_slug='default', namespace='default')` 로 수정
+    - 회귀: 481 → **487 passed all green** (+6)
+  - **Stream P11-2 ✅** — `/rag/*` 라우트 모두 ws-prefixed
+    - `src/api/routes/rag.py` — 17개 endpoint 의 path prefix 일괄 변경: `/rag/namespaces/...` → `/rag/workspaces/{ws_slug}/namespaces/...`, `/rag/root/...` → `/rag/workspaces/{ws_slug}/root/...`. 각 핸들러가 `ws_slug: str` path param 받아서 `_vectorstore_root(ws_slug)` / `_company_docs_root(ws_slug)` / `_get_cached_summary(ws_slug, ...)` / `_upsert_summary(ws_slug, ...)` / `_delete_namespace_summaries(ws_slug, ...)` / `_retriever._store(ws_slug, ns)` 모두 forwarding. 기존 path 는 삭제 (single-user dev tool, compat layer 가치 없음)
+    - `src/api/db.py::_migrate_rag_summaries` 추가 — `rag_summaries` 테이블에 `ws_slug TEXT NOT NULL DEFAULT 'default'` 컬럼 ALTER ADD. 기존 PK `(namespace, path)` 는 유지 (SQLite 가 PK in-place 변경 불가, 신규 테이블만 schema 의 `(ws_slug, namespace, path)` PK 사용). `_upsert_summary` SQL 이 `INSERT OR REPLACE` 대신 `DELETE` + `INSERT` 패턴으로 변경 — 구 PK shape DB 에서도 다른 ws 의 동일 (ns, path) 행을 의도치 않게 덮지 않도록 안전장치
+    - `tests/test_api_rag.py` + `tests/test_api_rag_docs.py` — URL 95건 일괄 `/rag/namespaces` → `/rag/workspaces/default/namespaces`, `/rag/root` → `/rag/workspaces/default/root` (사용자 액세스 흐름은 변함없음). `monkeypatch.setattr(_rag_routes._retriever, "_store", lambda ws, ns: fake)` 8건 시그니처 업데이트
+    - **라이브 smoke**: `curl /rag/workspaces/default/namespaces` → 기존 namespaces (`databricks`, `default`, `test260502`) + 64-청크 Databricks PDF 정상 surface
+    - 회귀: 487 passed (테스트 카운트 unchanged — 기존 ~80건 URL 만 prefix 추가). 추가 외부 ws 시나리오 테스트는 P11-4 후속에서
+  - **Stream P11-3 ✅** — Frontend 다중 root + Add Workspace UI
+    - `web/src/lib/types.ts` — Workspace / WorkspaceListResponse / DEFAULT_WS_SLUG 타입 추가
+    - `web/src/lib/api.ts` — listWorkspaces / createWorkspace / patchWorkspace / deleteWorkspace 신규 4개 + RAG 함수 16개 모두 첫 인자에 `wsSlug: string` 추가. 기존 함수명 유지, URL builder 가 `_wsBase(slug) = ${API_BASE}/rag/workspaces/${slug}` 로 통일
+    - `web/src/app/rag/page.tsx` 재작성:
+      - `splitFullPath(fullPath)` → `{ ws, ns, sub }` 3-segment split
+      - 3 view level 분해: `wsLevel` (ws 미선택, 워크스페이스 리스트) / `nsLevel` (ws 선택, namespace + root file 리스트) / `inside` (namespace 안 폴더)
+      - Toolbar 동적 라벨: wsLevel 에서는 `+ Add Workspace` (primary tone) / nsLevel 에서는 `📦 Namespace 생성` / inside 에서는 `📁 새 폴더`
+      - `Breadcrumb` 첫 segment 가 동적 — slug → workspace.label 매핑
+      - `FolderTree` root 노드 라벨 `Workspaces` (icon 🗂), 자식이 등록된 ws 들 (📦 + label), 손자가 namespace, 손손자부터 lazy-load
+      - `FileTable` wsLevel/nsLevel 분기로 empty state 메시지 다른 안내, top-level 행이 ws 일 때 `displayLabel` (label) + `detail` (abs_path) 같이 surface
+      - `RagDocumentDropzone` `wsSlug` prop 추가, `uploadAtRoot=nsLevel`
+      - `AddWorkspaceModal` 신규 컴포넌트 — label + abs_path 입력 + server 422 inline 표시, 성공 시 즉시 새 ws 로 navigate
+    - **TypeScript 컴파일**: `npx tsc --noEmit` exit=0 (전 파일 클린)
+    - **라이브 smoke**: `/rag` 페이지 200 OK, `/rag?path=default` 200 OK, `/workspaces` 가 default ws 1개 반환
+  - **Stream P11-4 ✅** — 사용자 피드백 반영 (워크스페이스 박스 위 Add/Remove + display-only 시맨틱 명시 + wipe_index opt-in)
+    - **`ToolbarButton` `bg-white` Tailwind class-order 버그 fix** — `className="... bg-white ... ${toneCls(bg-slate-900)}"` 가 CSS 파일 내 utility 등장 순서 때문에 `bg-white` 가 이김 → primary 버튼이 흰색-on-흰색 (hover 외 안 보임). base 의 `bg-*` 제거 후 모든 bg 를 toneCls 안으로 옮김. primary tone 색은 검정 → 스카이블루 (`bg-sky-600 hover:bg-sky-700`) 로 변경 — 검정은 무거워서 toolbar 의 다른 흰 버튼들과 위계 어색
+    - **wsLevel toolbar 전용 모드** — wsLevel 일 때 toolbar 가 `[+ Add Workspace]` (primary 스카이블루) + `[− Remove (N)]` (danger 로즈, built-in 자동 제외) + 새로고침 만 노출. nsLevel/inside 에선 기존 file-ops toolbar 그대로
+    - **`RemoveWorkspaceModal` 신규 컴포넌트** — 제거 대상 라벨 + abs_path 리스트 + "등록된 폴더는 절대 삭제되지 않습니다" 명시 + "인덱스도 함께 삭제" 체크박스 (기본 unchecked). 체크 시 `deleteWorkspace(id, { wipe_index: true })` 호출
+    - **백엔드 `WorkspaceStore.delete(id, *, wipe_index=False)`** — `wipe_index=True` 일 때만 `data/vectorstore/<slug>/` rmtree + `rag_summaries.ws_slug=slug` 행 삭제. 사용자 source 폴더는 어느 경우에도 안 건드림. `_resolve_vectorstore_root` 모듈경유로 lookup (테스트 monkeypatch 가능)
+    - **`DELETE /workspaces/{id}?wipe_index=true|false`** route 옵션
+    - **테스트 +3건**: `test_delete_does_not_touch_source_folder` / `test_delete_wipe_index_removes_vectorstore` / `test_delete_without_wipe_keeps_vectorstore`. 회귀: 487 → **490 passed all green**
+    - **vectorstore 용량 실측** (사용자 질문 대응): 20MB Databricks PDF (64 청크) → 1.4MB (chroma.sqlite3 960KB + bge-m3 1024-dim 임베딩 416KB + manifest). 원본 대비 ~7%. 1GB 폴더면 ~70MB — 보존 비용은 무시 가능
+    - **docs 갱신**: `lesson-learned.md` 2건 (Tailwind class-order / 기존 app.db inline CREATE INDEX failure), `playbook.md` #18 (multi-tenant default tier 보존) + #19 (display-only 등록 + opt-in cleanup), `architecture.md` Phase 11 섹션 신설, `backlog.md` 항목 22 (잔여 ws 격차) 신설
+  - **다음**: backlog 22 (Re-index UI ws-aware / Discovery·News 탭 ws 인지 / Dashboard ws 집계 / 외부 ws 시나리오 테스트 5건). 사용자가 외부 폴더 한 번 직접 등록해서 indexing E2E 검증해야 실사용 가능
+
+---
+
 ## 다음 MVP 범위 (Phase 10 이후)
 - Phase 10 PR 시리즈 진행 (P10-1 ~ P10-8)
 - backlog 항목 18 — NVIDIA Nemotron 활용 검토 (4 sub-track: Exaone 대체 / Sonnet 대체 / synthetic data / multi-model 분업) — 별도 branch 실험
