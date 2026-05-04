@@ -58,9 +58,8 @@
 
 ### 5. 비용/쿼터 대시보드
 
-- **왜**: Sonnet·Brave 실제 비용 + 월 합계 실시간 확인. 운영·회계 필수.
-- **스케치**: `/dashboard` 페이지 — 월별 run 수, in/out/cache token 합계, Brave 호출 수, 추정 달러 (단가 상수 + usage × 단가). 기초 데이터는 RunStore / 실행 이력 DB 에서 집계.
-- **의존성**: 실행 이력 영속화 (P4) 가 있으면 정확, 없어도 현재 세션분만 가시화는 가능.
+- **상태 (2026-05-04)**: **Phase 11+ Cost Explorer 가 흡수.** `/cost` 신규 탭 — KPI 카드 4종 (이번달/지난달/누적/캐시 절감) + 일자별 trend (30/60/90일) + 모델별·런타입별 breakdown + per-unit ($/proposal, $/discovery target) + 월 예산 진행바 + recent runs 테이블 (페이지네이션). RAG AI 요약 비용도 합산 (rag_summaries SQLite). 단가표·월 예산은 폼+YAML escape 패턴으로 같은 페이지에서 편집. 활성 모델 (Sonnet ↔ Haiku 등) 도 헤더 드롭다운 한 번 클릭으로 swap (settings.yaml 정규식 라인 교체로 코멘트 보존). 본 항목은 close.
+- **잔여 후보 (별도 backlog 신규 항목으로 분기 시 등록)**: per-unit 의 모델별 분리 (현재는 모델 혼합 평균), 이상치 감지 (전일 대비 spike 알림), CSV 내보내기, virtual tagging (워크스페이스/산업별 어트리뷰션) — Rich tier 후보.
 
 ### 6. LLM-as-judge 자동 평가 (Phase 8 자동화)
 

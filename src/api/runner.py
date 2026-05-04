@@ -364,6 +364,10 @@ def execute_ingest(
     store.update(task_id, status="running")
 
     argv: list[str] = []
+    workspace = params.get("workspace") or "default"
+    namespace = params.get("namespace") or "default"
+    argv.extend(["--workspace", str(workspace)])
+    argv.extend(["--namespace", str(namespace)])
     if params.get("notion"):
         argv.append("--notion")
     if params.get("force"):

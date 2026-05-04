@@ -18,6 +18,8 @@ import type {
   NewsRefreshResponse,
   NewsRunDetail,
   DashboardResponse,
+  CostSummaryResponse,
+  ActiveModelView,
   RagDocumentListResponse,
   RagDocumentUploadResponse,
   RagFolderActionResponse,
@@ -101,6 +103,8 @@ export async function triggerIngest(body: {
   notion: boolean;
   force: boolean;
   dry_run: boolean;
+  workspace?: string;
+  namespace?: string;
 }): Promise<IngestTriggerResponse> {
   const r = await fetch(`${API_BASE}/ingest`, {
     method: "POST",
@@ -623,6 +627,35 @@ export async function getSecretsView(): Promise<SecretsView> {
 export async function getDashboard(): Promise<DashboardResponse> {
   const r = await fetch(`${API_BASE}/dashboard`, { cache: "no-store" });
   if (!r.ok) throw new Error(`GET /dashboard ${r.status}`);
+  return r.json();
+}
+
+// ── Phase 11+ — Cost Explorer ──────────────────────────────────────────
+
+export async function getCostSummary(
+  days: number = 30,
+): Promise<CostSummaryResponse> {
+  const r = await fetch(`${API_BASE}/cost/summary?days=${days}`, {
+    cache: "no-store",
+  });
+  if (!r.ok) throw new Error(`GET /cost/summary ${r.status}`);
+  return r.json();
+}
+
+export async function getActiveModel(): Promise<ActiveModelView> {
+  const r = await fetch(`${API_BASE}/cost/active-model`, { cache: "no-store" });
+  if (!r.ok) throw new Error(`GET /cost/active-model ${r.status}`);
+  return r.json();
+}
+
+export async function setActiveModel(model: string): Promise<ActiveModelView> {
+  const r = await fetch(`${API_BASE}/cost/active-model`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model }),
+  });
+  if (!r.ok)
+    throw new Error(`POST /cost/active-model ${r.status}: ${await r.text()}`);
   return r.json();
 }
 

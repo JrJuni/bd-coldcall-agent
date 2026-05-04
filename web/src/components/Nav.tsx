@@ -17,6 +17,7 @@ const TABS: Tab[] = [
   { href: "/proposals", label: "Proposals" },
   { href: "/rag", label: "RAG Docs" },
   { href: "/interactions", label: "사업 기록" },
+  { href: "/cost", label: "Cost" },
   { href: "/settings", label: "Settings" },
 ];
 

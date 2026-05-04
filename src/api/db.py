@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS discovery_runs (
     error_message TEXT,
     source_yaml_path TEXT,
     usage_json TEXT,
+    claude_model TEXT,
     created_at TEXT NOT NULL
 );
 
@@ -195,6 +196,9 @@ _DISCOVERY_RUNS_NEW_COLUMNS = (
     ("ended_at", "TEXT"),
     ("failed_stage", "TEXT"),
     ("error_message", "TEXT"),
+    # Phase 11+ Cost Explorer — model active at run-start, so swapping
+    # the active model later doesn't retroactively reprice old runs.
+    ("claude_model", "TEXT"),
 )
 
 

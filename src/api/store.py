@@ -55,6 +55,9 @@ class RunRecord:
     proposal_points_count: int = 0
     proposal_md: str | None = None
     output_dir: str | None = None
+    # The Claude model active at run-start. Stored once so that future
+    # active-model swaps don't retroactively re-cost historical runs.
+    claude_model: str | None = None
     events: list[RunEvent] = field(default_factory=list)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
@@ -82,6 +85,7 @@ class RunStore:
         company: str,
         industry: str,
         lang: str,
+        claude_model: str | None = None,
     ) -> RunRecord:
         with self._lock:
             record = RunRecord(
@@ -89,6 +93,7 @@ class RunStore:
                 company=company,
                 industry=industry,
                 lang=lang,
+                claude_model=claude_model,
             )
             self._runs[run_id] = record
             return record
@@ -295,6 +300,7 @@ class DiscoveryStore:
             usage = json.loads(usage_raw) if usage_raw else {}
         except json.JSONDecodeError:
             usage = {}
+        keys = row.keys()
         return {
             "run_id": row["run_id"],
             "generated_at": row["generated_at"],
@@ -311,6 +317,7 @@ class DiscoveryStore:
             "failed_stage": row["failed_stage"],
             "error_message": row["error_message"],
             "source_yaml_path": row["source_yaml_path"],
+            "claude_model": row["claude_model"] if "claude_model" in keys else None,
             "usage": usage,
             "created_at": row["created_at"],
         }
@@ -352,17 +359,18 @@ class DiscoveryStore:
         region: str,
         lang: str,
         seed_summary: str | None,
+        claude_model: str | None = None,
     ) -> dict[str, Any]:
         ts = _now_iso()
         with _db.connect(self._db_path) as conn:
             conn.execute(
                 "INSERT INTO discovery_runs("
                 " run_id, generated_at, namespace, product, region, lang,"
-                " seed_summary, status, usage_json, created_at)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                " seed_summary, status, usage_json, claude_model, created_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     run_id, generated_at, namespace, product, region, lang,
-                    seed_summary, "queued", "{}", ts,
+                    seed_summary, "queued", "{}", claude_model, ts,
                 ),
             )
             row = conn.execute(

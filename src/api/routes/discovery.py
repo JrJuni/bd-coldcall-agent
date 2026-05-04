@@ -23,6 +23,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from src.api import runner as _runner
 from src.api import store as _store
+from src.config import loader as _config_loader
 from src.api.schemas import (
     DiscoveryCandidate,
     DiscoveryCandidateUpdate,
@@ -75,6 +76,10 @@ async def create_discovery_run(
 ) -> DiscoveryRunSummary:
     store = _store.get_discovery_store()
     run_id = _make_run_id()
+    try:
+        active_model = _config_loader.get_settings().llm.claude_model
+    except Exception:
+        active_model = None
     record = store.create_run(
         run_id=run_id,
         generated_at=datetime.now(timezone.utc).isoformat(),
@@ -83,6 +88,7 @@ async def create_discovery_run(
         region=payload.region,
         lang=payload.lang,
         seed_summary=payload.seed_summary,
+        claude_model=active_model,
     )
     store.append_event(run_id, "run_queued", {"run_id": run_id})
 

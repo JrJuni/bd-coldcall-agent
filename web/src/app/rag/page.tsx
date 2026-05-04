@@ -422,6 +422,8 @@ function RagWorkspace() {
         notion: false,
         force: false,
         dry_run: dryRun,
+        workspace: activeWs || "default",
+        namespace: activeNs || "default",
       });
       setIndexJob({
         status: r.status,

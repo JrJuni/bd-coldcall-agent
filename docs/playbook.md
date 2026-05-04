@@ -32,6 +32,8 @@
 | `manifest` `staleness` `derived-aggregate` `rag` `incremental` | [17. per-item 타임스탬프 → 폴더 단위 stale 검출](#17-per-item-타임스탬프--폴더-단위-stale-검출) | manifest.indexed_at + filesystem mtime 비교로 폴더 needs_reindex 파생. 메타 추가 없이 사용자 신호 추가 |
 | `multi-tenant` `path-resolution` `legacy-preserve` `asymmetric-default` | [18. multi-tenant 도입 시 default tier 만 레거시 layout 보존](#18-multi-tenant-도입-시-default-tier-만-레거시-layout-보존) | 새 prefix 를 추가할 때 default 만 "no suffix" 처리하면 기존 데이터 0건 이동으로 호환 |
 | `display-toggle` `optional-cleanup` `non-destructive-default` `recover-by-readd` | [19. display-only 등록 + opt-in cleanup](#19-display-only-등록--opt-in-cleanup) | 등록/제거는 DB row 만 건드리고, 부수 artifact 정리는 명시 옵션. 사용자 실수 복구 = 같은 이름 재등록 |
+| `yaml-edit` `single-key-swap` `comment-preserve` `regex-line-replace` | [20. yaml 한 키만 바꿀 때는 라인 단위 정규식](#20-yaml-한-키만-바꿀-때는-라인-단위-정규식-교체) | PyYAML round-trip 은 코멘트·인덴트·키 순서 잃음. 한 줄만 바꾸면 충분할 때는 정규식이 안전 |
+| `non-dev-ux` `form-with-escape` `progressive-disclosure` `config-editor` | [21. 친화 폼 + YAML escape 토글](#21-친화-폼--yaml-escape-토글로-비-개발자-와-파워유저-동시-수용) | 디폴트는 input 폼, "YAML 편집" 버튼으로 raw textarea fallback. 같은 PUT 경로 공유 |
 
 항목이 늘어나면 태그 알파벳순으로 재정렬. 항목 제거는 패턴이 무효화됐을 때만 (이 경우 원인도 기록).
 
@@ -410,3 +412,73 @@ UI 흐름:
 **Why it works**: (1) **사용자 실수 복구 = 같은 이름으로 재등록** — slug 가 label 에서 자동 파생되므로, label 만 일치시키면 같은 slug 가 재생성되고 보존된 인덱스에 즉시 매핑됨. (2) **Disk leak 우려는 명시 토글로 해결** — 청소 의지가 있는 사용자는 체크 한 번. (3) **destructive 와 non-destructive 의 경계가 UI 에 가시적** — 체크박스 + 안내 문구가 사용자 동의의 단일 지점. (4) **테스트 가능** — `wipe_index=True/False` 둘 다 별도 테스트 케이스로 잠금 (`test_delete_wipe_index_removes_vectorstore` / `test_delete_without_wipe_keeps_vectorstore`).
 
 **Reusable in**: "사용자 등록 + 부수 artifact" 패턴이 있는 모든 곳. (a) 클라우드 콘솔의 리소스 삭제 (DB 인스턴스 vs 백업 vs 스냅샷), (b) 패키지 매니저의 uninstall (`apt remove` vs `apt purge`), (c) VCS 의 branch delete (`-d` vs `-D` vs working tree), (d) container orchestration 의 service vs volume. 핵심 원칙: **default 는 항상 non-destructive, destructive 는 명시 옵션 + 결과 가시화**.
+
+
+---
+
+## 20. yaml 한 키만 바꿀 때는 라인 단위 정규식 교체
+
+**태그**: `yaml-edit` `single-key-swap` `comment-preserve` `regex-line-replace`
+
+**Problem**: 사용자가 프론트에서 "활성 모델" 드롭다운을 누르면 `config/settings.yaml::llm.claude_model` 한 줄만 바뀌어야 한다. 자연스러운 구현은 PyYAML 으로 `safe_load → dict 변경 → safe_dump` 라운드트립이지만, 이렇게 하면 (1) `# 코멘트` 전부 사라짐, (2) 키 순서 재정렬, (3) flow vs block style 변경, (4) 같은 yaml 안의 다른 (사용자가 손으로 정렬해둔) 영역이 모두 영향받음. settings.yaml 같은 사람-편집 yaml 에서는 코멘트가 의미를 가지므로 round-trip 손실이 사용자 체감 회귀.
+
+**Solution**: 한 키만 바꾸면 충분할 때는 **라인 단위 정규식 in-place 교체** 로 해결.
+
+```python
+_CLAUDE_MODEL_LINE_RE = re.compile(
+    r"^(?P<indent>\s*)claude_model:\s*[^\n#]*(?P<trail>\s*(?:#.*)?)$",
+    re.MULTILINE,
+)
+
+def _swap_claude_model_line(raw_yaml: str, new_model: str) -> str:
+    if _CLAUDE_MODEL_LINE_RE.search(raw_yaml):
+        return _CLAUDE_MODEL_LINE_RE.sub(
+            lambda m: f"{m.group(\"indent\")}claude_model: {new_model}{m.group(\"trail\")}",
+            raw_yaml, count=1,
+        )
+    # Fallback: 정규식 미스 시에만 풀 round-trip (코멘트 손실 인지하고)
+    data = yaml.safe_load(raw_yaml) or {}
+    data.setdefault("llm", {})["claude_model"] = new_model
+    return yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
+```
+
+핵심 디테일:
+- `^...$` + `re.MULTILINE` 으로 **그 라인만** 매칭 (yaml 다른 부분 안 건드림)
+- `(?P<indent>\s*)` / `(?P<trail>\s*(?:#.*)?)` 로 들여쓰기 + 트레일링 코멘트 둘 다 보존
+- `count=1` 로 우연한 다중 매칭 방어
+- **swap 후에는 반드시 pydantic 재검증** — 정규식이 yaml syntax 를 보장하지 않으므로 `Settings(**yaml.safe_load(new_raw))` 로 422 차단
+- atomic write (`tmp → os.replace`) + lru_cache 무효화로 다음 read 부터 즉시 반영
+
+**Why it works**: (1) yaml 한 줄은 "키: 값" + 옵션 코멘트의 단순 grammar — 정규식 1개로 충분. (2) round-trip 라이브러리 (ruamel.yaml) 도입은 의존성 비용 ↑ 대비 한 곳에서 한 키 바꾸는 use case 에 과한 도구. (3) 정규식 매칭 실패 시 fallback 으로 round-trip 을 명시적으로 두면 (flow-style mapping 등 비정상 케이스도 동작 보장), 코멘트 손실은 fallback 케이스에서만 발생 — 관측 가능한 회귀가 의도적 trade-off 로 격리됨. (4) 같은 yaml 의 다른 키는 "절대 안 건드림" 이 정규식 수준에서 보장됨.
+
+**Reusable in**: 사람-편집 yaml/toml/properties 파일에서 한 키만 프로그래매틱 변경하는 모든 경우. (a) `pyproject.toml` 의 version bump, (b) `.env` 의 단일 변수 swap, (c) k8s manifest 의 image tag 교체, (d) Apache/Nginx config 의 단일 directive. 다중 키 변경이나 새 섹션 추가는 round-trip 라이브러리 (ruamel.yaml, tomlkit 등) 가 적합. **분기 기준**: "코멘트·포맷 보존 vs 한 줄 교체" 가 trade-off 면 정규식, "구조 변경 + 코멘트 보존" 이 동시 필요면 round-trip 라이브러리.
+
+---
+
+## 21. 친화 폼 + YAML escape 토글로 비-개발자 와 파워유저 동시 수용
+
+**태그**: `non-dev-ux` `form-with-escape` `progressive-disclosure` `config-editor`
+
+**Problem**: 사용자가 두 개의 페르소나로 분기. (a) 비-개발자 BD 인력 — yaml 문법 모름, "Sonnet 단가가 얼마지" 같은 input 만 채우고 싶음. (b) 파워유저 — 한 번에 여러 모델 추가, 코멘트 달기, 구조 비교. 두 페르소나 중 하나만 충족하면 다른 한쪽이 막힘 — yaml-only 면 비-개발자 진입 장벽, form-only 면 파워유저가 답답.
+
+**Solution**: **친화 폼이 디폴트, "YAML 편집" 버튼 토글로 raw textarea fallback**. 두 모드는 같은 PUT 엔드포인트 (`PUT /settings/{kind}`) 와 같은 검증 (2-pass: yaml syntax + pydantic schema) 을 공유.
+
+```tsx
+const [mode, setMode] = useState<"form" | "yaml">("form");
+
+// 모드 전환 시: form → yaml 직렬화로 textarea 채움 / yaml → form 은 yaml.parse 후 setState
+function save() {
+  const raw = mode === "form" ? toYaml(formState) : yamlText;
+  await putSettings(kind, raw);  // 백엔드가 yaml syntax + pydantic 둘 다 검증
+}
+```
+
+UI 흐름:
+- 디폴트 = 폼 모드 (input/select/checkbox 위주). 모델별 4 단가, 월 예산 + warn% 같은 narrow input
+- 우상단 토글: `[폼 편집] [YAML 편집]`
+- YAML 편집 클릭 → 같은 자리에 textarea + 검증 에러 inline. 저장 시 422 메시지 그대로 surface
+- 저장은 양쪽 모드 모두 같은 엔드포인트, 백엔드는 mode 모름
+
+**Why it works**: (1) **단일 source of truth = yaml 파일** — 폼은 yaml 위에 얹은 view 일 뿐, 저장하면 항상 yaml 로 수렴. (2) **검증 로직 한 곳** — yaml syntax + pydantic schema 두 단계가 PUT 핸들러에 잠겨 있어 폼 / YAML 둘 다 같은 안전망 통과. (3) **파워유저가 막다른 골목 없음** — 폼에 없는 필드 (예: 새 모델 추가, 검색 단가) 도 YAML escape 로 즉시 추가 가능. (4) **비-개발자가 진입 장벽 없음** — 첫 화면이 input 폼이라 yaml 스키마 학습 불요. (5) **모드 전환 시 dirty 보존** — form→yaml 직렬화 / yaml→form 은 round-trip parse 후 setState. 변경 사항 lost 없음.
+
+**Reusable in**: 모든 사람-편집 config 의 web UI. 첫 적용은 Cost Explorer 의 `PricingBudgetEditor` (모델 단가 + 월 예산). 이식 후보: 기존 Settings 7개 탭 (weights / tier_rules / competitors / intent_tiers / sector_leaders / targets / settings) — yaml-only 인 채로 비-개발자 진입 어려운 상태. **핵심 원칙**: "디폴트는 단순한 페르소나에 맞추고, 복잡한 페르소나에는 escape hatch". Slack 의 simple/advanced workflow editor, GitHub Actions 의 visual editor + raw yaml, Notion 의 database 폼 + raw json view 같은 패턴.

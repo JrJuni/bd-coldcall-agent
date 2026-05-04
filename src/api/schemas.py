@@ -47,6 +47,7 @@ class RunSummary(BaseModel):
     duration_s: float | None = None
     errors: list[dict[str, Any]] = Field(default_factory=list)
     usage: dict[str, int] = Field(default_factory=dict)
+    claude_model: str | None = None
     article_counts: dict[str, int] = Field(default_factory=dict)
     proposal_points_count: int = 0
     proposal_md: str | None = None
@@ -71,6 +72,8 @@ class IngestTriggerRequest(BaseModel):
     notion: bool = False
     force: bool = False
     dry_run: bool = False
+    workspace: str = Field(default="default", min_length=1, max_length=80)
+    namespace: str = Field(default="default", min_length=1, max_length=80)
 
 
 class IngestTriggerResponse(BaseModel):
@@ -334,6 +337,7 @@ class DiscoveryRunSummary(BaseModel):
     failed_stage: str | None = None
     error_message: str | None = None
     usage: dict[str, int] = Field(default_factory=dict)
+    claude_model: str | None = None
     created_at: str
     candidate_count: int = 0
     tier_distribution: dict[str, int] = Field(default_factory=dict)
@@ -504,6 +508,8 @@ SettingsKind = Literal[
     "intent_tiers",
     "sector_leaders",
     "targets",
+    "pricing",
+    "cost_budget",
 ]
 SETTINGS_KINDS: tuple[str, ...] = (
     "settings",
@@ -513,6 +519,8 @@ SETTINGS_KINDS: tuple[str, ...] = (
     "intent_tiers",
     "sector_leaders",
     "targets",
+    "pricing",
+    "cost_budget",
 )
 
 
@@ -575,14 +583,17 @@ class DashboardRagStatus(BaseModel):
 
 
 class DashboardCostSummary(BaseModel):
-    proposal_input_tokens: int = 0
-    proposal_output_tokens: int = 0
-    proposal_cache_read_tokens: int = 0
-    proposal_cache_write_tokens: int = 0
-    discovery_input_tokens: int = 0
-    discovery_output_tokens: int = 0
-    discovery_cache_read_tokens: int = 0
-    discovery_cache_write_tokens: int = 0
+    """Phase 11+ — USD-centric. Token counts moved to /cost/summary."""
+
+    this_month_usd: float = 0.0
+    last_month_usd: float = 0.0
+    cumulative_usd: float = 0.0
+    cache_savings_usd: float = 0.0
+    cache_savings_pct: float = 0.0
+    monthly_budget_usd: float = 0.0
+    used_pct: float = 0.0
+    breached: bool = False
+    over_budget: bool = False
 
 
 class DashboardResponse(BaseModel):
@@ -593,4 +604,69 @@ class DashboardResponse(BaseModel):
     news: DashboardNewsMini | None = None
     interactions_count: int = 0
     cost: DashboardCostSummary = Field(default_factory=DashboardCostSummary)
+    generated_at: str
+
+
+# ── Phase 11+ — Cost Explorer ───────────────────────────────────────────
+
+
+class CostKpi(BaseModel):
+    this_month_usd: float = 0.0
+    last_month_usd: float = 0.0
+    cumulative_usd: float = 0.0
+    cache_savings_usd: float = 0.0
+    cache_savings_pct: float = 0.0
+
+
+class CostDailyPoint(BaseModel):
+    date: str  # ISO YYYY-MM-DD
+    usd: float
+
+
+class CostBreakdownItem(BaseModel):
+    label: str
+    usd: float
+    tokens: int
+
+
+class CostPerUnit(BaseModel):
+    per_proposal_usd: float | None = None
+    per_discovery_target_usd: float | None = None
+
+
+class CostBudgetState(BaseModel):
+    monthly_usd: float
+    used_usd: float
+    used_pct: float
+    warn_pct: float
+    breached: bool
+    over_budget: bool
+
+
+class CostRecentRunTokens(BaseModel):
+    input: int = 0
+    output: int = 0
+    cache_read: int = 0
+    cache_write: int = 0
+
+
+class CostRecentRun(BaseModel):
+    run_id: str
+    created_at: str
+    run_type: str
+    model: str
+    label: str
+    tokens: CostRecentRunTokens
+    usd: float
+
+
+class CostSummaryResponse(BaseModel):
+    kpi: CostKpi
+    daily_series: list[CostDailyPoint] = Field(default_factory=list)
+    by_model: list[CostBreakdownItem] = Field(default_factory=list)
+    by_run_type: list[CostBreakdownItem] = Field(default_factory=list)
+    per_unit: CostPerUnit = Field(default_factory=CostPerUnit)
+    budget: CostBudgetState
+    recent_runs: list[CostRecentRun] = Field(default_factory=list)
+    days: int
     generated_at: str

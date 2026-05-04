@@ -119,6 +119,41 @@ class SectorLeadersConfig(BaseModel):
     companies: list[SectorLeader] = Field(default_factory=list)
 
 
+class ModelRates(BaseModel):
+    """Per-model token pricing in USD per 1M tokens."""
+
+    input_per_mtok: float = 0.0
+    output_per_mtok: float = 0.0
+    cache_read_per_mtok: float = 0.0
+    cache_write_per_mtok: float = 0.0
+
+
+class SearchRates(BaseModel):
+    per_query_usd: float = 0.0
+
+
+class Pricing(BaseModel):
+    """Shape of `config/pricing.yaml` — Cost Explorer pricing table.
+
+    Missing model entries fall back to a zero-rate ModelRates so unknown
+    model strings produce $0 instead of a KeyError.
+    """
+
+    llm: dict[str, ModelRates] = Field(default_factory=dict)
+    search: dict[str, SearchRates] = Field(default_factory=dict)
+
+
+class CostBudget(BaseModel):
+    """Shape of `config/cost_budget.yaml` — monthly USD ceiling + warn threshold.
+
+    `warn_pct` is a fraction in [0, 1]. The dashboard flips an amber badge
+    when month-to-date spend ≥ monthly_usd × warn_pct, and rose when over.
+    """
+
+    monthly_usd: float = 100.0
+    warn_pct: float = 0.8
+
+
 class RAGSettings(BaseModel):
     embedding_model: str
     chunk_size: int = 500

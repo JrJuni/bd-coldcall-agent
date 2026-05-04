@@ -354,7 +354,14 @@ export const SETTINGS_KINDS = [
   "sector_leaders",
   "targets",
 ] as const;
-export type SettingsKind = (typeof SETTINGS_KINDS)[number];
+
+// Cost Explorer is its own page; pricing/cost_budget reach the same
+// PUT /settings/{kind} pathway but are not surfaced as Settings tabs.
+export const COST_SETTINGS_KINDS = ["pricing", "cost_budget"] as const;
+
+export type SettingsKind =
+  | (typeof SETTINGS_KINDS)[number]
+  | (typeof COST_SETTINGS_KINDS)[number];
 
 export interface SettingsRead {
   kind: SettingsKind;
@@ -410,14 +417,15 @@ export interface DashboardRagStatus {
 }
 
 export interface DashboardCostSummary {
-  proposal_input_tokens: number;
-  proposal_output_tokens: number;
-  proposal_cache_read_tokens: number;
-  proposal_cache_write_tokens: number;
-  discovery_input_tokens: number;
-  discovery_output_tokens: number;
-  discovery_cache_read_tokens: number;
-  discovery_cache_write_tokens: number;
+  this_month_usd: number;
+  last_month_usd: number;
+  cumulative_usd: number;
+  cache_savings_usd: number;
+  cache_savings_pct: number;
+  monthly_budget_usd: number;
+  used_pct: number;
+  breached: boolean;
+  over_budget: boolean;
 }
 
 export interface DashboardResponse {
@@ -429,6 +437,100 @@ export interface DashboardResponse {
   interactions_count: number;
   cost: DashboardCostSummary;
   generated_at: string;
+}
+
+// ── Phase 11+ — Cost Explorer ──────────────────────────────────────────
+
+export interface CostKpi {
+  this_month_usd: number;
+  last_month_usd: number;
+  cumulative_usd: number;
+  cache_savings_usd: number;
+  cache_savings_pct: number;
+}
+
+export interface CostDailyPoint {
+  date: string;
+  usd: number;
+}
+
+export interface CostBreakdownItem {
+  label: string;
+  usd: number;
+  tokens: number;
+}
+
+export interface CostPerUnit {
+  per_proposal_usd: number | null;
+  per_discovery_target_usd: number | null;
+}
+
+export interface CostBudgetState {
+  monthly_usd: number;
+  used_usd: number;
+  used_pct: number;
+  warn_pct: number;
+  breached: boolean;
+  over_budget: boolean;
+}
+
+export interface CostRecentRunTokens {
+  input: number;
+  output: number;
+  cache_read: number;
+  cache_write: number;
+}
+
+export interface CostRecentRun {
+  run_id: string;
+  created_at: string;
+  run_type: string;
+  model: string;
+  label: string;
+  tokens: CostRecentRunTokens;
+  usd: number;
+}
+
+export interface CostSummaryResponse {
+  kpi: CostKpi;
+  daily_series: CostDailyPoint[];
+  by_model: CostBreakdownItem[];
+  by_run_type: CostBreakdownItem[];
+  per_unit: CostPerUnit;
+  budget: CostBudgetState;
+  recent_runs: CostRecentRun[];
+  days: number;
+  generated_at: string;
+}
+
+export interface PricingModelRates {
+  input_per_mtok: number;
+  output_per_mtok: number;
+  cache_read_per_mtok: number;
+  cache_write_per_mtok: number;
+}
+
+export interface PricingDoc {
+  llm: Record<string, PricingModelRates>;
+  search: Record<string, { per_query_usd: number }>;
+}
+
+export interface CostBudgetDoc {
+  monthly_usd: number;
+  warn_pct: number;
+}
+
+export interface AvailableModel {
+  id: string;
+  input_per_mtok: number;
+  output_per_mtok: number;
+  cache_read_per_mtok: number;
+  cache_write_per_mtok: number;
+}
+
+export interface ActiveModelView {
+  active: string | null;
+  available: AvailableModel[];
 }
 
 // ── Phase 10 P10-2b — Discovery ─────────────────────────────────────────

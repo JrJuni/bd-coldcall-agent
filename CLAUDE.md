@@ -110,6 +110,7 @@ Why this split: 7.8B-class models hallucinate on BD reasoning tasks, and funneli
 ## DO NOT
 
 - **테스트에서 monkeypatch 해야 하는 의존성**(부수효과 있는 외부 호출·네트워크·LLM·I/O 클라이언트 등)을 `from X import Y` 형태로 직접 바인딩하지 마라. import 시점에 참조가 고정되어 patch 가 안 먹을 수 있고, 테스트가 원본 구현을 조용히 호출해 false green 이 난다. 대신 모듈 자체를 import 한 뒤 (`from src import foo as _foo`) 런타임에 `_foo.Y` 로 접근하라. graph / pipeline / orchestrator 계층은 이 규칙을 기본값으로 삼는다. 단, 상수·타입·예외 클래스 등 patch 대상이 아닌 심볼은 적용 대상이 아니다. (출처: `docs/lesson-learned.md` 2026-04-21 LangGraph monkeypatch 섹션)
+- **`PUT /settings/{kind}` 처럼 `config/*.yaml` 을 mutate 하는 endpoint 의 통합 테스트**는 반드시 prod CONFIG_DIR 격리 fixture (예: `tests/test_api_settings.py::isolated_config` — `monkeypatch.setattr(_loader, "CONFIG_DIR", tmp)`) 를 사용해야 한다. fixture 없이 호출하면 실제 `config/pricing.yaml` 등이 테스트 input 값으로 덮어씌워지고, 발견 못 하면 잘못된 운영 데이터가 commit 되어 모든 사용자에게 퍼진다. 새 `tests/test_api_*.py` 작성 시 같은 도메인 기존 fixture 패턴을 먼저 검색해서 그대로 차용하라. (출처: `docs/lesson-learned.md` 2026-05-04 `tests/test_api_cost.py` 가 prod config 클로버 섹션)
 
 ### Config is 3-tier — do not collapse
 

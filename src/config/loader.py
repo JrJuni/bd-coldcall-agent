@@ -6,7 +6,9 @@ import yaml
 
 from .schemas import (
     CompetitorsConfig,
+    CostBudget,
     IntentTiersConfig,
+    Pricing,
     Secrets,
     SectorLeadersConfig,
     Settings,
@@ -111,6 +113,42 @@ def load_tier_rules_config(path: Path | None = None) -> TierRulesConfig:
     with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
     return TierRulesConfig(**data)
+
+
+def load_pricing(path: Path | None = None) -> Pricing:
+    """Load `config/pricing.yaml` — Cost Explorer pricing table.
+
+    Missing file → empty pricing + warn (Cost Explorer reports $0 on
+    every run until the user populates it).
+    """
+    path = path or (CONFIG_DIR / "pricing.yaml")
+    if not path.exists():
+        _LOGGER.warning(
+            "pricing.yaml not found at %s — Cost Explorer will report $0. "
+            "Save default rates from the Cost page to populate.",
+            path,
+        )
+        return Pricing()
+    with open(path, encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    return Pricing(**data)
+
+
+def load_cost_budget(path: Path | None = None) -> CostBudget:
+    """Load `config/cost_budget.yaml` — monthly USD budget + warn threshold.
+
+    Missing file falls back to schema defaults ($100/mo, 80%% warn).
+    """
+    path = path or (CONFIG_DIR / "cost_budget.yaml")
+    if not path.exists():
+        _LOGGER.warning(
+            "cost_budget.yaml not found at %s — using $100/mo, 80%% warn defaults.",
+            path,
+        )
+        return CostBudget()
+    with open(path, encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    return CostBudget(**data)
 
 
 def load_sector_leaders(path: Path | None = None) -> SectorLeadersConfig:

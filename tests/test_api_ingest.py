@@ -149,3 +149,70 @@ def test_trigger_ingest_queues_task_and_tracks_status(client, monkeypatch):
 def test_ingest_task_404_for_unknown(client):
     r = client.get("/ingest/tasks/nope")
     assert r.status_code == 404
+
+
+def test_trigger_ingest_forwards_workspace_and_namespace(client, monkeypatch):
+    """The /ingest payload's workspace + namespace must reach the indexer
+    argv. Without this the UI's per-folder Re-index button always rebuilds
+    the default namespace regardless of which folder the user selected.
+    """
+    captured: dict = {}
+
+    def _fake_main(argv):
+        captured["argv"] = list(argv)
+        return 0
+
+    from src.api import runner as _runner
+    from src.rag import indexer as _indexer
+
+    monkeypatch.setattr(_indexer, "main", _fake_main)
+
+    r = client.post(
+        "/ingest",
+        json={
+            "notion": False,
+            "force": True,
+            "dry_run": False,
+            "workspace": "default",
+            "namespace": "test260502",
+        },
+    )
+    assert r.status_code == 202, r.text
+    task_id = r.json()["task_id"]
+
+    # BackgroundTasks runs after the response in the TestClient; poll once.
+    poll = client.get(f"/ingest/tasks/{task_id}")
+    assert poll.status_code == 200
+    assert poll.json()["status"] == "completed", poll.text
+
+    argv = captured["argv"]
+    assert "--workspace" in argv
+    assert argv[argv.index("--workspace") + 1] == "default"
+    assert "--namespace" in argv
+    assert argv[argv.index("--namespace") + 1] == "test260502"
+    assert "--force" in argv
+    assert "--dry-run" not in argv
+    # Sanity: runner module-attr import survives monkeypatch
+    assert _runner.execute_ingest is not None
+
+
+def test_trigger_ingest_defaults_workspace_and_namespace(client, monkeypatch):
+    """Omitting workspace/namespace keeps backwards-compat behavior:
+    indexer is invoked with default/default."""
+    captured: dict = {}
+
+    def _fake_main(argv):
+        captured["argv"] = list(argv)
+        return 0
+
+    from src.rag import indexer as _indexer
+
+    monkeypatch.setattr(_indexer, "main", _fake_main)
+
+    r = client.post("/ingest", json={"dry_run": True})
+    assert r.status_code == 202
+
+    argv = captured["argv"]
+    assert argv[argv.index("--workspace") + 1] == "default"
+    assert argv[argv.index("--namespace") + 1] == "default"
+    assert "--dry-run" in argv

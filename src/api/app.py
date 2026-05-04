@@ -28,6 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.api.checkpoint import build_sqlite_checkpointer, close_checkpointer
 from src.api.config import get_api_settings
 from src.api.db import init_db
+from src.api.routes import cost as cost_routes
 from src.api.routes import dashboard as dashboard_routes
 from src.api.routes import discovery as discovery_routes
 from src.api.routes import health as health_routes
@@ -145,6 +146,7 @@ def create_app() -> FastAPI:
     app.include_router(interactions_routes.router, tags=["interactions"])
     app.include_router(settings_routes.router, tags=["settings"])
     app.include_router(dashboard_routes.router, tags=["dashboard"])
+    app.include_router(cost_routes.router, tags=["cost"])
     app.include_router(workspaces_routes.router, tags=["workspaces"])
 
     return app

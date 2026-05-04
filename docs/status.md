@@ -515,13 +515,63 @@
     - **docs 갱신**: `lesson-learned.md` 2건 (Tailwind class-order / 기존 app.db inline CREATE INDEX failure), `playbook.md` #18 (multi-tenant default tier 보존) + #19 (display-only 등록 + opt-in cleanup), `architecture.md` Phase 11 섹션 신설, `backlog.md` 항목 22 (잔여 ws 격차) 신설
   - **다음**: backlog 22 (Re-index UI ws-aware / Discovery·News 탭 ws 인지 / Dashboard ws 집계 / 외부 ws 시나리오 테스트 5건). 사용자가 외부 폴더 한 번 직접 등록해서 indexing E2E 검증해야 실사용 가능
 
+- **Phase 11+ ✅ — Cost Explorer (`/cost` 탭) + 활성 모델 스왑 UX (2026-05-04)**
+  - **배경**: 토큰 4종 (input/output/cache_read/cache_creation) 은 RunStore + DiscoveryStore 에 이미 누적되고 있었으나, USD 환산·일자 추세·캐시 절감·예산 트래킹·단가표 편집은 어디에도 없었음. SaaS 비용 최적화 툴 (Helicone, Langfuse, CloudZero, Finout) 의 공통 핵심을 우리 규모에 맞게 흡수. 사용자 요청 추가: **친화 폼 + YAML escape 토글** 패턴 (Settings 비-개발자 UX 의 첫 적용처) + **활성 모델을 프론트에서 한 번 클릭으로 변경**.
+  - **결정 4종 잠금**: (1) Cost Explorer 는 Settings 서브탭이 아닌 별도 최상단 `/cost` 탭으로 분리 — viewer 는 viewer 페이지에. (2) v1 기능 범위 = Standard tier (Lean MVP + 캐시 절감 KPI + 단가 메트릭 + 월 예산 + 단가표 yaml 편집). 이상치 감지·CSV·virtual tagging 은 v2. (3) 단가표·월 예산은 settings PUT 경로 재사용 (`pricing` / `cost_budget` 두 종 추가, Settings UI 에선 숨김 — Cost 페이지 폼만으로 편집). (4) 모델 스왑은 settings.yaml `claude_model:` 라인 정규식 교체로 코멘트·기타 키 보존.
+  - **Stream A ✅ — pricing/cost_budget yaml + schemas + Settings PUT 등록**
+    - `config/pricing.yaml` 신규 — Sonnet 4.6 ($3/$15/$0.30/$3.75) + Haiku 4.5 ($1/$5/$0.10/$1.25) 기본가 (per Mtok). `search.brave.per_query_usd: 0.0` (구독제)
+    - `config/cost_budget.yaml` 신규 — `monthly_usd: 100.0`, `warn_pct: 0.8`
+    - `src/config/schemas.py` — `ModelRates` / `SearchRates` / `Pricing` / `CostBudget` BaseModel 추가
+    - `src/config/loader.py` — `load_pricing()` / `load_cost_budget()` (lru_cache 없이 매번 re-read — 모델 스왑 즉시 반영)
+    - `src/api/routes/settings.py` — `_KIND_TO_FILE` / `_KIND_TO_VALIDATOR` 에 `pricing` / `cost_budget` 추가. SettingsKind Literal 도 9 종으로 확장 (`pricing`, `cost_budget`)
+  - **Stream B ✅ — Calculator + `/cost/summary` API**
+    - `src/cost/calculator.py` 신규 — 순수 함수 6종: `usd_for_run` / `kpi_block` / `aggregate_daily` / `aggregate_by` / `per_unit` / `budget_state` / `recent_runs_with_usd`. LLM·IO 의존 0, 핸드 빌드 픽스처로 unit-test 용이. **캐시 절감 = `cache_read_tokens × (input_rate − cache_read_rate) / 1M`** (Anthropic prompt caching 90% 할인의 actual 절감액)
+    - `src/api/routes/cost.py::_gather_records()` — RunStore (proposal, in-memory) + DiscoveryStore (SQLite) + **rag_summaries (SQLite)** 3개 source 를 단일 record dict 로 normalize. 새 run_type `rag_summary` 추가. record 가 `claude_model` 가지면 우선, 없으면 `settings.claude_model` fallback
+    - `GET /cost/summary?days=30` — `kpi` (this/last/cumulative/cache_savings + %), `daily_series` (zero-fill), `by_model` / `by_run_type` (스택바용), `per_unit` (per-proposal $, per-discovery-target $), `budget` (used%, breached, over_budget), `recent_runs` (newest first 20개)
+    - `src/api/schemas.py` — Cost* 7개 BaseModel + `CostSummaryResponse`
+    - `src/api/app.py` — cost_routes 등록
+    - 테스트: `tests/test_cost_calculator.py` 10건 + `tests/test_api_cost.py` 10건
+  - **Stream C ✅ — Frontend `/cost` 페이지 + recharts**
+    - `web/package.json` — `recharts ^2.13.3` 추가 (~50KB gz)
+    - `web/src/components/Nav.tsx` — `Cost` 탭 (Settings 직전)
+    - `web/src/lib/{api,types}.ts` — `getCostSummary` / `getActiveModel` / `setActiveModel` + 11개 타입
+    - `web/src/components/cost/` 신규 8개:
+      - `KpiCards` — 4 카드 (이번달 / 지난달 / 누적 / 캐시 절감 — Anthropic caching 툴팁)
+      - `CostTrendChart` — 30/60/90일 토글 + recharts LineChart
+      - `CostBreakdownBars` — 모델별 ↔ 런타입별 토글 + horizontal stacked bars
+      - `PerUnitCard` — $/proposal, $/discovery target
+      - `BudgetBar` — month-to-date 진행바, warn≥80% amber / over rose
+      - `RecentRunsTable` — 페이지네이션 (10/page) + 4-색 토큰 비율 mini-bar (input/output/cache_read/cache_write). proposal=blue / discovery=violet / **rag_summary=amber**
+      - `PricingBudgetEditor` — 폼+YAML escape 패턴 본진 (모델별 4 input + 월예산 + warn% / "YAML 편집" 토글로 raw textarea fallback / 저장은 `putSettings("pricing", yaml)` + `putSettings("cost_budget", yaml)`)
+      - `ActiveModelSelector` — 헤더 우측 드롭다운, pricing.yaml 모델 목록 + 단가 같이 표시
+    - `web/src/app/cost/page.tsx` — 6 섹션 + 빈 상태 (첫 사용자 페르소나) + 단가/예산 에디터 접이식
+    - `web/src/app/page.tsx` Home `CostBox` 슬림화 — token raw 4종 → USD KPI + 예산 진행바 + 임계 배지 + `/cost` 링크
+    - `web/src/app/settings/page.tsx` — `pricing`/`cost_budget` 종이 SettingsKind union 에 들어와도 settings tab 에는 안 보이도록 `ConfigKind = (typeof SETTINGS_KINDS)[number]` 로 좁힌 타입 사용
+  - **Stream D ✅ — Dashboard 슬림화 + 활성 모델 스왑 + RAG 비용 합산 + 모델 필드 추가**
+    - `src/api/routes/dashboard.py::_cost_summary()` — 토큰 4종 raw 누적 → `cost.calculator.kpi_block()` + `budget_state()` 만 반환. `DashboardCostSummary` schema 도 USD 중심으로 교체 (this_month_usd / last_month_usd / cumulative_usd / cache_savings_usd / cache_savings_pct / monthly_budget_usd / used_pct / breached / over_budget)
+    - `src/api/store.py::RunRecord` — `claude_model: str | None` 필드 추가. `RunStore.create(claude_model=...)` 매개변수
+    - `src/api/routes/runs.py` — `POST /runs` 가 `settings.claude_model` 을 스냅샷해서 RunRecord 에 저장. 활성 모델 swap 후에 시작된 새 run 부터 새 단가 적용 (과거 run 은 그 시점 모델 단가 그대로)
+    - `src/api/db.py` — `discovery_runs.claude_model TEXT` 컬럼 추가 + `_DISCOVERY_RUNS_NEW_COLUMNS` 에 등록 (기존 app.db 도 ALTER TABLE 자동 backfill)
+    - `src/api/store.py::DiscoveryStore.create_run(claude_model=...)` + `_run_row_to_dict` 가 `claude_model` 키로 노출
+    - `src/api/routes/discovery.py::POST /discovery/runs` 도 동일 스냅샷
+    - `src/api/schemas.py::RunSummary` / `DiscoveryRunSummary` 에 `claude_model: str | None` 필드 추가
+    - **`POST /cost/active-model` / `GET /cost/active-model`** — pricing.yaml 등록 모델 enum 검증 → settings.yaml 에서 `r"^(\s*claude_model:\s*).*$"` 정규식으로 라인 단일 교체 (코멘트·indent·다른 키 모두 보존) → post-swap Settings pydantic 재검증 → atomic write → `get_settings.cache_clear()`. 매칭 실패 fallback 만 yaml round-trip
+    - 테스트: `test_active_model_*` 3건 (list / swap-preserves-comments / unknown-model 422) + `test_cost_summary_includes_rag_summary_records`
+  - **운영 검증**:
+    - 풀 스위트: 495 → **510 passed all green** (calculator 10 + api_cost 10)
+    - TS: `npx tsc --noEmit` exit=0
+    - 라이브 라운드트립: `POST /cost/active-model` sonnet → haiku → sonnet, settings.yaml 의 다른 9개 키 + 4개 코멘트 라인 전부 보존
+  - **메모리**: `feedback_form_with_yaml_escape.md` 신규 — config 편집은 친화 폼이 디폴트, "YAML 편집" 버튼으로 raw textarea fallback. PricingBudgetEditor 가 첫 구현
+  - **다음**: 활성 모델 스왑 후 first-run 으로 cost summary 정확도 확인 / per_unit 의 모델별 분리 (현재는 모델 혼합 평균) / 기존 Settings 7개 탭 친화 폼 retrofit (별도 작업)
+
 ---
 
 ## 다음 MVP 범위 (Phase 10 이후)
-- Phase 10 PR 시리즈 진행 (P10-1 ~ P10-8)
-- backlog 항목 18 — NVIDIA Nemotron 활용 검토 (4 sub-track: Exaone 대체 / Sonnet 대체 / synthetic data / multi-model 분업) — 별도 branch 실험
-- backlog P1-1 — 제안서 톤 조정 + 민감 가드 (3 톤 프리셋 + self-critique review_node) — Phase 10 Settings 탭에 자리 마련 후 구현
+- backlog 항목 22 — Phase 11 후속 (Re-index UI ws-aware / Discovery·News 탭 ws 인지 / Dashboard ws 집계 / 외부 ws 시나리오 테스트 5건). 외부 폴더 등록 → indexing E2E 검증 후 실사용 가능
+- backlog P1-1 — 제안서 톤 조정 + 민감 가드 (3 톤 프리셋 + self-critique review_node). Settings UI 친화 폼 retrofit 와 함께 묶어서 Cost Explorer 의 폼+YAML escape 패턴 (`docs/playbook.md#21`) 을 7개 기존 탭에 이식할 수 있음
+- backlog 항목 18 — NVIDIA Nemotron 활용 검토 (4 sub-track) — 별도 branch 실험. Phase 11+ 의 활성 모델 스왑 인프라 (`POST /cost/active-model`) 가 이미 있어서 Nemotron 단가만 pricing.yaml 에 추가하면 토큰 추적·비용 비교 자동
 - 추가 discover 실행 1~2회 (다른 RAG 또는 ko 언어) 로 결과 일반화 확인
+- backlog 5 (비용/쿼터 대시보드) **완료** → Phase 11+ Cost Explorer 가 흡수
 
 ---
 

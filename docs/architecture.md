@@ -371,3 +371,65 @@ GET  /ingest/tasks/{task_id}   → 상태
 - Discovery/News 탭 namespace 드롭다운이 default ws 만 표시
 - Dashboard `rag` aggregate 가 default ws 만 집계
 - 외부 ws 시나리오 백엔드 테스트 5건 추가 필요
+
+---
+
+## Phase 11+ — Cost Explorer (`/cost` 탭) (2026-05-04)
+
+토큰 누적치를 USD 환산·일자 추세·캐시 절감·예산·단가 메트릭으로 노출하는 별도 viewer 탭. 활성 모델 (Sonnet/Haiku) 도 같은 페이지에서 한 번 클릭으로 스왑.
+
+### Pricing / Budget config (`config/pricing.yaml`, `config/cost_budget.yaml`)
+- `Pricing.llm: dict[str, ModelRates]` — 모델 ID → 4 단가 (input/output/cache_read/cache_write per Mtok). `Pricing.search: dict[str, SearchRates]` — Brave 등 외부 검색 단가
+- `CostBudget.monthly_usd / warn_pct` — 월 예산 USD + warn 임계 (0~1)
+- 두 종 모두 Settings PUT 경로 (`PUT /settings/{kind}`) 에 등록 — `pricing` / `cost_budget` 키. 2-pass YAML+Pydantic 검증·atomic write·lru_cache 무효화 그대로 재사용. **Settings UI 에는 노출 안 함** (Cost 페이지의 `PricingBudgetEditor` 폼이 단일 진입점)
+
+### Calculator (`src/cost/calculator.py`)
+LLM·IO 의존 0인 순수 함수 집합:
+- `usd_for_run(usage, model, pricing)` — 4 토큰 × 4 단가 → input/output/cache_read/cache_write/total/cache_savings USD. 모델 미등록 시 prefix-match → 실패 시 zero-rate. **`cache_savings_usd = cache_read_tokens × (input_rate − cache_read_rate) / 1M`** (Anthropic prompt caching 의 90% 할인을 "현금 가치" 로 변환)
+- `kpi_block` — this_month / last_month / cumulative + 캐시 절감 + 절감 % (counterfactual 대비)
+- `aggregate_daily(records, *, days, today)` — 트레일링 days 일 zero-fill 시리즈 (gap 없는 라인차트용)
+- `aggregate_by(records, *, dim)` — `dim="model"` 또는 `"run_type"` 그룹화
+- `per_unit(records)` — proposal=`completed`만 평균 / discovery=`candidate_count` 합 (없으면 25 fallback) 으로 후보당 USD
+- `budget_state(records, budget, today)` — 이번 달 used USD + breach (≥warn_pct) + over_budget (≥1.0)
+- `recent_runs_with_usd(records, *, limit=20)` — 최근순 + 토큰 4종 raw + USD
+
+### Aggregator route (`src/api/routes/cost.py`)
+- `_gather_records()` — 3 source normalize:
+  - **Proposal**: `RunStore.list()` (in-memory). `RunRecord.claude_model` 우선, 없으면 settings fallback
+  - **Discovery**: `DiscoveryStore.list_runs()` (SQLite `discovery_runs.usage_json` + `claude_model` 컬럼)
+  - **RAG summary**: `rag_summaries` 테이블 직접 SELECT (`ws_slug`, `namespace`, `path`, `model`, `usage_json`, `generated_at`). run_type=`rag_summary`, run_id=`rag:<ws>:<ns>:<path>`
+- `GET /cost/summary?days=30` — 위 7 함수 호출 후 `CostSummaryResponse` 조립
+- `GET /cost/active-model` — `{ active, available[] }`. available 은 pricing.yaml `llm` dict 의 모델 ID + 4 단가
+- **`POST /cost/active-model {"model": "..."}`** — pricing.yaml 등록 모델 enum 검증 → `r"^(\s*claude_model:\s*).*$"` 정규식으로 settings.yaml 의 `claude_model:` 라인 한 줄만 교체 (코멘트·indent·다른 키 보존) → post-swap Settings pydantic 재검증 → atomic write + `get_settings.cache_clear()`. 매칭 실패 fallback 만 yaml round-trip (코멘트 손실 인지)
+
+### 모델 추적 — RunRecord/DiscoveryStore.claude_model
+모델 스왑 후에도 과거 run 의 비용 정확도를 유지하기 위해 **run-start 시점 활성 모델을 스냅샷**:
+- `RunRecord.claude_model: str | None` 필드 + `RunStore.create(claude_model=...)` 매개변수. `POST /runs` 핸들러가 `settings.claude_model` 을 즉시 읽어 record 에 박음
+- `discovery_runs.claude_model TEXT` 컬럼 + `_DISCOVERY_RUNS_NEW_COLUMNS` 마이그레이션. `POST /discovery/runs` 도 동일 스냅샷
+- Cost calculator 는 record 의 `claude_model` 우선 사용 → 활성 모델 변경 시 새 run 부터 새 단가, 과거 run 은 그 시점 단가로 그대로 환산
+
+### Frontend (`web/src/app/cost/page.tsx` + `web/src/components/cost/*`)
+8 컴포넌트:
+- `KpiCards` — 4 카드 (이번달/지난달/누적/캐시 절감)
+- `CostTrendChart` — 30/60/90일 토글 + recharts LineChart
+- `CostBreakdownBars` — 모델별 ↔ 런타입별 토글 + horizontal stacked bars
+- `PerUnitCard` — $/proposal, $/discovery target
+- `BudgetBar` — month-to-date 진행바, warn 도달 amber / over rose
+- `RecentRunsTable` — 페이지네이션 (10/page) + 4-색 토큰 비율 mini-bar. **proposal=blue / discovery=violet / rag_summary=amber**
+- `PricingBudgetEditor` — 폼+YAML escape 패턴의 첫 구현. 모델별 4 input + 월 예산 + warn% / "YAML 편집" 토글로 raw textarea fallback / 저장은 `putSettings("pricing"/"cost_budget", yaml)`
+- `ActiveModelSelector` — 헤더 우측 드롭다운. pricing.yaml 모델 목록 + 4 단가 같이 surface, 활성 표시 + 외부 클릭 닫힘. 변경 시 즉시 PUT → 토스트 → `getCostSummary` 자동 새로고침
+
+`recharts ^2.13.3` 신규 의존성. `web/package.json`. Home 의 `CostBox` 도 새 USD-centric `DashboardCostSummary` 스키마로 슬림화 + `/cost` 링크 + 예산 임계 amber/rose 배지.
+
+### Dashboard 박스 슬림화
+`src/api/routes/dashboard.py::_cost_summary()` 가 토큰 4종 raw 8 필드 → `cost.calculator.kpi_block + budget_state` 의 USD 9 필드 (this_month_usd / last_month_usd / cumulative_usd / cache_savings_usd / cache_savings_pct / monthly_budget_usd / used_pct / breached / over_budget) 로 교체. 실패 시 zero-state 로 폴백.
+
+### 데이터 흐름 요약
+```
+Anthropic SDK response.usage (4종)
+  → claude_client.chat_cached/chat_once 가 dict 화
+  → 호출자 (synthesize/draft/discover/rag_summary) 가 누적
+  → RunStore / discovery_runs / rag_summaries 에 저장 (각 record 에 claude_model 동봉)
+  → /cost/summary 가 3 source 모두 SELECT + pricing.yaml 곱셈 → USD
+  → 프론트 KpiCards/Trend/Breakdown/PerUnit/Budget/RecentRuns 에 surface
+```

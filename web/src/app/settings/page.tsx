@@ -8,14 +8,15 @@ import {
   listSettingsKinds,
   putSettings,
 } from "@/lib/api";
-import type {
-  SecretsView,
-  SettingsKind,
-  SettingsRead,
-} from "@/lib/types";
+import type { SecretsView, SettingsRead } from "@/lib/types";
 import { SETTINGS_KINDS } from "@/lib/types";
 
-const KIND_LABELS: Record<SettingsKind, string> = {
+// Settings page only renders the seven user-facing config kinds.
+// pricing / cost_budget are reachable through PUT /settings/{kind} but
+// are edited from the Cost page, not here.
+type ConfigKind = (typeof SETTINGS_KINDS)[number];
+
+const KIND_LABELS: Record<ConfigKind, string> = {
   settings: "Runtime defaults",
   weights: "Discovery weights",
   tier_rules: "Tier thresholds",
@@ -25,7 +26,7 @@ const KIND_LABELS: Record<SettingsKind, string> = {
   targets: "Targets (user data)",
 };
 
-const KIND_HINTS: Record<SettingsKind, string> = {
+const KIND_HINTS: Record<ConfigKind, string> = {
   settings: "config/settings.yaml — committed defaults (LLM, search, RAG).",
   weights: "config/weights.yaml — Phase 9.1 6-dim scoring weights.",
   tier_rules: "config/tier_rules.yaml — final_score → tier 임계값.",
@@ -35,13 +36,13 @@ const KIND_HINTS: Record<SettingsKind, string> = {
   targets: "config/targets.yaml — user 타겟 회사 + Notion ID. gitignored.",
 };
 
-const TAB_ORDER: (SettingsKind | "secrets")[] = [
+const TAB_ORDER: (ConfigKind | "secrets")[] = [
   ...SETTINGS_KINDS,
   "secrets",
 ];
 
 export default function SettingsPage() {
-  const [active, setActive] = useState<SettingsKind | "secrets">("settings");
+  const [active, setActive] = useState<ConfigKind | "secrets">("settings");
   const [byKind, setByKind] = useState<Record<string, SettingsRead | null>>(
     {},
   );
@@ -52,7 +53,7 @@ export default function SettingsPage() {
   const [error, setError] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
 
-  async function refreshKind(kind: SettingsKind) {
+  async function refreshKind(kind: ConfigKind) {
     try {
       const r = await getSettings(kind);
       setByKind((prev) => ({ ...prev, [kind]: r }));

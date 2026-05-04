@@ -177,45 +177,35 @@ def _interactions_count() -> int:
 
 
 def _cost_summary() -> DashboardCostSummary:
-    summary = DashboardCostSummary()
+    """Phase 11+ — pull USD KPIs + budget status from the cost calculator.
 
-    # Proposal runs (in-memory RunStore)
+    Same data source as `/cost/summary`, but only the fields the Home box
+    needs. Failures fall through to a zero-state summary instead of 500ing.
+    """
     try:
-        for record in _store.get_run_store().list():
-            usage = getattr(record, "usage", {}) or {}
-            summary.proposal_input_tokens += int(usage.get("input_tokens") or 0)
-            summary.proposal_output_tokens += int(
-                usage.get("output_tokens") or 0
-            )
-            summary.proposal_cache_read_tokens += int(
-                usage.get("cache_read_input_tokens") or 0
-            )
-            summary.proposal_cache_write_tokens += int(
-                usage.get("cache_creation_input_tokens") or 0
-            )
-    except Exception as exc:
-        _LOGGER.warning("dashboard: cost runs failed: %s", exc)
+        from src.api.routes.cost import _gather_records
+        from src.cost import calculator as _calc
 
-    # Discovery runs (SQLite — usage_json stored per run)
-    try:
-        for run in _store.get_discovery_store().list_runs():
-            usage = run.get("usage") if isinstance(run, dict) else {}
-            if not usage:
-                continue
-            summary.discovery_input_tokens += int(usage.get("input_tokens") or 0)
-            summary.discovery_output_tokens += int(
-                usage.get("output_tokens") or 0
-            )
-            summary.discovery_cache_read_tokens += int(
-                usage.get("cache_read_input_tokens") or 0
-            )
-            summary.discovery_cache_write_tokens += int(
-                usage.get("cache_creation_input_tokens") or 0
-            )
+        pricing = _config_loader.load_pricing()
+        budget_cfg = _config_loader.load_cost_budget()
+        records, _model = _gather_records()
+        today = _calc.now_utc_date()
+        kpi = _calc.kpi_block(records, pricing, today)
+        budget_state = _calc.budget_state(records, pricing, budget_cfg, today)
+        return DashboardCostSummary(
+            this_month_usd=kpi["this_month_usd"],
+            last_month_usd=kpi["last_month_usd"],
+            cumulative_usd=kpi["cumulative_usd"],
+            cache_savings_usd=kpi["cache_savings_usd"],
+            cache_savings_pct=kpi["cache_savings_pct"],
+            monthly_budget_usd=budget_state["monthly_usd"],
+            used_pct=budget_state["used_pct"],
+            breached=budget_state["breached"],
+            over_budget=budget_state["over_budget"],
+        )
     except Exception as exc:
-        _LOGGER.warning("dashboard: discovery cost failed: %s", exc)
-
-    return summary
+        _LOGGER.warning("dashboard: cost summary failed: %s", exc)
+        return DashboardCostSummary()
 
 
 @router.get("/dashboard", response_model=DashboardResponse)

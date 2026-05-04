@@ -38,7 +38,9 @@ from src.api.schemas import (
 from src.config import loader as _config_loader
 from src.config.schemas import (
     CompetitorsConfig,
+    CostBudget,
     IntentTiersConfig,
+    Pricing,
     SectorLeadersConfig,
     Settings,
     Targets,
@@ -62,6 +64,8 @@ _KIND_TO_FILE: dict[str, str] = {
     "intent_tiers": "intent_tiers.yaml",
     "sector_leaders": "sector_leaders.yaml",
     "targets": "targets.yaml",
+    "pricing": "pricing.yaml",
+    "cost_budget": "cost_budget.yaml",
 }
 
 
@@ -73,6 +77,8 @@ _KIND_TO_VALIDATOR: dict[str, type] = {
     "intent_tiers": IntentTiersConfig,
     "sector_leaders": SectorLeadersConfig,
     "targets": Targets,
+    "pricing": Pricing,
+    "cost_budget": CostBudget,
 }
 
 

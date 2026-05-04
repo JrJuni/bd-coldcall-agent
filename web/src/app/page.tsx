@@ -270,32 +270,50 @@ function RagBox({ rag }: { rag: DashboardRagStatus[] }) {
 }
 
 function CostBox({ cost }: { cost: DashboardCostSummary }) {
-  const totalIn = cost.proposal_input_tokens + cost.discovery_input_tokens;
-  const totalOut = cost.proposal_output_tokens + cost.discovery_output_tokens;
-  const cacheRead =
-    cost.proposal_cache_read_tokens + cost.discovery_cache_read_tokens;
-  const cacheWrite =
-    cost.proposal_cache_write_tokens + cost.discovery_cache_write_tokens;
+  const fmt = (v: number) =>
+    v < 0.01 && v > 0 ? `$${v.toFixed(4)}` : `$${v.toFixed(2)}`;
+  const badge = cost.over_budget ? (
+    <span className="rounded-full bg-rose-200 px-2 py-0.5 text-[10px] font-semibold text-rose-900">
+      예산 초과
+    </span>
+  ) : cost.breached ? (
+    <span className="rounded-full bg-amber-200 px-2 py-0.5 text-[10px] font-semibold text-amber-900">
+      예산 경고
+    </span>
+  ) : null;
   return (
-    <Box title="비용 (Sonnet 토큰)">
-      <ul className="space-y-1 font-mono text-xs text-slate-600">
-        <li>
-          proposals — in {cost.proposal_input_tokens.toLocaleString()} / out{" "}
-          {cost.proposal_output_tokens.toLocaleString()}
-        </li>
-        <li>
-          discovery — in {cost.discovery_input_tokens.toLocaleString()} / out{" "}
-          {cost.discovery_output_tokens.toLocaleString()}
-        </li>
-        <li>
-          cache_read {cacheRead.toLocaleString()} · cache_write{" "}
-          {cacheWrite.toLocaleString()}
-        </li>
-      </ul>
-      <p className="mt-2 text-xs text-slate-500">
-        합계 in {totalIn.toLocaleString()} / out {totalOut.toLocaleString()} ·
-        단가표는 Settings 합류 예정
+    <Box title="비용 (USD)" href="/cost">
+      <div className="flex items-baseline justify-between">
+        <p className="font-mono text-2xl tabular-nums text-slate-900">
+          {fmt(cost.this_month_usd)}
+        </p>
+        {badge}
+      </div>
+      <p className="mt-1 text-xs text-slate-500">
+        이번 달 · 누적 {fmt(cost.cumulative_usd)} · 캐시 절감{" "}
+        {fmt(cost.cache_savings_usd)} ({(cost.cache_savings_pct * 100).toFixed(0)}%)
       </p>
+      {cost.monthly_budget_usd > 0 && (
+        <div className="mt-2">
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
+            <div
+              className={
+                cost.over_budget
+                  ? "h-full bg-rose-500"
+                  : cost.breached
+                  ? "h-full bg-amber-500"
+                  : "h-full bg-emerald-500"
+              }
+              style={{
+                width: `${Math.min(100, cost.used_pct * 100).toFixed(1)}%`,
+              }}
+            />
+          </div>
+          <p className="mt-1 text-right text-xs tabular-nums text-slate-500">
+            {(cost.used_pct * 100).toFixed(0)}% / ${cost.monthly_budget_usd.toFixed(0)}
+          </p>
+        </div>
+      )}
     </Box>
   );
 }

@@ -25,6 +25,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from sse_starlette.sse import EventSourceResponse
 
 from src.api import runner as _runner
+from src.config import loader as _config_loader
 from src.api.schemas import (
     RunCreateRequest,
     RunCreateResponse,
@@ -63,6 +64,7 @@ def _record_to_summary(record: RunRecord, *, include_md: bool) -> RunSummary:
         duration_s=record.duration_s,
         errors=list(record.errors),
         usage=dict(record.usage),
+        claude_model=record.claude_model,
         article_counts=dict(record.article_counts),
         proposal_points_count=record.proposal_points_count,
         proposal_md=record.proposal_md if include_md else None,
@@ -78,11 +80,19 @@ async def create_run(
 ) -> RunCreateResponse:
     store = get_run_store()
     run_id = _make_run_id(payload.company)
+    # Snapshot the active model at run-start so Cost Explorer can price
+    # this run against the model that actually ran it, even if the user
+    # swaps the active model later.
+    try:
+        active_model = _config_loader.get_settings().llm.claude_model
+    except Exception:
+        active_model = None
     record = store.create(
         run_id=run_id,
         company=payload.company,
         industry=payload.industry,
         lang=payload.lang,
+        claude_model=active_model,
     )
     record.append_event("run_queued", {"run_id": run_id})
 
