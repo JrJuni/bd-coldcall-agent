@@ -33,6 +33,7 @@ import type {
   RagSummaryRequestInput,
   RagSummaryResponse,
   RagTreeResponse,
+  DiscoveryProductsResponse,
   RegionsConfig,
   RunCreateResponse,
   SecretsView,
@@ -665,6 +666,14 @@ export async function setActiveModel(model: string): Promise<ActiveModelView> {
 export async function getDiscoveryRegions(): Promise<RegionsConfig> {
   const r = await fetch(`${API_BASE}/discovery/regions`, { cache: "no-store" });
   if (!r.ok) throw new Error(`GET /discovery/regions ${r.status}`);
+  return r.json();
+}
+
+export async function getDiscoveryProducts(): Promise<DiscoveryProductsResponse> {
+  const r = await fetch(`${API_BASE}/discovery/products`, {
+    cache: "no-store",
+  });
+  if (!r.ok) throw new Error(`GET /discovery/products ${r.status}`);
   return r.json();
 }
 

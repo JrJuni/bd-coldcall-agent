@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import { createDiscoveryRun, listRagNamespaces } from "@/lib/api";
+import KeywordChipInput from "@/components/KeywordChipInput";
+import ProductSelect from "@/components/ProductSelect";
 import RegionMultiSelect from "@/components/RegionMultiSelect";
 import type {
   DiscoveryRunCreateInput,
@@ -22,9 +24,9 @@ export default function DiscoveryRunForm({ onRunCreated, disabled }: Props) {
   const [namespaces, setNamespaces] = useState<RagNamespaceSummary[]>([]);
   const [namespace, setNamespace] = useState<string>("default");
   const [regions, setRegions] = useState<string[]>([]);
-  const [product, setProduct] = useState<string>("databricks");
+  const [product, setProduct] = useState<string>("default");
   const [seedSummary, setSeedSummary] = useState<string>("");
-  const [seedQuery, setSeedQuery] = useState<string>("");
+  const [seedQueries, setSeedQueries] = useState<string[]>([]);
   const [showAdvanced, setShowAdvanced] = useState<boolean>(false);
   const [topK, setTopK] = useState<string>("");
   const [nIndustries, setNIndustries] = useState<string>("5");
@@ -68,9 +70,9 @@ export default function DiscoveryRunForm({ onRunCreated, disabled }: Props) {
       const body: DiscoveryRunCreateInput = {
         namespace,
         regions,
-        product: product.trim() || "databricks",
+        product: product.trim() || "default",
         seed_summary: seedSummary.trim() || null,
-        seed_query: seedQuery.trim() || null,
+        seed_queries: seedQueries,
         top_k: topK ? parseInt(topK, 10) : null,
         n_industries: parseInt(nIndustries, 10) || 5,
         n_per_industry: parseInt(nPerIndustry, 10) || 5,
@@ -142,20 +144,21 @@ export default function DiscoveryRunForm({ onRunCreated, disabled }: Props) {
           </div>
         </div>
 
-        <label className="block md:col-span-2">
+        <div className="block md:col-span-2">
           <span className="text-sm font-medium text-slate-700">
-            Product key
+            Product
             <span className="ml-2 text-xs font-normal text-slate-500">
-              (weights.yaml::products.&lt;key&gt; — 기본 default 사용)
+              (weights.yaml::products.&lt;key&gt; — 가중치 편향 선택)
             </span>
           </span>
-          <input
-            value={product}
-            onChange={(e) => setProduct(e.target.value)}
-            className="mt-1 block w-full rounded-md border border-slate-300 px-3 py-2"
-            placeholder="databricks"
-          />
-        </label>
+          <div className="mt-1">
+            <ProductSelect
+              value={product}
+              onChange={setProduct}
+              disabled={busy || disabled}
+            />
+          </div>
+        </div>
 
         <label className="block md:col-span-2">
           <span className="text-sm font-medium text-slate-700">
@@ -173,20 +176,23 @@ export default function DiscoveryRunForm({ onRunCreated, disabled }: Props) {
           />
         </label>
 
-        <label className="block md:col-span-2">
+        <div className="block md:col-span-2">
           <span className="text-sm font-medium text-slate-700">
-            Seed keyword (optional)
+            Seed keywords (optional)
             <span className="ml-2 text-xs font-normal text-slate-500">
-              RAG retrieve 쿼리 — 기본 &ldquo;core capabilities and target use cases&rdquo;
+              RAG retrieve 쿼리 — Enter/콤마로 추가, ×/Backspace 로 제거. 비우면
+              기본 &ldquo;core capabilities and target use cases&rdquo;
             </span>
           </span>
-          <input
-            value={seedQuery}
-            onChange={(e) => setSeedQuery(e.target.value)}
-            className="mt-1 block w-full rounded-md border border-slate-300 px-3 py-2"
-            placeholder="core capabilities and target use cases"
-          />
-        </label>
+          <div className="mt-1">
+            <KeywordChipInput
+              value={seedQueries}
+              onChange={setSeedQueries}
+              placeholder="lakehouse, governance, real-time..."
+              disabled={busy || disabled}
+            />
+          </div>
+        </div>
       </div>
 
       <button

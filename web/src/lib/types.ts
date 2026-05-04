@@ -565,6 +565,20 @@ export interface RegionsConfig {
   groups: RegionGroup[];
 }
 
+// Phase 12 — product master fetched from `GET /discovery/products`. The
+// frontend used to ship a free-text input; the new shape is a yaml-driven
+// dropdown so `weights.yaml::products.<key>` shows up with its description.
+export interface DiscoveryProduct {
+  key: string;
+  label: string;
+  description: string;
+  is_default: boolean;
+}
+
+export interface DiscoveryProductsResponse {
+  products: DiscoveryProduct[];
+}
+
 export type DiscoveryStatus = "queued" | "running" | "completed" | "failed";
 export type CandidateStatus = "active" | "archived" | "promoted";
 export type Tier = "S" | "A" | "B" | "C";
@@ -578,7 +592,9 @@ export interface DiscoveryRunCreateInput {
   regions: string[];
   product: string;
   seed_summary?: string | null;
-  seed_query?: string | null;
+  // Phase 12 — list of RAG retrieve queries (chip input). Empty = backend
+  // default. Replaces the pre-Phase-12 single `seed_query` string.
+  seed_queries?: string[];
   top_k?: number | null;
   n_industries?: number;
   n_per_industry?: number;

@@ -2,6 +2,7 @@
 
 Currently covers:
   - GET /discovery/regions — country master sourced from `config/regions.yaml`
+  - GET /discovery/products — product profiles sourced from `config/weights.yaml`
 """
 from __future__ import annotations
 
@@ -62,3 +63,35 @@ def test_list_regions_contains_anchor_countries(client):
     flat = {c["code"] for g in body["groups"] for c in g["countries"]}
     for required in ("us", "kr", "jp", "gb", "de", "nl", "au"):
         assert required in flat, f"regions.yaml is missing anchor country {required!r}"
+
+
+def test_list_products_returns_default_first(client):
+    """The /discovery/products endpoint always prepends an implicit
+    `default` entry so a fresh user sees a no-override option even before
+    config/weights.yaml has any product profiles."""
+    r = client.get("/discovery/products")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    products = body["products"]
+    assert isinstance(products, list)
+    assert len(products) >= 1
+    first = products[0]
+    assert first["key"] == "default"
+    assert first["is_default"] is True
+    assert isinstance(first["description"], str) and first["description"]
+
+
+def test_list_products_includes_yaml_entries(client):
+    """Every key under `weights.yaml::products` should round-trip through
+    /discovery/products with its description preserved."""
+    r = client.get("/discovery/products")
+    body = r.json()
+    keys = {p["key"] for p in body["products"]}
+    # Phase 12 ships at least one named product (databricks).
+    assert "databricks" in keys
+    for p in body["products"]:
+        assert "key" in p and "label" in p
+        assert "description" in p and isinstance(p["description"], str)
+        assert "is_default" in p
+        if p["key"] != "default":
+            assert p["is_default"] is False

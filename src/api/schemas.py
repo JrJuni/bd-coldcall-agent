@@ -343,6 +343,32 @@ def _normalize_regions_list(items: list[Any]) -> list[str]:
     return out
 
 
+def _normalize_seed_queries(items: list[Any]) -> list[str]:
+    """Trim, lowercase-dedupe, and drop blanks from a list of seed queries.
+
+    Order is preserved — the first occurrence of each unique (case-folded)
+    keyword wins. Blank or whitespace-only entries are silently dropped.
+    Phase 12: matches the chip-input pattern in the Discovery form, where
+    duplicates are easy to introduce with `databricks, Databricks` etc.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in items:
+        if not isinstance(raw, str):
+            raise ValueError(
+                f"seed_queries entries must be strings, got {raw!r}"
+            )
+        s = raw.strip()
+        if not s:
+            continue
+        key = s.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(s)
+    return out
+
+
 class DiscoveryRunCreate(BaseModel):
     namespace: str = Field(default="default", min_length=1, max_length=80)
     # Phase 12 — list of ISO 3166-1 alpha-2 codes (or "global"). Empty list
@@ -351,7 +377,10 @@ class DiscoveryRunCreate(BaseModel):
     regions: list[str] = Field(default_factory=list)
     product: str = Field(default="databricks", min_length=1, max_length=80)
     seed_summary: str | None = None
-    seed_query: str | None = None  # None → discover_targets default
+    # Phase 12 — list of RAG retrieve queries. Empty list / None → core
+    # discover_targets default. Legacy `seed_query: str` JSON key is
+    # accepted via a model_validator and wrapped into this list.
+    seed_queries: list[str] = Field(default_factory=list)
     top_k: int | None = Field(default=None, ge=1, le=100)
     n_industries: int = Field(default=5, ge=1, le=20)
     n_per_industry: int = Field(default=5, ge=1, le=20)
@@ -381,6 +410,30 @@ class DiscoveryRunCreate(BaseModel):
             data["regions"] = list(legacy)
         return data
 
+    @model_validator(mode="before")
+    @classmethod
+    def _absorb_legacy_seed_query(cls, data: Any) -> Any:
+        """Accept the pre-Phase-12 `seed_query: <str>` JSON key transparently.
+
+        Old UIs and saved fixtures send a single seed_query string. We fold
+        it into `seed_queries` as a 1-element list (or empty, if blank/null)
+        unless the caller already provided an explicit `seed_queries`.
+        """
+        if not isinstance(data, dict):
+            return data
+        if "seed_queries" in data and data["seed_queries"] is not None:
+            data.pop("seed_query", None)
+            return data
+        legacy = data.pop("seed_query", None) if "seed_query" in data else None
+        if legacy is None:
+            return data
+        if isinstance(legacy, str):
+            stripped = legacy.strip()
+            data["seed_queries"] = [stripped] if stripped else []
+        elif isinstance(legacy, list):
+            data["seed_queries"] = list(legacy)
+        return data
+
     @field_validator("regions", mode="before")
     @classmethod
     def _coerce_regions(cls, v: Any) -> list[str]:
@@ -391,6 +444,19 @@ class DiscoveryRunCreate(BaseModel):
         if not isinstance(v, list):
             raise ValueError(f"regions must be a list of strings, got {type(v).__name__}")
         return _normalize_regions_list(v)
+
+    @field_validator("seed_queries", mode="before")
+    @classmethod
+    def _coerce_seed_queries(cls, v: Any) -> list[str]:
+        if v is None:
+            return []
+        if isinstance(v, str):
+            v = [v]
+        if not isinstance(v, list):
+            raise ValueError(
+                f"seed_queries must be a list of strings, got {type(v).__name__}"
+            )
+        return _normalize_seed_queries(v)
 
 
 class DiscoveryRunSummary(BaseModel):

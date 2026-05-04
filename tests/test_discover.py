@@ -462,3 +462,124 @@ def test_region_none_emits_no_constraint(patched_rag, tmp_path: Path):
     user_content = fake.messages.calls[0]["messages"][0]["content"]
     blob = "\n".join(b["text"] for b in user_content)
     assert "<region_constraint>" not in blob
+
+
+# ---- Phase 12 — multi seed_queries -------------------------------------
+
+
+@pytest.fixture
+def recording_rag(monkeypatch):
+    """Record the queries passed to retrieve and return per-query stub chunks.
+
+    Each call returns one chunk whose id is `f"q{n}-c{idx}"`, so the
+    `_multi_retrieve` union by chunk_id has something to merge on. The
+    fixture exposes the captured query list via `.queries` for assertions.
+    """
+
+    class Recorder:
+        queries: list[str] = []
+
+    def fake_retrieve(query, ws_slug="default", namespace="default", top_k=None):
+        Recorder.queries.append(query)
+        # Two chunks per query — one shared across queries (id="shared"),
+        # one unique per query so dedup vs. union behavior is observable.
+        return [
+            RetrievedChunk(
+                chunk=Chunk(
+                    id="shared",
+                    doc_id="local:doc:shared",
+                    chunk_index=0,
+                    text=f"shared chunk for {query}",
+                    title="Shared",
+                    source_type="local",
+                    source_ref="data/company_docs/shared.md",
+                    last_modified=None,
+                    mime_type="text/markdown",
+                ),
+                similarity_score=0.5 + 0.1 * len(Recorder.queries),
+            ),
+            RetrievedChunk(
+                chunk=Chunk(
+                    id=f"unique-{query}",
+                    doc_id=f"local:doc:{query}",
+                    chunk_index=0,
+                    text=f"unique chunk for {query}",
+                    title=f"Unique {query}",
+                    source_type="local",
+                    source_ref="data/company_docs/u.md",
+                    last_modified=None,
+                    mime_type="text/markdown",
+                ),
+                similarity_score=0.4,
+            ),
+        ]
+
+    monkeypatch.setattr(_discover_mod._retriever, "retrieve", fake_retrieve)
+    monkeypatch.setattr(
+        _discover_mod,
+        "_read_seed_meta",
+        lambda ws_slug="default", namespace="default": (1, 32),
+    )
+    Recorder.queries = []
+    return Recorder
+
+
+def test_seed_queries_empty_falls_back_to_default(recording_rag, tmp_path: Path):
+    fake = _FakeClient([_payload()])
+    discover_targets(
+        lang="en", n_industries=2, n_per_industry=2,
+        seed_summary="x", output_root=tmp_path, client=fake,
+        seed_queries=[], write_artifacts=False,
+    )
+    assert recording_rag.queries == ["core capabilities and target use cases"]
+
+
+def test_seed_queries_single_keyword(recording_rag, tmp_path: Path):
+    fake = _FakeClient([_payload()])
+    discover_targets(
+        lang="en", n_industries=2, n_per_industry=2,
+        seed_summary="x", output_root=tmp_path, client=fake,
+        seed_queries=["lakehouse"], write_artifacts=False,
+    )
+    assert recording_rag.queries == ["lakehouse"]
+
+
+def test_seed_queries_multi_keyword_unions_chunks(recording_rag, tmp_path: Path):
+    fake = _FakeClient([_payload()])
+    discover_targets(
+        lang="en", n_industries=2, n_per_industry=2,
+        seed_summary="x", output_root=tmp_path, client=fake,
+        seed_queries=["lakehouse", "governance"], write_artifacts=False,
+    )
+    # retrieve called once per query
+    assert recording_rag.queries == ["lakehouse", "governance"]
+    # Knowledge base block in the prompt should contain BOTH unique chunks
+    # plus the shared one (deduped to a single entry).
+    user_content = fake.messages.calls[0]["messages"][0]["content"]
+    kb_text = user_content[0]["text"]
+    assert "unique chunk for lakehouse" in kb_text
+    assert "unique chunk for governance" in kb_text
+    # `shared` appears exactly once despite being returned by both queries.
+    assert kb_text.count("shared chunk for") == 1
+
+
+def test_seed_queries_dedupes_case_insensitive(recording_rag, tmp_path: Path):
+    fake = _FakeClient([_payload()])
+    discover_targets(
+        lang="en", n_industries=2, n_per_industry=2,
+        seed_summary="x", output_root=tmp_path, client=fake,
+        seed_queries=["Lakehouse", "lakehouse", "  lakehouse  "],
+        write_artifacts=False,
+    )
+    # All three collapse to one retrieve call.
+    assert recording_rag.queries == ["Lakehouse"]
+
+
+def test_legacy_seed_query_still_works(recording_rag, tmp_path: Path):
+    fake = _FakeClient([_payload()])
+    discover_targets(
+        lang="en", n_industries=2, n_per_industry=2,
+        seed_summary="x", output_root=tmp_path, client=fake,
+        seed_query="legacy keyword", write_artifacts=False,
+    )
+    assert recording_rag.queries == ["legacy keyword"]

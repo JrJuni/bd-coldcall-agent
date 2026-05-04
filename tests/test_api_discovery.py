@@ -73,7 +73,7 @@ def _fake_run_factory(*, status: str = "completed"):
         regions: list[str],
         product: str,
         seed_summary,
-        seed_query,
+        seed_queries,
         top_k,
         n_industries: int,
         n_per_industry: int,
@@ -213,6 +213,45 @@ def test_create_discovery_run_accepts_multi_country_regions(client, monkeypatch)
     assert r.status_code == 202, r.text
     detail = client.get(f"/discovery/runs/{r.json()['run_id']}").json()
     assert detail["regions"] == ["kr", "jp"]
+
+
+def test_create_discovery_run_accepts_legacy_seed_query(client, monkeypatch):
+    """Pre-Phase-12 clients send `seed_query: "x"` — the validator should
+    fold it into `seed_queries=["x"]` so deployments don't break during
+    a frontend rollout."""
+    captured: dict = {}
+
+    def _capture_fake(**kwargs):
+        captured.update(kwargs)
+        _fake_run_factory()(**kwargs)
+
+    monkeypatch.setattr(
+        "src.api.runner.execute_discovery_run", _capture_fake
+    )
+    body = dict(_BASE_BODY, seed_query="legacy keyword")
+    r = client.post("/discovery/runs", json=body)
+    assert r.status_code == 202, r.text
+    assert captured["seed_queries"] == ["legacy keyword"]
+
+
+def test_create_discovery_run_accepts_multi_seed_queries(client, monkeypatch):
+    captured: dict = {}
+
+    def _capture_fake(**kwargs):
+        captured.update(kwargs)
+        _fake_run_factory()(**kwargs)
+
+    monkeypatch.setattr(
+        "src.api.runner.execute_discovery_run", _capture_fake
+    )
+    body = dict(
+        _BASE_BODY,
+        seed_queries=["Lakehouse", "lakehouse", "governance"],
+    )
+    r = client.post("/discovery/runs", json=body)
+    assert r.status_code == 202, r.text
+    # Case-insensitive dedup leaves the first occurrence + the unique entry.
+    assert captured["seed_queries"] == ["Lakehouse", "governance"]
 
 
 def test_list_discovery_runs_newest_first(client, monkeypatch):

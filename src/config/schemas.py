@@ -1,7 +1,7 @@
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -82,6 +82,22 @@ class IntentTiersConfig(BaseModel):
     intents: list[IntentTierEntry] = Field(default_factory=list)
 
 
+class ProductProfile(BaseModel):
+    """One entry under `config/weights.yaml::products.<key>` — Phase 12.
+
+    Phase 9.1 stored each product as a flat `dict[str, float]` of partial
+    weight overrides. Phase 12 adds a human-readable `description` so the
+    Discovery form can render an explanatory tooltip next to the dropdown.
+
+    The pre-validator under `WeightsConfig.products` rewrites legacy flat
+    dicts into `{weights: <flat>}` so old yamls keep parsing during the
+    migration window.
+    """
+
+    description: str = ""
+    weights: dict[str, float] = Field(default_factory=dict)
+
+
 class WeightsConfig(BaseModel):
     """Shape of `config/weights.yaml` — Phase 9.1 scoring engine.
 
@@ -93,7 +109,31 @@ class WeightsConfig(BaseModel):
 
     version: int = 1
     default: dict[str, float] = Field(default_factory=dict)
-    products: dict[str, dict[str, float]] = Field(default_factory=dict)
+    products: dict[str, ProductProfile] = Field(default_factory=dict)
+
+    @field_validator("products", mode="before")
+    @classmethod
+    def _coerce_legacy_products(cls, v: Any) -> Any:
+        """Accept the pre-Phase-12 flat-dict shape transparently.
+
+        Legacy:    products: {databricks: {data_complexity: 0.25, ...}}
+        Phase 12:  products: {databricks: {description: "...", weights: {...}}}
+
+        If every value under a product is numeric we treat it as a legacy
+        weight map and wrap it as `{weights: <orig>}`. Mixed dicts (e.g.
+        already in Phase-12 shape with `weights:` key present) pass through
+        unchanged.
+        """
+        if not isinstance(v, dict):
+            return v
+        out: dict[str, Any] = {}
+        for key, raw in v.items():
+            if isinstance(raw, dict) and "weights" not in raw and "description" not in raw:
+                if all(isinstance(val, (int, float)) for val in raw.values()):
+                    out[key] = {"weights": dict(raw)}
+                    continue
+            out[key] = raw
+        return out
 
 
 class TierRulesConfig(BaseModel):

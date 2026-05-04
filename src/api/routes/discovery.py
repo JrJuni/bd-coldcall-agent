@@ -93,6 +93,46 @@ async def list_discovery_regions() -> dict:
     }
 
 
+# ── Product master (Phase 12) ──────────────────────────────────────────
+
+
+_DEFAULT_PRODUCT_DESCRIPTION = (
+    "기본 가중치만 사용 — 제품별 편향 없음. "
+    "산업·언어·RAG 만으로 일반 BD 후보를 도출합니다."
+)
+
+
+@router.get("/discovery/products")
+async def list_discovery_products() -> dict:
+    """Return the product profiles used by the Discovery form's dropdown.
+
+    Sourced from `config/weights.yaml::products`. Always prepends an
+    implicit `default` entry that maps to "no product override" so a
+    fresh user sees a sensible base option even before populating the
+    yaml. Each entry exposes `key`, `label` (currently equal to `key`),
+    `description`, and `is_default`.
+    """
+    cfg = _config_loader.load_weights_config()
+    products = [
+        {
+            "key": "default",
+            "label": "default",
+            "description": _DEFAULT_PRODUCT_DESCRIPTION,
+            "is_default": True,
+        }
+    ]
+    for key, profile in cfg.products.items():
+        products.append(
+            {
+                "key": key,
+                "label": key,
+                "description": (profile.description or "").strip(),
+                "is_default": False,
+            }
+        )
+    return {"products": products}
+
+
 # ── Runs ───────────────────────────────────────────────────────────────
 
 
@@ -126,7 +166,7 @@ async def create_discovery_run(
         regions=list(payload.regions),
         product=payload.product,
         seed_summary=payload.seed_summary,
-        seed_query=payload.seed_query,
+        seed_queries=list(payload.seed_queries),
         top_k=payload.top_k,
         n_industries=payload.n_industries,
         n_per_industry=payload.n_per_industry,

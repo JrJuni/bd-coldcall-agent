@@ -157,7 +157,7 @@ def execute_discovery_run(
     regions: list[str],
     product: str,
     seed_summary: str | None,
-    seed_query: str | None,
+    seed_queries: list[str] | None,
     top_k: int | None,
     n_industries: int,
     n_per_industry: int,
@@ -211,8 +211,8 @@ def execute_discovery_run(
             include_sector_leaders=include_sector_leaders,
             write_artifacts=False,
         )
-        if seed_query:
-            kwargs["seed_query"] = seed_query
+        if seed_queries:
+            kwargs["seed_queries"] = list(seed_queries)
         if top_k is not None:
             kwargs["top_k"] = top_k
 

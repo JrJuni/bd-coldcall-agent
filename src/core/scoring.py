@@ -55,15 +55,15 @@ def load_weights(product: str | None = None) -> dict[str, float]:
 
     weights: dict[str, float] = dict(cfg.default)
     if product is not None:
-        override = cfg.products.get(product)
-        if override is None:
+        profile = cfg.products.get(product)
+        if profile is None:
             _LOGGER.warning(
                 "weights: product %r not in products map (have: %s) — using default only",
                 product,
                 sorted(cfg.products.keys()),
             )
         else:
-            for k, v in override.items():
+            for k, v in profile.weights.items():
                 weights[k] = float(v)
 
     missing = [d for d in WEIGHT_DIMENSIONS if d not in weights]

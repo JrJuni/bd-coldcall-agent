@@ -283,13 +283,81 @@ def _render_report(result: DiscoveryResult) -> str:
     return "\n".join(lines)
 
 
+def _resolve_seed_queries(
+    seed_query: str | None,
+    seed_queries: list[str] | None,
+) -> list[str]:
+    """Pick the effective list of RAG retrieve queries.
+
+    Resolution:
+      1. If `seed_queries` is non-empty, use it (Phase 12 path).
+      2. Else if `seed_query` is a non-empty string, wrap as 1-element list
+         (back-compat with callers from before the multi-keyword UI).
+      3. Else fall back to `[_DEFAULT_SEED_QUERY]` so retrieve always has
+         at least one query to run.
+
+    Trims and de-duplicates (case-folded) so duplicates from sloppy chip
+    input don't multiply RAG cost.
+    """
+    raw: list[str]
+    if seed_queries:
+        raw = list(seed_queries)
+    elif seed_query and seed_query.strip():
+        raw = [seed_query]
+    else:
+        raw = [_DEFAULT_SEED_QUERY]
+    out: list[str] = []
+    seen: set[str] = set()
+    for q in raw:
+        if not isinstance(q, str):
+            continue
+        s = q.strip()
+        if not s:
+            continue
+        key = s.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(s)
+    return out or [_DEFAULT_SEED_QUERY]
+
+
+def _multi_retrieve(
+    queries: list[str],
+    *,
+    ws_slug: str,
+    namespace: str,
+    top_k: int,
+) -> list[RetrievedChunk]:
+    """Run `_retriever.retrieve` once per query and union the results.
+
+    Same chunk_id can come back from multiple queries — we keep the entry
+    with the highest similarity_score, then sort descending and trim to
+    `top_k`. Single-query callers (the common path) get the same shape as
+    a direct retrieve, so prompt-rendering downstream is unchanged.
+    """
+    by_id: dict[str, RetrievedChunk] = {}
+    for q in queries:
+        chunks = _retriever.retrieve(
+            q, ws_slug=ws_slug, namespace=namespace, top_k=top_k
+        )
+        for rc in chunks:
+            cid = rc.chunk.id
+            existing = by_id.get(cid)
+            if existing is None or rc.similarity_score > existing.similarity_score:
+                by_id[cid] = rc
+    merged = sorted(by_id.values(), key=lambda r: -r.similarity_score)
+    return merged[:top_k]
+
+
 def discover_targets(
     *,
     lang: Literal["en", "ko"] = "en",
     n_industries: int = 5,
     n_per_industry: int = 5,
     seed_summary: str | None = None,
-    seed_query: str = _DEFAULT_SEED_QUERY,
+    seed_query: str | None = None,  # legacy single-keyword path
+    seed_queries: list[str] | None = None,  # Phase 12 multi-keyword path
     product: str = "databricks",
     regions: list[str] | None = None,
     ws_slug: str = "default",
@@ -325,15 +393,19 @@ def discover_targets(
     system = system_template.format(**fmt_kwargs)
     task = task_template.format(**fmt_kwargs)
 
-    chunks = _retriever.retrieve(
-        seed_query, ws_slug=ws_slug, namespace=namespace, top_k=top_k
+    effective_queries = _resolve_seed_queries(seed_query, seed_queries)
+    chunks = _multi_retrieve(
+        effective_queries,
+        ws_slug=ws_slug,
+        namespace=namespace,
+        top_k=top_k,
     )
     if not chunks:
         _LOGGER.warning(
-            "discover: RAG retrieve returned 0 chunks for query %r — "
+            "discover: RAG retrieve returned 0 chunks for queries %r — "
             "Sonnet output will be unreliable. Run `python -m src.rag.indexer` "
             "and check `data/company_docs/`.",
-            seed_query,
+            effective_queries,
         )
 
     cached_context = _render_seed(chunks)

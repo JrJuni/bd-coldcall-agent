@@ -4,15 +4,20 @@
 # final_score = sum(score[k] * weight[k]) and decides tier via tier_rules.yaml.
 #
 # Layer 1: `default` — applied to every product unless overridden.
-# Layer 2: `products.<name>` — partial override. Dimensions not listed inherit
-#          from `default`. The runtime auto-normalizes the merged weight vector
-#          so the absolute values here can drift from 1.0; relative ratios
-#          are what matters.
+# Layer 2: `products.<name>.weights` — partial override. Dimensions not listed
+#          inherit from `default`. The runtime auto-normalizes the merged
+#          weight vector so the absolute values here can drift from 1.0;
+#          relative ratios are what matters.
+#
+# Phase 12: each product entry now also carries a `description` shown as a
+# tooltip in the Discovery form's product dropdown. Legacy flat-dict yamls
+# (no `weights:` key) still parse — pydantic wraps them transparently.
 #
 # Editing notes:
 #   - Higher weight = dimension matters more for THIS product.
-#   - Add a new product by adding a new key under `products` and listing only
-#     the dimensions you want to bend; everything else uses `default`.
+#   - Add a new product by adding a new key under `products` with a
+#     `description` and a `weights` map listing only the dimensions you
+#     want to bend; everything else uses `default`.
 
 version: 1
 
@@ -26,7 +31,10 @@ default:
 
 products:
   databricks:
-    # Databricks 가 lakehouse·governance·displacement 를 셀링 포인트로 강조하는 프로덕트.
-    data_complexity: 0.25
-    governance_need: 0.20
-    displacement_ease: 0.10
+    description: >
+      Databricks / Lakehouse 플랫폼 — data complexity + governance 가중.
+      lakehouse·governance·displacement 셀링 포인트를 강조한다.
+    weights:
+      data_complexity: 0.25
+      governance_need: 0.20
+      displacement_ease: 0.10
