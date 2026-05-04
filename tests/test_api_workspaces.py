@@ -142,6 +142,60 @@ def test_create_rejects_duplicate_abs_path(client, tmp_path):
     assert "already registered" in r2.json()["detail"]
 
 
+def test_create_workspace_slug_avoids_default_ws_namespace_dir(
+    client, monkeypatch, tmp_path
+):
+    """An external workspace's slug claims data/vectorstore/<slug>/ as
+    its root. If the default workspace already has a namespace named
+    `research` (i.e. data/vectorstore/research/), a new external ws with
+    label 'Research' must not get slug 'research' — auto-suffix to
+    'research-2' instead, mirroring the slug-vs-slug collision UX.
+    """
+    # Redirect the vectorstore root to tmp_path/vs and seed a default-ws
+    # namespace dir 'research'. Patch via module-attr access so the
+    # WorkspaceStore lookup in `_default_ws_namespace_names` flows through.
+    vs_root = tmp_path / "vs"
+    (vs_root / "research").mkdir(parents=True)
+    (vs_root / "research" / "manifest.json").write_text(
+        '{"version": 1, "updated_at": null, "documents": {}}',
+        encoding="utf-8",
+    )
+
+    from src.config import loader as _loader
+
+    original = _loader.get_settings()
+
+    class _FakeRag:
+        vectorstore_path = vs_root
+        collection_name = "x"
+        min_document_chars = 1
+        chunk_size = 1
+        chunk_overlap = 0
+        top_k = 1
+        notion_page_ids: list[str] = []
+        notion_database_ids: list[str] = []
+        embedding_model = "test"
+
+    class _FakeSettings:
+        rag = _FakeRag()
+        llm = original.llm
+        search = original.search
+        output = original.output
+
+    monkeypatch.setattr(_loader, "get_settings", lambda: _FakeSettings())
+
+    ext = tmp_path / "external_research"
+    ext.mkdir()
+    r = client.post(
+        "/workspaces",
+        json={"label": "Research", "abs_path": str(ext)},
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    # Auto-suffixed because 'research' is reserved by a default-ws ns dir
+    assert body["slug"] == "research-2"
+
+
 def test_list_returns_default_first_then_user_added_in_creation_order(
     client, tmp_path
 ):

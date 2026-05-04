@@ -493,6 +493,29 @@ async def create_rag_namespace(
     ws_slug: str, payload: RagNamespaceCreate,
 ) -> RagNamespaceSummary:
     name = _validate_namespace_name(payload.name)
+
+    # default-ws namespaces and external-ws slugs both live under
+    # data/vectorstore/<name>/, so reject any default-ws ns name that
+    # matches a registered external workspace slug. Without this, the
+    # two would share a directory on disk and confuse list/delete UX.
+    if ws_slug == "default":
+        from src.api import store as _wsstore
+
+        external_slugs = {
+            row["slug"]
+            for row in _wsstore.get_workspace_store().list()
+            if not row.get("is_builtin")
+        }
+        if name in external_slugs:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"namespace name {name!r} collides with an external "
+                    f"workspace slug; pick a different name or remove the "
+                    f"workspace first"
+                ),
+            )
+
     vs_root = _vectorstore_root(ws_slug)
     cd_root = _company_docs_root(ws_slug)
 

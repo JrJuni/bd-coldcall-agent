@@ -884,14 +884,40 @@ class WorkspaceStore:
         base = self._slugify(label)
         candidate = base
         n = 2
+        # default-ws namespaces live at data/vectorstore/<ns>/. An external
+        # workspace would claim data/vectorstore/<slug>/ as its own root,
+        # so a slug equal to an existing default-ws ns name would overlap
+        # that directory on disk. Treat ns names as reserved alongside DB
+        # slugs and auto-suffix on collision (same UX as slug-vs-slug).
+        reserved_ns = self._default_ws_namespace_names()
         while True:
             row = conn.execute(
                 "SELECT id FROM workspaces WHERE slug=?", (candidate,)
             ).fetchone()
-            if row is None:
+            if row is None and candidate not in reserved_ns:
                 return candidate
             candidate = f"{base}-{n}"
             n += 1
+
+    @staticmethod
+    def _default_ws_namespace_names() -> set[str]:
+        """Names of namespaces under the default workspace's vectorstore root.
+
+        Lazy + module-attr imports so test monkeypatches on
+        `src.config.loader.get_settings` (and friends) flow through
+        unchanged — DO NOT rule. Best-effort: any error returns an empty
+        set so a broken filesystem state doesn't block workspace creation.
+        """
+        try:
+            from src.config import loader as _loader
+            from src.rag import namespace as _ns
+
+            vs_path = Path(_loader.get_settings().rag.vectorstore_path)
+            if not vs_path.is_absolute():
+                vs_path = _loader.PROJECT_ROOT / vs_path
+            return set(_ns.list_namespaces(vs_path))
+        except Exception:
+            return set()
 
     def list(self) -> list[dict[str, Any]]:
         with _db.connect(self._db_path) as conn:

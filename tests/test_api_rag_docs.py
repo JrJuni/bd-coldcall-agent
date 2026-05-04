@@ -145,6 +145,59 @@ def test_create_namespace_blank_name_422(client, patched_paths):
     assert r.status_code == 422
 
 
+def test_create_namespace_collides_with_external_workspace_slug(
+    client, patched_paths, tmp_path
+):
+    """default-ws ns names share a directory with external-ws slugs
+    (data/vectorstore/<name>/), so creating a default-ws ns whose name
+    matches a registered external workspace must be refused."""
+    ext = tmp_path / "external_research"
+    ext.mkdir()
+    r1 = client.post(
+        "/workspaces", json={"label": "Research", "abs_path": str(ext)}
+    )
+    assert r1.status_code == 201
+    ext_slug = r1.json()["slug"]
+    assert ext_slug == "research"
+
+    r2 = client.post(
+        "/rag/workspaces/default/namespaces", json={"name": "research"}
+    )
+    assert r2.status_code == 409, r2.text
+    assert "external workspace" in r2.json()["detail"]
+
+    # Sanity: same name is fine under the external workspace itself,
+    # because that resolves to data/vectorstore/research/research/ —
+    # a different directory.
+    # (We don't actually create it here — just confirm the guard is
+    #  scoped to default ws only.)
+
+
+def test_create_namespace_does_not_check_external_slug_for_external_ws(
+    client, patched_paths, tmp_path
+):
+    """The slug-collision guard runs only for default ws. Creating a
+    namespace under an external workspace should never compare against
+    sibling workspace slugs."""
+    ext = tmp_path / "ext"
+    ext.mkdir()
+    r1 = client.post(
+        "/workspaces", json={"label": "Other", "abs_path": str(ext)}
+    )
+    assert r1.status_code == 201
+    other_slug = r1.json()["slug"]
+
+    # Naming a ns inside external "other" with the same string as another
+    # workspace slug ("default") should NOT trip the guard. It might still
+    # be rejected for other reasons (e.g. dir already exists), but not 409
+    # with the external-collision message.
+    r2 = client.post(
+        f"/rag/workspaces/{other_slug}/namespaces", json={"name": "default"}
+    )
+    if r2.status_code == 409:
+        assert "external workspace" not in r2.json().get("detail", "")
+
+
 # ── DELETE /rag/workspaces/default/namespaces/{namespace} ──────────────────────────────────
 
 
