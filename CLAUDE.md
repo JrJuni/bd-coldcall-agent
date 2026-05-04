@@ -20,60 +20,26 @@ Conda-based on Windows. The env is named `bd-coldcall` and lives at `~/miniconda
 
 If the env doesn't exist yet, see the setup steps in `docs/lesson-learned.md` (Miniconda install → ToS acceptance → env create). That file also captures Windows-specific gotchas worth re-reading before debugging obscure failures.
 
-## Commands
+## Common commands
+
+Use the project Conda Python directly (`~/miniconda3/envs/bd-coldcall/python.exe`) — never `python` / `py`.
 
 ```bash
-# All unit tests (excludes live network smoke by default when key missing)
+# Tests
 ~/miniconda3/envs/bd-coldcall/python.exe -m pytest
 
-# Single test
-~/miniconda3/envs/bd-coldcall/python.exe -m pytest tests/test_brave.py::test_freshness_mapping -v
-
-# Brave search probe (Phase 1 sanity check, hits real API)
-~/miniconda3/envs/bd-coldcall/python.exe -m src.search.brave --query "AI 산업" --lang ko --days 30 --count 20 --fetch-bodies --save
-
-# Phase 2 preprocess on a saved brave search JSON (loads Exaone 4bit + bge-m3)
-~/miniconda3/envs/bd-coldcall/python.exe -m src.llm.preprocess --input outputs/search/<timestamp>_<...>.json --lang en --save
-
-# Phase 3 RAG indexing (data/company_docs/*.md,txt,pdf + optional Notion)
-~/miniconda3/envs/bd-coldcall/python.exe -m src.rag.indexer                 # incremental (hash-compare)
-~/miniconda3/envs/bd-coldcall/python.exe -m src.rag.indexer --force         # reindex all
-~/miniconda3/envs/bd-coldcall/python.exe -m src.rag.indexer --dry-run       # report-only, no mutation
-~/miniconda3/envs/bd-coldcall/python.exe -m src.rag.indexer --verify        # manifest ↔ store drift check
-~/miniconda3/envs/bd-coldcall/python.exe -m src.rag.indexer --notion        # include Notion pages + DBs
-
-# Phase 4 end-to-end smoke (retrieve → synthesize → draft; 2 Sonnet calls, ~$0.10-0.50)
-~/miniconda3/envs/bd-coldcall/python.exe -m scripts.smoke_phase4 \
-    --preprocess-json outputs/preprocess/<timestamp>_en.json \
-    --company NVIDIA --industry semiconductor --lang en
-# Writes outputs/{company}_{YYYYMMDD}.md + outputs/intermediate/{company}_{YYYYMMDD}_points.json
-
-# Phase 5 full pipeline smoke (search → fetch → preprocess → retrieve → synthesize → draft → persist)
-# ~180s end-to-end (Brave + Exaone 4bit + bge-m3 + 2 Sonnet calls), ~$0.30-0.60
-~/miniconda3/envs/bd-coldcall/python.exe -m scripts.smoke_phase5 \
-    --company NVIDIA --industry semiconductor --lang en --verbose
-# Writes outputs/{company}_{YYYYMMDD}/proposal.md + intermediate/{articles_after_preprocess,tech_chunks,points,run_summary}.json
-
-# Phase 6 top-level CLI — unified entry point (wraps orchestrator + indexer)
+# Top-level CLI
 ~/miniconda3/envs/bd-coldcall/python.exe main.py --help
 ~/miniconda3/envs/bd-coldcall/python.exe main.py run --company NVIDIA --industry semiconductor --lang en --verbose
-~/miniconda3/envs/bd-coldcall/python.exe main.py ingest --notion --dry-run
-~/miniconda3/envs/bd-coldcall/python.exe main.py ingest --verify
+~/miniconda3/envs/bd-coldcall/python.exe main.py ingest [--notion] [--force] [--dry-run] [--verify]
+~/miniconda3/envs/bd-coldcall/python.exe main.py discover --lang en --seed-summary "..."
 
-# Phase 9 — RAG-only target discovery (Sonnet 1-shot, 5 industries × 5 companies = 25, ~$0.04)
-~/miniconda3/envs/bd-coldcall/python.exe main.py discover --lang en \
-    --seed-summary "One-paragraph product summary."
-# Writes outputs/discovery_{YYYYMMDD}/{candidates.yaml, report.md}
-
-# Phase 7 Web API (FastAPI, uvicorn autoreload). Skips the 30s Exaone warm-load
-# so frontend dev is fast; drop the flag when you want the real pipeline.
+# Web API + UI (dev)
 API_SKIP_WARMUP=1 ~/miniconda3/envs/bd-coldcall/python.exe -m uvicorn src.api.app:app --reload
-
-# Phase 7 Web UI (Next.js 15 — runs outside the conda env)
 cd web && npm install && npm run dev    # http://localhost:3000
 ```
 
-`--save` writes JSON (+ Markdown for brave) to `outputs/search/` and `outputs/preprocess/` — prefer this over stdout-only when debugging retrieval quality.
+Phase-by-phase smoke commands and saved-output flags: `docs/commands.md`.
 
 ## Notion RAG setup
 
@@ -109,8 +75,8 @@ Why this split: 7.8B-class models hallucinate on BD reasoning tasks, and funneli
 
 ## DO NOT
 
-- **테스트에서 monkeypatch 해야 하는 의존성**(부수효과 있는 외부 호출·네트워크·LLM·I/O 클라이언트 등)을 `from X import Y` 형태로 직접 바인딩하지 마라. import 시점에 참조가 고정되어 patch 가 안 먹을 수 있고, 테스트가 원본 구현을 조용히 호출해 false green 이 난다. 대신 모듈 자체를 import 한 뒤 (`from src import foo as _foo`) 런타임에 `_foo.Y` 로 접근하라. graph / pipeline / orchestrator 계층은 이 규칙을 기본값으로 삼는다. 단, 상수·타입·예외 클래스 등 patch 대상이 아닌 심볼은 적용 대상이 아니다. (출처: `docs/lesson-learned.md` 2026-04-21 LangGraph monkeypatch 섹션)
-- **`PUT /settings/{kind}` 처럼 `config/*.yaml` 을 mutate 하는 endpoint 의 통합 테스트**는 반드시 prod CONFIG_DIR 격리 fixture (예: `tests/test_api_settings.py::isolated_config` — `monkeypatch.setattr(_loader, "CONFIG_DIR", tmp)`) 를 사용해야 한다. fixture 없이 호출하면 실제 `config/pricing.yaml` 등이 테스트 input 값으로 덮어씌워지고, 발견 못 하면 잘못된 운영 데이터가 commit 되어 모든 사용자에게 퍼진다. 새 `tests/test_api_*.py` 작성 시 같은 도메인 기존 fixture 패턴을 먼저 검색해서 그대로 차용하라. (출처: `docs/lesson-learned.md` 2026-05-04 `tests/test_api_cost.py` 가 prod config 클로버 섹션)
+- For monkeypatchable deps (LLM clients, I/O, network), import the module — `from src.api import runner as _runner` + `_runner.execute_run(...)` — not the symbol. Direct `from X import Y` binds at import time and silently slips false-greens. Applies to graph/pipeline/orchestrator/route layers. See `docs/lesson-learned.md` (2026-04-21) and `docs/playbook.md#2`.
+- Tests that mutate `config/*.yaml` via `PUT /settings/{kind}` MUST use an isolated `CONFIG_DIR` fixture (`monkeypatch.setattr(_loader, "CONFIG_DIR", tmp)`) — pattern in `tests/test_api_settings.py::isolated_config`. Without it, prod yaml gets clobbered and may ship wrong values to all users. See `docs/lesson-learned.md` (2026-05-04).
 
 ### Config is 3-tier — do not collapse
 
@@ -142,22 +108,20 @@ Split on purpose — see `docs/lesson-learned.md` for why:
 
 Do not merge these back into one file. A CI or user without CUDA should be able to run Phase 1 and tests without touching ML wheels.
 
-## Windows-specific: stdout encoding
+## Windows stdout encoding
 
-CLI entry points must reconfigure stdout/stderr to UTF-8 before printing non-ASCII **or before a framework (Rich/Typer) renders help text at import time**. Windows consoles default to cp949/cp1252 and silently mojibake Korean output; Rich fails loudly on em-dash.
-
-- Command-body printing only: call `sys.stdout.reconfigure(encoding="utf-8")` inside the entrypoint function, like `src/search/brave.py`'s `__main__`.
-- Typer CLIs that render `--help` before any command runs: reconfigure at **module load**, like `main.py` (top-level `for _stream in (sys.stdout, sys.stderr): _stream.reconfigure(encoding="utf-8")`). Inside-command reconfigure is too late for Rich's help renderer.
+New CLI entry points must reconfigure stdout/stderr to UTF-8 — Typer / Rich CLIs at **module load** (top of `main.py`), command-body printers inside the function. See `docs/playbook.md#9` for the framework-help timing rationale.
 
 ## Project docs convention
 
-`docs/` has six standing files — keep them current, don't let them rot:
+`docs/` has seven standing files — keep them current, don't let them rot:
 
 - **`status.md`** — progress snapshot of what's **in flight or recently done**. Long-term plans live in `backlog.md`, not here.
 - **`backlog.md`** — long-term plan / big-picture / out-of-scope ideas. `/projectrecord` promotes items to status on start, drops them on completion.
 - **`architecture.md`** — pipeline shape, node boundaries, data flow. Updated when structure changes.
 - **`lesson-learned.md`** — append-only, **failures only**. "Tried X, broke Y, here's why" entries so we don't repeat the same mistake.
 - **`playbook.md`** — append-only, **successes only**. Patterns that survived a hard problem and are reusable elsewhere. Each entry has a Problem / Solution / Why-it-works / Reusable-in structure. **Check first when you hit an error or are stuck** — grep the keyword index at the top.
+- **`commands.md`** — phase-by-phase command catalog (smoke scripts, RAG indexer flags, etc.). CLAUDE.md keeps only the five most-used invocations.
 - **`security-audit.md`** — checklist + audit history. Review before release milestones.
 
 Before a significant commit, update whichever of these are affected. `README.md` should only describe what already works, not roadmap.
