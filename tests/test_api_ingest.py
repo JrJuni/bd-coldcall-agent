@@ -216,3 +216,65 @@ def test_trigger_ingest_defaults_workspace_and_namespace(client, monkeypatch):
     assert argv[argv.index("--workspace") + 1] == "default"
     assert argv[argv.index("--namespace") + 1] == "default"
     assert "--dry-run" in argv
+
+
+def test_ingest_invalidates_retriever_cache_on_success(client, monkeypatch):
+    """Successful ingest must drop the retriever singleton cache.
+
+    Regression for the `Error creating hnsw segment reader: Nothing
+    found on disk` symptom: a `VectorStore` cached before the indexer
+    wrote data hits ChromaDB's stale in-memory HNSW state and the
+    next retrieve fails. `execute_ingest` clears `_STORES` after the
+    indexer succeeds so the next retrieve makes a fresh client.
+    """
+    from src.rag import indexer as _indexer
+    from src.rag import retriever as _retriever
+
+    monkeypatch.setattr(_indexer, "main", lambda argv: 0)
+
+    sentinel = object()
+    _retriever._STORES[("default", "test260502")] = sentinel
+    assert _retriever._STORES, "precondition: cache populated"
+
+    r = client.post(
+        "/ingest",
+        json={"workspace": "default", "namespace": "test260502"},
+    )
+    assert r.status_code == 202, r.text
+    task_id = r.json()["task_id"]
+
+    poll = client.get(f"/ingest/tasks/{task_id}")
+    assert poll.status_code == 200
+    assert poll.json()["status"] == "completed", poll.text
+
+    assert _retriever._STORES == {}, (
+        "retriever cache was not invalidated after successful ingest"
+    )
+
+
+def test_ingest_does_not_invalidate_cache_on_failure(client, monkeypatch):
+    """If the indexer exits non-zero, the cache is left alone.
+
+    Rationale: an aborted indexer hasn't written new segments, so the
+    cached `VectorStore` is still consistent with disk. Dropping it
+    would just force a needless cold reload on the next retrieve.
+    """
+    from src.rag import indexer as _indexer
+    from src.rag import retriever as _retriever
+
+    monkeypatch.setattr(_indexer, "main", lambda argv: 2)
+
+    sentinel = object()
+    _retriever._STORES[("default", "test260502")] = sentinel
+
+    r = client.post(
+        "/ingest",
+        json={"workspace": "default", "namespace": "test260502"},
+    )
+    assert r.status_code == 202
+
+    task_id = r.json()["task_id"]
+    poll = client.get(f"/ingest/tasks/{task_id}")
+    assert poll.json()["status"] == "failed"
+
+    assert _retriever._STORES.get(("default", "test260502")) is sentinel

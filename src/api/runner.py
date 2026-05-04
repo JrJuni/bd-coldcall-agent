@@ -354,6 +354,7 @@ def execute_ingest(
     endpoint always reports a definitive status.
     """
     from src.rag import indexer as _indexer
+    from src.rag import retriever as _retriever
 
     store = store or get_ingest_store()
     task = store.get(task_id)
@@ -388,6 +389,12 @@ def execute_ingest(
         return
 
     if code == 0:
+        # Drop retriever singleton cache so the next retrieve reads the
+        # freshly-written HNSW segments. Without this, a `VectorStore`
+        # cached from before the indexer wrote data hits ChromaDB's stale
+        # in-memory segment reader and fails with "Error creating hnsw
+        # segment reader: Nothing found on disk".
+        _retriever.reset_store_singleton()
         store.update(
             task_id,
             status="completed",
