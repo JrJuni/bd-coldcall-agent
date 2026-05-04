@@ -239,7 +239,8 @@ function RunDetail({
             run_id <code>{detail.run_id}</code>
           </span>
           <span className="text-xs text-slate-500">
-            namespace <code>{detail.namespace}</code> · region {detail.region} ·
+            namespace <code>{detail.namespace}</code> · region{" "}
+            {detail.regions.length === 0 ? "any" : detail.regions.join(", ")} ·
             seed {detail.seed_doc_count} docs / {detail.seed_chunk_count} chunks
           </span>
         </div>

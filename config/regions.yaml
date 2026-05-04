@@ -1,0 +1,63 @@
+# Phase 12 — Region master for Discovery's region multi-select.
+#
+# Country codes are ISO 3166-1 alpha-2, lowercase. The pseudo-code "global"
+# is reserved for sector_leader entries that do not belong to a single
+# country (multinational HQ-agnostic seeds); it always passes the region
+# filter and never appears as a selectable country here.
+#
+# Initial scope: G20 + key IT hubs (TW, SG, IL, AE). Add countries as the
+# `sector_leaders.yaml` corpus grows.
+
+version: 1
+
+groups:
+  - id: north_america
+    label: North America
+    countries:
+      - {code: us, label: United States}
+      - {code: ca, label: Canada}
+      - {code: mx, label: Mexico}
+
+  - id: asia
+    label: Asia
+    countries:
+      - {code: kr, label: South Korea}
+      - {code: jp, label: Japan}
+      - {code: cn, label: China}
+      - {code: tw, label: Taiwan}
+      - {code: sg, label: Singapore}
+      - {code: in, label: India}
+      - {code: id, label: Indonesia}
+      - {code: il, label: Israel}
+      - {code: ae, label: United Arab Emirates}
+      - {code: sa, label: Saudi Arabia}
+
+  - id: europe
+    label: Europe
+    countries:
+      - {code: gb, label: United Kingdom}
+      - {code: de, label: Germany}
+      - {code: fr, label: France}
+      - {code: nl, label: Netherlands}
+      - {code: it, label: Italy}
+      - {code: es, label: Spain}
+      - {code: se, label: Sweden}
+      - {code: ch, label: Switzerland}
+      - {code: tr, label: Türkiye}
+
+  - id: oceania
+    label: Oceania
+    countries:
+      - {code: au, label: Australia}
+      - {code: nz, label: New Zealand}
+
+  - id: latam
+    label: Latin America
+    countries:
+      - {code: br, label: Brazil}
+      - {code: ar, label: Argentina}
+
+  - id: africa
+    label: Africa
+    countries:
+      - {code: za, label: South Africa}

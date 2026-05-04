@@ -546,8 +546,24 @@ export const WEIGHT_DIMENSIONS = [
 
 export type WeightDimension = (typeof WEIGHT_DIMENSIONS)[number];
 
-export const DISCOVERY_REGIONS = ["any", "ko", "us", "eu", "global"] as const;
-export type DiscoveryRegion = (typeof DISCOVERY_REGIONS)[number];
+// Phase 12 — region master fetched from `GET /discovery/regions`. The
+// frontend used to ship a hard-coded 5-value enum; the new shape is a
+// list of continent groups with ISO 3166-1 alpha-2 country codes.
+export interface RegionCountry {
+  code: string; // lowercase ISO alpha-2
+  label: string;
+}
+
+export interface RegionGroup {
+  id: string; // snake_case slug — north_america, asia, europe, ...
+  label: string;
+  countries: RegionCountry[];
+}
+
+export interface RegionsConfig {
+  version: number;
+  groups: RegionGroup[];
+}
 
 export type DiscoveryStatus = "queued" | "running" | "completed" | "failed";
 export type CandidateStatus = "active" | "archived" | "promoted";
@@ -557,7 +573,9 @@ export const TIER_VALUES: readonly Tier[] = ["S", "A", "B", "C"] as const;
 
 export interface DiscoveryRunCreateInput {
   namespace: string;
-  region: DiscoveryRegion;
+  // Phase 12 — list of ISO alpha-2 country codes (or "global"); empty list
+  // = no region filter.
+  regions: string[];
   product: string;
   seed_summary?: string | null;
   seed_query?: string | null;
@@ -574,7 +592,7 @@ export interface DiscoveryRunSummary {
   status: DiscoveryStatus;
   namespace: string;
   product: string;
-  region: DiscoveryRegion;
+  regions: string[];
   lang: string;
   seed_doc_count: number;
   seed_chunk_count: number;

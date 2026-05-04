@@ -9,6 +9,7 @@ from .schemas import (
     CostBudget,
     IntentTiersConfig,
     Pricing,
+    RegionsConfig,
     Secrets,
     SectorLeadersConfig,
     Settings,
@@ -149,6 +150,57 @@ def load_cost_budget(path: Path | None = None) -> CostBudget:
     with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
     return CostBudget(**data)
+
+
+def load_regions(path: Path | None = None) -> RegionsConfig:
+    """Load `config/regions.yaml` — Phase 12 country master for Discovery.
+
+    Missing file falls back to a built-in minimal default (the four major
+    continent groups with one or two anchor countries each) so a fresh
+    checkout still has something selectable. The committed yaml is not
+    gitignored — it's a reference list, not user data.
+    """
+    path = path or (CONFIG_DIR / "regions.yaml")
+    if not path.exists():
+        _LOGGER.warning(
+            "regions.yaml not found at %s — using minimal built-in fallback. "
+            "Restore from repo to see the full country list.",
+            path,
+        )
+        return RegionsConfig(
+            version=1,
+            groups=[
+                {
+                    "id": "north_america",
+                    "label": "North America",
+                    "countries": [{"code": "us", "label": "United States"}],
+                },
+                {
+                    "id": "asia",
+                    "label": "Asia",
+                    "countries": [
+                        {"code": "kr", "label": "South Korea"},
+                        {"code": "jp", "label": "Japan"},
+                    ],
+                },
+                {
+                    "id": "europe",
+                    "label": "Europe",
+                    "countries": [
+                        {"code": "gb", "label": "United Kingdom"},
+                        {"code": "de", "label": "Germany"},
+                    ],
+                },
+                {
+                    "id": "oceania",
+                    "label": "Oceania",
+                    "countries": [{"code": "au", "label": "Australia"}],
+                },
+            ],
+        )
+    with open(path, encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    return RegionsConfig(**data)
 
 
 def load_sector_leaders(path: Path | None = None) -> SectorLeadersConfig:

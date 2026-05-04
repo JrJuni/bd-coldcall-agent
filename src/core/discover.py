@@ -73,26 +73,36 @@ def _render_seed(chunks: list[RetrievedChunk]) -> str:
 
 def _filter_sector_leaders(
     leaders: list[SectorLeader],
-    region: str,
+    regions: list[str],
 ) -> list[SectorLeader]:
-    """Apply --region filter to the seed list.
+    """Apply the region multi-select filter to the seed list.
 
-    region="any" → no filter, all seeds visible.
-    region in {ko,us,eu} → keep that region PLUS "global" entries (a global
-        company is still a useful hint when a regional pass runs).
-    region="global" → keep only "global" entries (rare, but supported).
+    Phase 12: `regions` is a list of ISO 3166-1 alpha-2 country codes
+    (lowercase) plus the wildcard "global". Semantics:
+
+    - empty list → no filter; all seeds visible (the "any" case)
+    - ["global"] alone → only "global" entries
+    - ["kr", "jp", ...] → entries whose region matches any code in the list
+        PLUS "global" entries (always a useful seed in a regional pass)
     """
-    if region == "any":
+    if not regions:
         return list(leaders)
-    if region == "global":
+    selected = {r.lower() for r in regions}
+    if selected == {"global"}:
         return [l for l in leaders if l.region == "global"]
-    return [l for l in leaders if l.region == region or l.region == "global"]
+    return [
+        l for l in leaders
+        if l.region in selected or l.region == "global"
+    ]
 
 
-def _render_sector_leaders(leaders: list[SectorLeader], region: str) -> str:
+def _render_sector_leaders(
+    leaders: list[SectorLeader], regions: list[str]
+) -> str:
     if not leaders:
         return ""
-    parts = [f'<sector_leader_seeds region="{region}">']
+    region_attr = ",".join(regions) if regions else "any"
+    parts = [f'<sector_leader_seeds region="{region_attr}">']
     parts.append(
         "Use these as inspiration. You may pick from this list OR pick other "
         "well-known companies, but aim to include at least 1 mid-market or "
@@ -112,14 +122,15 @@ def _render_sector_leaders(leaders: list[SectorLeader], region: str) -> str:
 def _render_volatile(
     seed_summary: str | None,
     sector_leaders_block: str = "",
-    region: str = "any",
+    regions: list[str] | None = None,
 ) -> str:
+    regions = list(regions or [])
     parts: list[str] = []
     if seed_summary and seed_summary.strip():
         parts.append(f"<product_summary>\n{seed_summary.strip()}\n</product_summary>")
-    if region != "any":
+    if regions:
         parts.append(
-            f"<region_constraint>{region}</region_constraint>"
+            f"<region_constraint>{','.join(regions)}</region_constraint>"
         )
     if sector_leaders_block:
         parts.append(sector_leaders_block)
@@ -280,7 +291,7 @@ def discover_targets(
     seed_summary: str | None = None,
     seed_query: str = _DEFAULT_SEED_QUERY,
     product: str = "databricks",
-    region: Literal["any", "ko", "us", "eu", "global"] = "any",
+    regions: list[str] | None = None,
     ws_slug: str = "default",
     namespace: str = DEFAULT_NAMESPACE,
     include_sector_leaders: bool = True,
@@ -302,6 +313,7 @@ def discover_targets(
             f"n_industries and n_per_industry must be positive "
             f"(got {n_industries}, {n_per_industry})"
         )
+    regions = list(regions or [])
 
     settings = get_settings()
     system_template, task_template = _load_prompt(lang)
@@ -329,13 +341,13 @@ def discover_targets(
     sector_leaders_block = ""
     if include_sector_leaders:
         cfg = load_sector_leaders()
-        filtered = _filter_sector_leaders(cfg.companies, region)
+        filtered = _filter_sector_leaders(cfg.companies, regions)
         if filtered:
-            sector_leaders_block = _render_sector_leaders(filtered, region)
+            sector_leaders_block = _render_sector_leaders(filtered, regions)
     volatile_context = _render_volatile(
         seed_summary,
         sector_leaders_block=sector_leaders_block,
-        region=region,
+        regions=regions,
     )
 
     seed_doc_count, seed_chunk_count = _read_seed_meta(ws_slug, namespace)

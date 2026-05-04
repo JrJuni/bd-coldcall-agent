@@ -3,8 +3,8 @@
 # `discover` injects this list as `<sector_leader_seeds>` into the volatile
 # block so Sonnet has concrete mid-market / regional / specialist names to
 # pick from beyond Fortune 500. The flat layout intentionally lets you mix
-# regions and industries in any order — `discover --region <code>` filters
-# at runtime.
+# regions and industries in any order — Discovery's region multi-select
+# filters at runtime by country code.
 #
 # Fields
 # ------
@@ -12,8 +12,10 @@
 # industry_hint  : Loose label — match against `industry_meta` keys at runtime
 #                  is fuzzy, so canonical English ("Financial Services",
 #                  "Manufacturing & Supply Chain") is recommended.
-# region         : ko | us | eu | global. `--region <X>` filters; "any" passes
-#                  everything through.
+# region         : ISO 3166-1 alpha-2 (lowercase) — kr, us, de, gb, jp, ...
+#                  Or the special value "global" for HQ-agnostic seeds that
+#                  should always pass any country filter. Country master is
+#                  `config/regions.yaml`.
 # notes          : Optional free-form note to bias Sonnet's rationale.
 #
 # Operational use
@@ -35,11 +37,11 @@ companies:
     notes: Bank-data API, AI/ML team active.
   - name: 토스 (Viva Republica)
     industry_hint: Financial Services
-    region: ko
+    region: kr
     notes: Korean fintech mid-cap, AI-driven recommendation + fraud.
   - name: Adyen
     industry_hint: Financial Services
-    region: eu
+    region: nl
     notes: EU payments, real-time risk analytics.
 
   # Manufacturing — global mid-cap and Korea
@@ -49,21 +51,21 @@ companies:
     notes: HVAC + industrial IoT, predictive maintenance investment.
   - name: 두산에너빌리티
     industry_hint: Manufacturing & Supply Chain
-    region: ko
+    region: kr
     notes: 한국 발전 설비, 운영 데이터 lakehouse 후보.
   - name: 한화에어로스페이스
     industry_hint: Manufacturing & Supply Chain
-    region: ko
+    region: kr
     notes: 항공·우주 sensor data + lifecycle 분석.
 
   # Retail / E-Commerce
   - name: Zalando
     industry_hint: Retail & E-Commerce
-    region: eu
+    region: de
     notes: EU fashion e-commerce, recommendation + content gen for catalog.
   - name: 쿠팡
     industry_hint: Retail & E-Commerce
-    region: ko
+    region: kr
     notes: Korean e-commerce mid-large, logistics + personalization data.
   - name: Carvana
     industry_hint: Retail & E-Commerce
@@ -77,21 +79,21 @@ companies:
     notes: US oncology data + ML, rapid AI investment.
   - name: 셀트리온
     industry_hint: Healthcare & Life Sciences
-    region: ko
+    region: kr
     notes: Korean biopharma, R&D pipeline + clinical data.
   - name: BenevolentAI
     industry_hint: Healthcare & Life Sciences
-    region: eu
+    region: gb
     notes: UK drug discovery AI mid-cap.
 
   # Tech / SaaS — non-competitor
   - name: 네이버 (NAVER Cloud / CLOVA)
     industry_hint: Technology & Software
-    region: ko
+    region: kr
     notes: Korean cloud + AI subsidiary, may sit alongside Databricks.
   - name: 카카오 (Kakao Brain)
     industry_hint: Technology & Software
-    region: ko
+    region: kr
     notes: Korean tech conglomerate AI arm.
   - name: Datadog
     industry_hint: Technology & Software

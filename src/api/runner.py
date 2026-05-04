@@ -154,7 +154,7 @@ def execute_discovery_run(
     *,
     run_id: str,
     namespace: str,
-    region: str,
+    regions: list[str],
     product: str,
     seed_summary: str | None,
     seed_query: str | None,
@@ -195,7 +195,7 @@ def execute_discovery_run(
             "run_id": run_id,
             "namespace": namespace,
             "product": product,
-            "region": region,
+            "regions": list(regions),
         },
     )
 
@@ -206,7 +206,7 @@ def execute_discovery_run(
             n_per_industry=n_per_industry,
             seed_summary=seed_summary,
             product=product,
-            region=region,
+            regions=list(regions),
             namespace=namespace,
             include_sector_leaders=include_sector_leaders,
             write_artifacts=False,

@@ -66,6 +66,33 @@ def _attach_distribution(run_dict: dict) -> dict:
     return run_dict
 
 
+# ── Region master (Phase 12) ───────────────────────────────────────────
+
+
+@router.get("/discovery/regions")
+async def list_discovery_regions() -> dict:
+    """Return the country master used by the Discovery region multi-select.
+
+    Sourced from `config/regions.yaml`. The frontend caches the response
+    for the lifetime of the page — this endpoint is hit once per fresh
+    load of the Discovery form.
+    """
+    cfg = _config_loader.load_regions()
+    return {
+        "version": cfg.version,
+        "groups": [
+            {
+                "id": g.id,
+                "label": g.label,
+                "countries": [
+                    {"code": c.code, "label": c.label} for c in g.countries
+                ],
+            }
+            for g in cfg.groups
+        ],
+    }
+
+
 # ── Runs ───────────────────────────────────────────────────────────────
 
 
@@ -85,7 +112,7 @@ async def create_discovery_run(
         generated_at=datetime.now(timezone.utc).isoformat(),
         namespace=payload.namespace,
         product=payload.product,
-        region=payload.region,
+        regions=payload.regions,
         lang=payload.lang,
         seed_summary=payload.seed_summary,
         claude_model=active_model,
@@ -96,7 +123,7 @@ async def create_discovery_run(
         _runner.execute_discovery_run,
         run_id=run_id,
         namespace=payload.namespace,
-        region=payload.region,
+        regions=list(payload.regions),
         product=payload.product,
         seed_summary=payload.seed_summary,
         seed_query=payload.seed_query,

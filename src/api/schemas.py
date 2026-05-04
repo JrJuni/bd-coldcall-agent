@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 RunState = Literal["queued", "running", "failed", "completed"]
@@ -302,15 +302,53 @@ class RagSummaryCachedResponse(BaseModel):
 # ── Phase 10 P10-2b — Discovery ──────────────────────────────────────────
 
 
-DiscoveryRegion = Literal["any", "ko", "us", "eu", "global"]
 DiscoveryStatus = Literal["queued", "running", "completed", "failed"]
 CandidateStatus = Literal["active", "archived", "promoted"]
 TierLiteral = Literal["S", "A", "B", "C"]
 
 
+# Phase 12 — region migrated from a 4-value Literal to a list of ISO 3166-1
+# alpha-2 country codes (plus the wildcard "global"). Legacy single-value
+# inputs ("any" / "ko" / "us" / "eu" / "global") are coerced for backward
+# compat by `_coerce_legacy_region`.
+_LEGACY_REGION_TO_LIST: dict[str, list[str]] = {
+    "any": [],
+    "global": ["global"],
+    "ko": ["kr"],
+    "us": ["us"],
+    "eu": ["gb"],
+}
+
+
+def _normalize_regions_list(items: list[Any]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in items:
+        if not isinstance(raw, str):
+            raise ValueError(f"region entries must be strings, got {raw!r}")
+        s = raw.strip().lower()
+        if not s or s == "any":
+            continue
+        if s == "global":
+            code = "global"
+        elif len(s) != 2 or not s.isalpha():
+            raise ValueError(
+                f"region must be ISO 3166-1 alpha-2 (e.g. 'us') or 'global', got {raw!r}"
+            )
+        else:
+            code = s
+        if code not in seen:
+            seen.add(code)
+            out.append(code)
+    return out
+
+
 class DiscoveryRunCreate(BaseModel):
     namespace: str = Field(default="default", min_length=1, max_length=80)
-    region: DiscoveryRegion = "any"
+    # Phase 12 — list of ISO 3166-1 alpha-2 codes (or "global"). Empty list
+    # / None means "no region filter". Legacy `region` key in JSON is
+    # accepted via a model_validator and folded into this field.
+    regions: list[str] = Field(default_factory=list)
     product: str = Field(default="databricks", min_length=1, max_length=80)
     seed_summary: str | None = None
     seed_query: str | None = None  # None → discover_targets default
@@ -320,6 +358,40 @@ class DiscoveryRunCreate(BaseModel):
     lang: Literal["en", "ko"] = "en"
     include_sector_leaders: bool = True
 
+    @model_validator(mode="before")
+    @classmethod
+    def _absorb_legacy_region(cls, data: Any) -> Any:
+        """Accept the pre-Phase-12 `region: <enum>` JSON key transparently.
+
+        If both `region` and `regions` are present the explicit list wins.
+        Legacy enum values map via _LEGACY_REGION_TO_LIST so a stored UI
+        fixture sending `"region": "any"` still validates after the upgrade.
+        """
+        if not isinstance(data, dict):
+            return data
+        if "regions" in data and data["regions"] is not None:
+            return data
+        legacy = data.pop("region", None) if "region" in data else None
+        if legacy is None:
+            return data
+        if isinstance(legacy, str):
+            mapped = _LEGACY_REGION_TO_LIST.get(legacy.strip().lower())
+            data["regions"] = list(mapped) if mapped is not None else [legacy]
+        elif isinstance(legacy, list):
+            data["regions"] = list(legacy)
+        return data
+
+    @field_validator("regions", mode="before")
+    @classmethod
+    def _coerce_regions(cls, v: Any) -> list[str]:
+        if v is None:
+            return []
+        if isinstance(v, str):
+            v = [v]
+        if not isinstance(v, list):
+            raise ValueError(f"regions must be a list of strings, got {type(v).__name__}")
+        return _normalize_regions_list(v)
+
 
 class DiscoveryRunSummary(BaseModel):
     run_id: str
@@ -327,7 +399,8 @@ class DiscoveryRunSummary(BaseModel):
     status: DiscoveryStatus
     namespace: str
     product: str
-    region: DiscoveryRegion
+    # Phase 12 — list of ISO alpha-2 codes; empty = no filter applied.
+    regions: list[str] = Field(default_factory=list)
     lang: str
     seed_doc_count: int = 0
     seed_chunk_count: int = 0

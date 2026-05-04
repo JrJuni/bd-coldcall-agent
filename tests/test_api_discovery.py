@@ -28,7 +28,7 @@ from src.api.config import reset_api_settings_cache
 
 _BASE_BODY = {
     "namespace": "default",
-    "region": "any",
+    "regions": [],
     "product": "databricks",
     "lang": "en",
     "n_industries": 2,
@@ -70,7 +70,7 @@ def _fake_run_factory(*, status: str = "completed"):
         *,
         run_id: str,
         namespace: str,
-        region: str,
+        regions: list[str],
         product: str,
         seed_summary,
         seed_query,
@@ -179,12 +179,40 @@ def test_failed_discovery_run_surfaces_error(client, monkeypatch):
 
 
 def test_create_discovery_run_validates_inputs(client):
-    bad = dict(_BASE_BODY, region="moon")
+    # Phase 12 — regions must be ISO alpha-2 (or "global"); 4-letter junk
+    # like "moon" is rejected.
+    bad = dict(_BASE_BODY, regions=["moon"])
     r = client.post("/discovery/runs", json=bad)
-    assert r.status_code == 422
+    assert r.status_code == 422, r.text
     bad2 = dict(_BASE_BODY, n_industries=0)
     r2 = client.post("/discovery/runs", json=bad2)
     assert r2.status_code == 422
+
+
+def test_create_discovery_run_accepts_legacy_region_field(client, monkeypatch):
+    """Pre-Phase-12 clients send `region: "any"` — the validator should
+    fold it into `regions=[]` transparently so deployments don't break
+    during a frontend rollout."""
+    monkeypatch.setattr(
+        "src.api.runner.execute_discovery_run", _fake_run_factory()
+    )
+    body = {k: v for k, v in _BASE_BODY.items() if k != "regions"}
+    body["region"] = "any"
+    r = client.post("/discovery/runs", json=body)
+    assert r.status_code == 202, r.text
+    detail = client.get(f"/discovery/runs/{r.json()['run_id']}").json()
+    assert detail["regions"] == []
+
+
+def test_create_discovery_run_accepts_multi_country_regions(client, monkeypatch):
+    monkeypatch.setattr(
+        "src.api.runner.execute_discovery_run", _fake_run_factory()
+    )
+    body = dict(_BASE_BODY, regions=["kr", "jp"])
+    r = client.post("/discovery/runs", json=body)
+    assert r.status_code == 202, r.text
+    detail = client.get(f"/discovery/runs/{r.json()['run_id']}").json()
+    assert detail["regions"] == ["kr", "jp"]
 
 
 def test_list_discovery_runs_newest_first(client, monkeypatch):

@@ -33,6 +33,7 @@ import type {
   RagSummaryRequestInput,
   RagSummaryResponse,
   RagTreeResponse,
+  RegionsConfig,
   RunCreateResponse,
   SecretsView,
   SettingsKind,
@@ -660,6 +661,12 @@ export async function setActiveModel(model: string): Promise<ActiveModelView> {
 }
 
 // ── Phase 10 P10-2b — Discovery ─────────────────────────────────────────
+
+export async function getDiscoveryRegions(): Promise<RegionsConfig> {
+  const r = await fetch(`${API_BASE}/discovery/regions`, { cache: "no-store" });
+  if (!r.ok) throw new Error(`GET /discovery/regions ${r.status}`);
+  return r.json();
+}
 
 export async function createDiscoveryRun(
   body: DiscoveryRunCreateInput,

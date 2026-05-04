@@ -416,24 +416,48 @@ def test_no_sector_leaders_skips_block(patched_rag, tmp_path: Path):
     assert "<sector_leader_seeds" not in blob
 
 
-def test_region_constraint_emitted_when_not_any(patched_rag, tmp_path: Path):
+def test_region_constraint_emitted_when_single_country(patched_rag, tmp_path: Path):
     fake = _FakeClient([_payload()])
     discover_targets(
         lang="en", n_industries=2, n_per_industry=2,
         seed_summary="x", output_root=tmp_path, client=fake,
-        region="ko", write_artifacts=False,
+        regions=["kr"], write_artifacts=False,
     )
     user_content = fake.messages.calls[0]["messages"][0]["content"]
     blob = "\n".join(b["text"] for b in user_content)
-    assert "<region_constraint>ko</region_constraint>" in blob
+    assert "<region_constraint>kr</region_constraint>" in blob
 
 
-def test_region_any_emits_no_constraint(patched_rag, tmp_path: Path):
+def test_region_constraint_joins_multi_country(patched_rag, tmp_path: Path):
     fake = _FakeClient([_payload()])
     discover_targets(
         lang="en", n_industries=2, n_per_industry=2,
         seed_summary="x", output_root=tmp_path, client=fake,
-        region="any", write_artifacts=False,
+        regions=["kr", "jp"], write_artifacts=False,
+    )
+    user_content = fake.messages.calls[0]["messages"][0]["content"]
+    blob = "\n".join(b["text"] for b in user_content)
+    assert "<region_constraint>kr,jp</region_constraint>" in blob
+
+
+def test_region_empty_list_emits_no_constraint(patched_rag, tmp_path: Path):
+    fake = _FakeClient([_payload()])
+    discover_targets(
+        lang="en", n_industries=2, n_per_industry=2,
+        seed_summary="x", output_root=tmp_path, client=fake,
+        regions=[], write_artifacts=False,
+    )
+    user_content = fake.messages.calls[0]["messages"][0]["content"]
+    blob = "\n".join(b["text"] for b in user_content)
+    assert "<region_constraint>" not in blob
+
+
+def test_region_none_emits_no_constraint(patched_rag, tmp_path: Path):
+    fake = _FakeClient([_payload()])
+    discover_targets(
+        lang="en", n_industries=2, n_per_industry=2,
+        seed_summary="x", output_root=tmp_path, client=fake,
+        regions=None, write_artifacts=False,
     )
     user_content = fake.messages.calls[0]["messages"][0]["content"]
     blob = "\n".join(b["text"] for b in user_content)

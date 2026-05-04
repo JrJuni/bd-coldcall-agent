@@ -4,13 +4,12 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import { createDiscoveryRun, listRagNamespaces } from "@/lib/api";
+import RegionMultiSelect from "@/components/RegionMultiSelect";
 import type {
-  DiscoveryRegion,
   DiscoveryRunCreateInput,
   DiscoveryRunSummary,
   RagNamespaceSummary,
 } from "@/lib/types";
-import { DISCOVERY_REGIONS } from "@/lib/types";
 
 type Props = {
   onRunCreated: (run: DiscoveryRunSummary) => void;
@@ -22,7 +21,7 @@ const COST_LABEL = "~$0.04 · ~30s · Sonnet 1 call";
 export default function DiscoveryRunForm({ onRunCreated, disabled }: Props) {
   const [namespaces, setNamespaces] = useState<RagNamespaceSummary[]>([]);
   const [namespace, setNamespace] = useState<string>("default");
-  const [region, setRegion] = useState<DiscoveryRegion>("any");
+  const [regions, setRegions] = useState<string[]>([]);
   const [product, setProduct] = useState<string>("databricks");
   const [seedSummary, setSeedSummary] = useState<string>("");
   const [seedQuery, setSeedQuery] = useState<string>("");
@@ -68,7 +67,7 @@ export default function DiscoveryRunForm({ onRunCreated, disabled }: Props) {
     try {
       const body: DiscoveryRunCreateInput = {
         namespace,
-        region,
+        regions,
         product: product.trim() || "databricks",
         seed_summary: seedSummary.trim() || null,
         seed_query: seedQuery.trim() || null,
@@ -129,20 +128,19 @@ export default function DiscoveryRunForm({ onRunCreated, disabled }: Props) {
           )}
         </label>
 
-        <label className="block">
+        <div className="block">
           <span className="text-sm font-medium text-slate-700">Region</span>
-          <select
-            value={region}
-            onChange={(e) => setRegion(e.target.value as DiscoveryRegion)}
-            className="mt-1 block w-full rounded-md border border-slate-300 px-3 py-2"
-          >
-            {DISCOVERY_REGIONS.map((r) => (
-              <option key={r} value={r}>
-                {r}
-              </option>
-            ))}
-          </select>
-        </label>
+          <span className="ml-2 text-xs font-normal text-slate-500">
+            (대륙별 펼침 — 비워두면 전체)
+          </span>
+          <div className="mt-1">
+            <RegionMultiSelect
+              value={regions}
+              onChange={setRegions}
+              disabled={busy || disabled}
+            />
+          </div>
+        </div>
 
         <label className="block md:col-span-2">
           <span className="text-sm font-medium text-slate-700">

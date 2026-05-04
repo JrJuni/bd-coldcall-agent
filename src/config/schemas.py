@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -103,13 +103,47 @@ class TierRulesConfig(BaseModel):
     tiers: dict[str, float] = Field(default_factory=dict)
 
 
+_LEGACY_REGION_MAP: dict[str, str] = {
+    # Phase 12 — old continent/group tags migrate to a representative country
+    # code on read so existing yamls don't crash. The user is expected to
+    # update sector_leaders.yaml to ISO alpha-2 codes long-term.
+    "ko": "kr",
+    "eu": "gb",  # arbitrary EU-default; example file re-tagged per row.
+}
+
+
+def _normalize_region_code(raw: str) -> str:
+    s = (raw or "").strip().lower()
+    if s == "global":
+        return "global"
+    if s in _LEGACY_REGION_MAP:
+        return _LEGACY_REGION_MAP[s]
+    if len(s) != 2 or not s.isalpha():
+        raise ValueError(
+            f"region must be ISO 3166-1 alpha-2 (e.g. 'us', 'kr') or 'global', "
+            f"got {raw!r}"
+        )
+    return s
+
+
 class SectorLeader(BaseModel):
-    """One row of `config/sector_leaders.yaml` — Phase 9.1 mega-cap bias mitigation."""
+    """One row of `config/sector_leaders.yaml` — Phase 9.1 mega-cap bias mitigation.
+
+    Phase 12: `region` widened from a 4-value enum to ISO 3166-1 alpha-2 country
+    codes. Legacy continent tags (`ko`/`eu`) coerce to a representative country
+    so existing yamls keep parsing during the migration; new entries should use
+    `kr`, `de`, `nl`, etc. directly.
+    """
 
     name: str
     industry_hint: str
-    region: Literal["ko", "us", "eu", "global"]
+    region: str  # ISO alpha-2 (lowercase) or "global"
     notes: str = ""
+
+    @field_validator("region", mode="before")
+    @classmethod
+    def _coerce_region(cls, v: str) -> str:
+        return _normalize_region_code(v)
 
 
 class SectorLeadersConfig(BaseModel):
@@ -117,6 +151,38 @@ class SectorLeadersConfig(BaseModel):
 
     version: int = 1
     companies: list[SectorLeader] = Field(default_factory=list)
+
+
+class RegionCountry(BaseModel):
+    """One country entry inside a `RegionGroup`."""
+
+    code: str  # ISO 3166-1 alpha-2 (lowercase)
+    label: str  # Human-readable country name (English)
+
+    @field_validator("code", mode="before")
+    @classmethod
+    def _lower_iso(cls, v: str) -> str:
+        s = (v or "").strip().lower()
+        if len(s) != 2 or not s.isalpha():
+            raise ValueError(
+                f"country code must be ISO 3166-1 alpha-2 (e.g. 'us'), got {v!r}"
+            )
+        return s
+
+
+class RegionGroup(BaseModel):
+    """A continent / macro-region group of countries."""
+
+    id: str  # snake_case slug — north_america, asia, europe, oceania, latam, africa
+    label: str  # Human-readable group label (English)
+    countries: list[RegionCountry] = Field(default_factory=list)
+
+
+class RegionsConfig(BaseModel):
+    """Shape of `config/regions.yaml` — country master for Discovery's region multi-select."""
+
+    version: int = 1
+    groups: list[RegionGroup] = Field(default_factory=list)
 
 
 class ModelRates(BaseModel):

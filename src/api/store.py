@@ -27,6 +27,40 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+# Phase 12 — discovery_runs.region storage compat shim.
+# The column historically held a single enum value ("any"/"ko"/"us"/"eu"/"global");
+# the API now exposes a list of ISO 3166-1 alpha-2 codes. We round-trip via a
+# comma-joined string so the existing TEXT column needs no schema change, and
+# legacy single-value rows still decode into the new list form.
+_LEGACY_REGION_DECODE: dict[str, list[str]] = {
+    "any": [],
+    "global": ["global"],
+    "ko": ["kr"],
+    "us": ["us"],
+    "eu": ["gb"],
+}
+
+
+def _decode_regions_column(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    s = raw.strip()
+    if not s:
+        return []
+    if "," in s:
+        return [p.strip().lower() for p in s.split(",") if p.strip()]
+    legacy = _LEGACY_REGION_DECODE.get(s.lower())
+    if legacy is not None:
+        return list(legacy)
+    return [s.lower()]
+
+
+def _encode_regions_column(regions: list[str]) -> str:
+    if not regions:
+        return "any"  # canonical empty marker; survives older clients reading directly
+    return ",".join(r.strip().lower() for r in regions if r.strip())
+
+
 @dataclass
 class RunEvent:
     seq: int
@@ -301,6 +335,11 @@ class DiscoveryStore:
         except json.JSONDecodeError:
             usage = {}
         keys = row.keys()
+        # Phase 12 — `region` column now stores a comma-joined list of ISO
+        # alpha-2 codes (or "global"). Pre-Phase-12 rows hold a single
+        # legacy enum ("any"/"ko"/"us"/"eu"/"global") which we map back to
+        # a list at read time so the wire format stays consistent.
+        regions = _decode_regions_column(row["region"])
         return {
             "run_id": row["run_id"],
             "generated_at": row["generated_at"],
@@ -308,7 +347,7 @@ class DiscoveryStore:
             "seed_chunk_count": row["seed_chunk_count"] or 0,
             "seed_summary": row["seed_summary"],
             "product": row["product"] or "",
-            "region": row["region"] or "any",
+            "regions": regions,
             "lang": row["lang"] or "en",
             "namespace": row["namespace"] or "default",
             "status": row["status"] or "queued",
@@ -356,12 +395,13 @@ class DiscoveryStore:
         generated_at: str,
         namespace: str,
         product: str,
-        region: str,
+        regions: list[str],
         lang: str,
         seed_summary: str | None,
         claude_model: str | None = None,
     ) -> dict[str, Any]:
         ts = _now_iso()
+        region_blob = _encode_regions_column(regions)
         with _db.connect(self._db_path) as conn:
             conn.execute(
                 "INSERT INTO discovery_runs("
@@ -369,7 +409,7 @@ class DiscoveryStore:
                 " seed_summary, status, usage_json, claude_model, created_at)"
                 " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (
-                    run_id, generated_at, namespace, product, region, lang,
+                    run_id, generated_at, namespace, product, region_blob, lang,
                     seed_summary, "queued", "{}", claude_model, ts,
                 ),
             )
