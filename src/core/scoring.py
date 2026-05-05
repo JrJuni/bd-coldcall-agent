@@ -105,12 +105,18 @@ def get_dimension_keys() -> tuple[str, ...]:
 
 
 def __getattr__(name: str):
-    """Module-level lazy `WEIGHT_DIMENSIONS` for back-compat.
+    """Module-level back-compat shim for the legacy `WEIGHT_DIMENSIONS` constant.
 
-    Old imports (`from src.core.scoring import WEIGHT_DIMENSIONS`) keep
-    working but now resolve dynamically against the yaml-driven dimension
-    list. Tests that rebind the loader before importing still see the
-    patched dimensions because resolution is deferred to attribute access.
+    PEP 562 — `__getattr__` runs once per attribute *access*, so a caller
+    doing `from src.core.scoring import WEIGHT_DIMENSIONS` snapshots the
+    tuple at import time. It's NOT a live view: rebinding the yaml loader
+    *after* the import has happened won't update the bound name.
+
+    New code should call `get_dimension_keys()` directly when it needs the
+    current dimension list. This shim exists purely so old imports
+    (tests, downstream tooling) keep type-checking and resolving without
+    a manual rewrite during the Phase 12 → B4b transition. Plan to remove
+    once frontend + recompute snapshot policy land.
     """
     if name == "WEIGHT_DIMENSIONS":
         return get_dimension_keys()

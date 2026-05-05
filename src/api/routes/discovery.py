@@ -145,15 +145,24 @@ async def list_discovery_dimensions() -> dict:
     `default_weight` from the top-level `default` block so the UI can
     seed a fresh slider state without a second fetch. Falls back to the
     Phase 9.1 hardcoded six-dim list when the yaml omits the block.
+
+    If the yaml is malformed (e.g. `default` missing a key for a declared
+    dimension), the response still returns 200 with 0.0 weights so the UI
+    can render — but `config_warning` is populated and the warning is also
+    logged so an admin can spot the misconfiguration. Without this surface
+    a broken yaml would silently produce a recompute that re-scores every
+    candidate to 0.0.
     """
     dims = _scoring.load_dimensions()
+    config_warning: str | None = None
     try:
         weights = _scoring.load_weights()
-    except ValueError:
-        # Yaml is malformed (missing key in default for a declared dimension).
-        # Surface the dimensions anyway with 0.0 default — the UI will show
-        # 0.0 sliders and the server-side recompute will reject the bad yaml.
+    except ValueError as exc:
         weights = {}
+        config_warning = (
+            f"weights.yaml is malformed — sliders will show 0.0 defaults: {exc}"
+        )
+        _LOGGER.warning("/discovery/dimensions: %s", config_warning)
     return {
         "dimensions": [
             {
@@ -163,7 +172,8 @@ async def list_discovery_dimensions() -> dict:
                 "default_weight": float(weights.get(d.key, 0.0)),
             }
             for d in dims
-        ]
+        ],
+        "config_warning": config_warning,
     }
 
 

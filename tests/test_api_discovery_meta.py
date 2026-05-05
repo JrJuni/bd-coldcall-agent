@@ -129,3 +129,27 @@ def test_list_dimensions_default_weights_sum_to_one(client):
     body = r.json()
     total = sum(d["default_weight"] for d in body["dimensions"])
     assert abs(total - 1.0) < 0.02, f"weights don't sum to 1.0: {total}"
+    # Healthy yaml → no warning surfaced.
+    assert body.get("config_warning") is None
+
+
+def test_list_dimensions_surfaces_config_warning(client, monkeypatch):
+    """If `load_weights()` raises (yaml missing a key for a declared
+    dimension), the endpoint still returns 200 + 0.0 defaults but flags
+    the issue via `config_warning` so the UI can show a banner instead of
+    silently rendering broken sliders."""
+    from src.api.routes import discovery as _routes
+
+    def _broken():
+        raise ValueError(
+            "weights for product=None missing dimensions: ['budget_authority']"
+        )
+
+    monkeypatch.setattr(_routes._scoring, "load_weights", _broken)
+    r = client.get("/discovery/dimensions")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["config_warning"], "config_warning must be populated on bad yaml"
+    assert "missing dimensions" in body["config_warning"]
+    # Sliders still render (UI doesn't 500), all weights at 0.0.
+    assert all(d["default_weight"] == 0.0 for d in body["dimensions"])

@@ -11,6 +11,21 @@
 
 ## P1 — Phase 9 직후 우선 착수 후보
 
+### 23. Discovery dimension snapshot 정책 (B5 전 결정 필요)
+
+- **상태 (2026-05-05)**: B4a 직후 외부 AI 리뷰 (`/blind-ai-review`) 에서 발견된 corner case. 정책 결정 필요.
+- **문제**: Phase 12 B4a 가 `weights.yaml::dimensions` 를 yaml-driven 으로 만들면서, **과거 run 의 candidate.scores** 가 옛 dimension key 셋을 들고 있음. 사용자가 신규 dim 추가 시:
+  - `Candidate._validate_scores` 가 새 dim 키 누락으로 ValueError → recompute 의 `try/except` 가 candidate 단위 skip + warning log (`src/api/runner.py:317-321`). 크래시는 X — **silent partial recompute** 가 결과.
+  - 신규 dim 만 영향 받는 후보가 아니라 **모든 후보가 skip** 됨 (전체 run 이 옛 dim 셋이라). 결과: tier_distribution 이 빈 채 200 응답.
+- **정책 옵션**:
+  1. **run artifact 에 dimension snapshot 저장** (가장 안전). DiscoveryRecord 에 `dimensions_used: list[Dimension]` JSON 필드 추가, recompute 가 snapshot 사용 (현재 yaml 무시). → 구버전 run 도 자기 시점의 dim 으로 안전 재계산.
+  2. **현재 yaml 기준 + missing → 5 채움**. 결정 단순, 구버전 호환, 다만 점수 의미 왜곡 위험.
+  3. **dimension schema version 도입** + run 에 version 저장 + 버전 mismatch 경고 표시.
+  4. **구버전 recompute 거부** — 가장 단순, UI 가 "이 run 은 옛 dimension 으로 만들어짐" 안내 후 read-only.
+- **추천**: 1번 (snapshot). 기존 `discovery_runs` 테이블에 `dimensions_json` 컬럼 추가 + `execute_discovery_run` 이 시작 시점에 `_scoring.load_dimensions()` 결과 직렬화. recompute 는 snapshot 우선, 없으면 현재 yaml fallback.
+- **의존성**: B5 (drag-and-drop tier 이동) 가 recompute 로직과 같은 candidate update 경로 사용. **B5 시작 전 정책 잠금 권장**.
+- **범위 밖**: dimension migration 스크립트 (옛 run 강제로 새 dim 으로 변환) — 일반 사용자 운영 부담 큼, 우선은 read-only / re-discover 권장.
+
 ### 1. 제안서 톤 조정 + 민감 가드
 
 - **왜**: Phase 8 Deloitte 실행에서 집단소송·육아휴직 같은 민감 뉴스를 pain-point 로 직접 인용 → 실제 outbound 자료로는 너무 공격적. 고객사가 꺼리거나 아파할 지점을 그대로 찌르는 이슈 확인.
@@ -60,6 +75,14 @@
 
 - **상태 (2026-05-04)**: **Phase 11+ Cost Explorer 가 흡수.** `/cost` 신규 탭 — KPI 카드 4종 (이번달/지난달/누적/캐시 절감) + 일자별 trend (30/60/90일) + 모델별·런타입별 breakdown + per-unit ($/proposal, $/discovery target) + 월 예산 진행바 + recent runs 테이블 (페이지네이션). RAG AI 요약 비용도 합산 (rag_summaries SQLite). 단가표·월 예산은 폼+YAML escape 패턴으로 같은 페이지에서 편집. 활성 모델 (Sonnet ↔ Haiku 등) 도 헤더 드롭다운 한 번 클릭으로 swap (settings.yaml 정규식 라인 교체로 코멘트 보존). 본 항목은 close.
 - **잔여 후보 (별도 backlog 신규 항목으로 분기 시 등록)**: per-unit 의 모델별 분리 (현재는 모델 혼합 평균), 이상치 감지 (전일 대비 spike 알림), CSV 내보내기, virtual tagging (워크스페이스/산업별 어트리뷰션) — Rich tier 후보.
+
+### 24. weights.yaml mtime-based cache (운영 최적화)
+
+- **상태 (2026-05-05)**: B4a 외부 AI 리뷰 후속. 현재 우선순위 LOW.
+- **왜**: `src.core.scoring.load_dimensions()` / `load_weights()` / `load_tier_rules()` 가 매 호출마다 yaml 디스크 read. 개발 편의 (테스트가 yaml mutate 로 검증) 우선해서 의도적으로 lru_cache 미사용.
+- **언제 필요**: `/discovery/dimensions` 가 page-load 외 빈번히 호출되거나, 대량 recompute 시 yaml read 가 hot path 가 되면.
+- **구현 스케치**: `_loader.load_weights_config` 에 `(path, st_mtime_ns)` 튜플 키 lru_cache. mtime 변하면 cache miss → 재로드. 테스트는 임시 path 라 mtime 키가 자연 분리되어 mutate 동작 그대로 유지.
+- **범위 밖**: admin reload endpoint — 단일 사용자 운영이라 굳이 X.
 
 ### 6. LLM-as-judge 자동 평가 (Phase 8 자동화)
 
