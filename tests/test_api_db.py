@@ -159,3 +159,69 @@ def test_lifespan_initializes_app_db(tmp_path, monkeypatch):
         conn.close()
 
     reset_api_settings_cache()
+
+
+# ── Phase 12 follow-up (B5) — discovery_runs migration ──────────────────
+
+
+def test_b5_migration_renames_product_to_profile_and_adds_snapshot(tmp_path):
+    """Pre-B5 app.db has `product` column; init_db must (a) rename it to
+    `profile` (clean-break — column dropped from new schema) and (b) add
+    the new `weights_snapshot_json` column without touching existing data."""
+    db_path = tmp_path / "app.db"
+    # Build a pre-B5 shape by hand — only the columns relevant to the test.
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            """
+            CREATE TABLE discovery_runs (
+                run_id TEXT PRIMARY KEY,
+                generated_at TEXT NOT NULL,
+                seed_doc_count INTEGER NOT NULL DEFAULT 0,
+                seed_chunk_count INTEGER NOT NULL DEFAULT 0,
+                seed_summary TEXT,
+                product TEXT,
+                region TEXT,
+                lang TEXT,
+                source_yaml_path TEXT,
+                usage_json TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO discovery_runs(run_id, generated_at, product, "
+            "region, lang, created_at) VALUES (?,?,?,?,?,?)",
+            ("legacy-1", "t0", "databricks", "ko", "en", "t0"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Run the live migration path.
+    _db.init_db(db_path)
+
+    with _db.connect(db_path) as conn:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(discovery_runs)").fetchall()}
+        assert "profile" in cols, "rename product → profile must succeed"
+        assert "product" not in cols, "old product column must be gone"
+        assert "weights_snapshot_json" in cols, "new snapshot column missing"
+        # Existing data preserved: legacy 'databricks' lives under `profile`.
+        row = conn.execute(
+            "SELECT profile, weights_snapshot_json FROM discovery_runs WHERE run_id=?",
+            ("legacy-1",),
+        ).fetchone()
+        assert row["profile"] == "databricks"
+        assert row["weights_snapshot_json"] is None  # backfill is NULL
+
+
+def test_b5_migration_idempotent(tmp_path):
+    """Running init_db twice on a B5-shaped DB must be a no-op (no
+    'duplicate column' errors)."""
+    db_path = tmp_path / "app.db"
+    _db.init_db(db_path)
+    _db.init_db(db_path)
+    with _db.connect(db_path) as conn:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(discovery_runs)").fetchall()}
+        assert "profile" in cols
+        assert "weights_snapshot_json" in cols

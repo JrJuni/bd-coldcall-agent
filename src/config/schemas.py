@@ -82,14 +82,20 @@ class IntentTiersConfig(BaseModel):
     intents: list[IntentTierEntry] = Field(default_factory=list)
 
 
-class ProductProfile(BaseModel):
-    """One entry under `config/weights.yaml::products.<key>` — Phase 12.
+class Profile(BaseModel):
+    """One entry under `config/weights.yaml::profiles.<key>` — Phase 12.
 
-    Phase 9.1 stored each product as a flat `dict[str, float]` of partial
-    weight overrides. Phase 12 adds a human-readable `description` so the
-    Discovery form can render an explanatory tooltip next to the dropdown.
+    Phase 9.1 stored each named entry (then called `products`) as a flat
+    `dict[str, float]` of partial weight overrides. Phase 12 adds a
+    human-readable `description` so the Discovery form can render an
+    explanatory tooltip next to the dropdown.
 
-    The pre-validator under `WeightsConfig.products` rewrites legacy flat
+    Phase 12 follow-up (B5): renamed `ProductProfile` → `Profile` and
+    `WeightsConfig.products` → `.profiles` to clarify domain meaning —
+    these are *scoring profiles* (selling angle / target perspective),
+    not product offerings the user sells.
+
+    The pre-validator under `WeightsConfig.profiles` rewrites legacy flat
     dicts into `{weights: <flat>}` so old yamls keep parsing during the
     migration window.
     """
@@ -137,7 +143,7 @@ class Dimension(BaseModel):
 class WeightsConfig(BaseModel):
     """Shape of `config/weights.yaml` — Phase 9.1 scoring engine.
 
-    `default` carries the base weight per dimension. `products[<name>]` is a
+    `default` carries the base weight per dimension. `profiles[<name>]` is a
     partial override — only the dimensions you want to bend need to appear.
     The runtime merges default + override, then auto-normalizes so the
     weighted sum of 0-10 scores stays in 0-10.
@@ -146,22 +152,44 @@ class WeightsConfig(BaseModel):
     field is optional — yamls without it fall through to a hardcoded
     six-dimension fallback in `src.core.scoring._FALLBACK_DIMENSIONS` so
     legacy Phase 9.1 configs keep parsing during the migration.
+
+    Phase 12 follow-up (B5): renamed `products:` → `profiles:`. The pre-
+    validator below also accepts a legacy `products:` top-level key (folds
+    it into `profiles`) so old yamls keep parsing during the migration.
     """
 
     version: int = 1
     dimensions: list[Dimension] = Field(default_factory=list)
     default: dict[str, float] = Field(default_factory=dict)
-    products: dict[str, ProductProfile] = Field(default_factory=dict)
+    profiles: dict[str, Profile] = Field(default_factory=dict)
 
-    @field_validator("products", mode="before")
+    @model_validator(mode="before")
     @classmethod
-    def _coerce_legacy_products(cls, v: Any) -> Any:
+    def _absorb_legacy_products_key(cls, data: Any) -> Any:
+        """Accept the pre-B5 `products:` top-level key transparently.
+
+        If both `products` and `profiles` are present the explicit `profiles`
+        wins. Old yamls with only `products:` get rewritten to `profiles:`
+        so the rest of the validator chain sees the canonical name.
+        """
+        if not isinstance(data, dict):
+            return data
+        if "profiles" in data and data["profiles"] is not None:
+            data.pop("products", None)
+            return data
+        if "products" in data:
+            data["profiles"] = data.pop("products")
+        return data
+
+    @field_validator("profiles", mode="before")
+    @classmethod
+    def _coerce_legacy_profiles(cls, v: Any) -> Any:
         """Accept the pre-Phase-12 flat-dict shape transparently.
 
-        Legacy:    products: {databricks: {data_complexity: 0.25, ...}}
-        Phase 12:  products: {databricks: {description: "...", weights: {...}}}
+        Legacy:    profiles: {databricks: {data_complexity: 0.25, ...}}
+        Phase 12:  profiles: {databricks: {description: "...", weights: {...}}}
 
-        If every value under a product is numeric we treat it as a legacy
+        If every value under a profile is numeric we treat it as a legacy
         weight map and wrap it as `{weights: <orig>}`. Mixed dicts (e.g.
         already in Phase-12 shape with `weights:` key present) pass through
         unchanged.

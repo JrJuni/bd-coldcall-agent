@@ -388,7 +388,7 @@ def discover_targets(
     seed_summary: str | None = None,
     seed_query: str | None = None,  # legacy single-keyword path
     seed_queries: list[str] | None = None,  # Phase 12 multi-keyword path
-    product: str = "databricks",
+    profile: str = "databricks",
     regions: list[str] | None = None,
     ws_slug: str = "default",
     namespace: str = DEFAULT_NAMESPACE,
@@ -397,6 +397,10 @@ def discover_targets(
     top_k: int = 20,
     client: Any | None = None,
     write_artifacts: bool = True,
+    # Phase 12 follow-up (B5) — complete effective weight vector overriding
+    # the profile lookup. Pydantic layer above guarantees it's either None
+    # or a dict containing every active dimension key (no partials).
+    weights_override: dict[str, float] | None = None,
 ) -> DiscoveryResult:
     """Generate a tiered candidate-company list from the RAG index alone.
 
@@ -505,7 +509,22 @@ def discover_targets(
 
     # Score + tier are computed deterministically from yaml — LLM only judged
     # the per-dimension 0-10 scores. Re-running with different weights costs $0.
-    weights = _scoring.load_weights(product)
+    if weights_override is not None:
+        # Caller (Pydantic layer) has already validated complete-snapshot
+        # contract. Normalize once for idempotence — load_weights does
+        # the same so the snapshot is comparable across run/recompute paths.
+        raw = {k: float(v) for k, v in weights_override.items()}
+        total = sum(raw.values())
+        if total <= 0:
+            raise ValueError(
+                f"weights_override sum must be positive, got {total}"
+            )
+        weights = (
+            raw if abs(total - 1.0) <= 1e-3
+            else {k: v / total for k, v in raw.items()}
+        )
+    else:
+        weights = _scoring.load_weights(profile)
     rules = _scoring.load_tier_rules()
     for c in candidates:
         c.final_score = _scoring.calc_final_score(c.scores, weights)
@@ -520,6 +539,7 @@ def discover_targets(
         industry_meta=industry_meta,
         candidates=candidates,
         usage=total_usage,
+        weights_applied=dict(weights),
     )
 
     if write_artifacts:

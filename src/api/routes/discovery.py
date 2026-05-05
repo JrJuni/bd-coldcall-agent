@@ -94,44 +94,71 @@ async def list_discovery_regions() -> dict:
     }
 
 
-# ── Product master (Phase 12) ──────────────────────────────────────────
+# ── Profiles (Phase 12 follow-up — was `products`) ────────────────────
 
 
-_DEFAULT_PRODUCT_DESCRIPTION = (
-    "기본 가중치만 사용 — 제품별 편향 없음. "
+_DEFAULT_PROFILE_DESCRIPTION = (
+    "기본 가중치만 사용 — 셀링 관점별 편향 없음. "
     "산업·언어·RAG 만으로 일반 BD 후보를 도출합니다."
 )
 
 
-@router.get("/discovery/products")
-async def list_discovery_products() -> dict:
-    """Return the product profiles used by the Discovery form's dropdown.
+@router.get("/discovery/profiles")
+async def list_discovery_profiles() -> dict:
+    """Return the scoring profiles used by the Discovery form's dropdown.
 
-    Sourced from `config/weights.yaml::products`. Always prepends an
-    implicit `default` entry that maps to "no product override" so a
+    Sourced from `config/weights.yaml::profiles`. Always prepends an
+    implicit `default` entry that maps to "no profile override" so a
     fresh user sees a sensible base option even before populating the
     yaml. Each entry exposes `key`, `label` (currently equal to `key`),
-    `description`, and `is_default`.
+    `description`, `is_default`, and `effective_weights` — the latter
+    derived server-side from `_scoring.load_weights(key)` so the UI
+    never has to merge default + override itself (single source of truth).
+
+    On malformed yaml (`load_weights` raises ValueError) the endpoint
+    still returns 200 with `effective_weights = {}` and surfaces the
+    error in the response-level `config_warning` field.
     """
     cfg = _config_loader.load_weights_config()
-    products = [
+
+    def _effective(profile_key: str | None) -> tuple[dict[str, float], str | None]:
+        try:
+            return _scoring.load_weights(profile_key), None
+        except ValueError as exc:
+            msg = (
+                f"weights.yaml is malformed for profile={profile_key!r}: {exc}"
+            )
+            _LOGGER.warning("/discovery/profiles: %s", msg)
+            return {}, msg
+
+    config_warning: str | None = None
+    default_weights, warn = _effective(None)
+    if warn:
+        config_warning = warn
+
+    profiles = [
         {
             "key": "default",
             "label": "default",
-            "description": _DEFAULT_PRODUCT_DESCRIPTION,
+            "description": _DEFAULT_PROFILE_DESCRIPTION,
             "is_default": True,
+            "effective_weights": default_weights,
         }
     ]
-    for key, profile in cfg.products.items():
-        products.append(
+    for key, profile in cfg.profiles.items():
+        eff, warn = _effective(key)
+        if warn and config_warning is None:
+            config_warning = warn
+        profiles.append(
             {
                 "key": key,
                 "label": key,
                 "description": (profile.description or "").strip(),
                 "is_default": False,
+                "effective_weights": eff,
             }
         )
-    return {"products": products}
+    return {"profiles": profiles, "config_warning": config_warning}
 
 
 # ── Dimensions (Phase 12 B4a) ──────────────────────────────────────────
@@ -195,7 +222,7 @@ async def create_discovery_run(
         run_id=run_id,
         generated_at=datetime.now(timezone.utc).isoformat(),
         namespace=payload.namespace,
-        product=payload.product,
+        profile=payload.profile,
         regions=payload.regions,
         lang=payload.lang,
         seed_summary=payload.seed_summary,
@@ -208,7 +235,7 @@ async def create_discovery_run(
         run_id=run_id,
         namespace=payload.namespace,
         regions=list(payload.regions),
-        product=payload.product,
+        profile=payload.profile,
         seed_summary=payload.seed_summary,
         seed_queries=list(payload.seed_queries),
         top_k=payload.top_k,
@@ -216,6 +243,11 @@ async def create_discovery_run(
         n_per_industry=payload.n_per_industry,
         lang=payload.lang,
         include_sector_leaders=payload.include_sector_leaders,
+        weights_override=(
+            dict(payload.weights_override)
+            if payload.weights_override is not None
+            else None
+        ),
     )
 
     return DiscoveryRunSummary(**_attach_distribution(record))
@@ -376,7 +408,7 @@ async def recompute_discovery(
         result = _runner.execute_discovery_recompute(
             run_id=run_id,
             weights_override=payload.weights,
-            product=payload.product,
+            profile=payload.profile,
         )
     except KeyError:
         raise HTTPException(status_code=404, detail=f"run {run_id!r} not found")

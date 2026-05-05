@@ -141,10 +141,10 @@ def discover_cmd(
         "--seed-query",
         help="RAG retrieval query that picks the chunks Sonnet sees.",
     ),
-    product: str = typer.Option(
+    profile: str = typer.Option(
         "databricks",
-        "--product",
-        help="Weight profile key from config/weights.yaml::products. Unknown product falls back to default weights.",
+        "--profile",
+        help="Scoring profile key from config/weights.yaml::profiles. Unknown profile falls back to default weights.",
     ),
     region: str = typer.Option(
         "any",
@@ -186,7 +186,7 @@ def discover_cmd(
         n_per_industry=n_per_industry,
         seed_summary=seed_summary,
         seed_query=seed_query,
-        product=product,
+        profile=profile,
         region=region,  # type: ignore[arg-type]
         include_sector_leaders=sector_leaders,
         output_root=output_root,

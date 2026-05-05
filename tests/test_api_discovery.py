@@ -29,7 +29,7 @@ from src.api.config import reset_api_settings_cache
 _BASE_BODY = {
     "namespace": "default",
     "regions": [],
-    "product": "databricks",
+    "profile": "databricks",
     "lang": "en",
     "n_industries": 2,
     "n_per_industry": 2,
@@ -71,7 +71,7 @@ def _fake_run_factory(*, status: str = "completed"):
         run_id: str,
         namespace: str,
         regions: list[str],
-        product: str,
+        profile: str,
         seed_summary,
         seed_queries,
         top_k,
@@ -79,6 +79,7 @@ def _fake_run_factory(*, status: str = "completed"):
         n_per_industry: int,
         lang: str,
         include_sector_leaders: bool,
+        weights_override: dict[str, float] | None = None,
         store=None,
     ):
         s = store or _store.get_discovery_store()
@@ -436,3 +437,172 @@ def test_promote_candidate_creates_target(client, monkeypatch):
 def test_promote_candidate_404(client):
     r = client.post("/discovery/candidates/9999/promote")
     assert r.status_code == 404
+
+
+# ── Phase 12 follow-up (B5) — extra="forbid" + weights_override contract ──
+
+
+def test_create_run_rejects_legacy_product_field(client):
+    """Old `product` field must be a 422, not a silent drop. Without
+    `extra="forbid"` Pydantic would default `profile` to "databricks"
+    and the user would think the rename succeeded silently."""
+    body = dict(_BASE_BODY)
+    body.pop("profile")
+    body["product"] = "databricks"
+    r = client.post("/discovery/runs", json=body)
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert any(
+        e.get("type") == "extra_forbidden" and e.get("loc")[-1] == "product"
+        for e in detail
+    ), detail
+
+
+def test_create_run_rejects_unknown_extra_field(client):
+    """Any unknown key (typos, forward-compat experiments) must 422."""
+    body = dict(_BASE_BODY)
+    body["totally_unknown"] = "x"
+    r = client.post("/discovery/runs", json=body)
+    assert r.status_code == 422, r.text
+
+
+def test_create_run_rejects_partial_weights_override(client):
+    """Complete-snapshot contract — partial dicts get rejected rather
+    than silently zero-filling missing dimensions."""
+    body = dict(_BASE_BODY)
+    body["weights_override"] = {"pain_severity": 0.5}  # missing 5 dims
+    r = client.post("/discovery/runs", json=body)
+    assert r.status_code == 422, r.text
+    detail_str = str(r.json())
+    assert "missing" in detail_str.lower()
+
+
+def test_create_run_rejects_unknown_dimension_in_override(client):
+    """Override key not in active dimension set → 422."""
+    body = dict(_BASE_BODY)
+    body["weights_override"] = {
+        "pain_severity": 0.16,
+        "data_complexity": 0.16,
+        "governance_need": 0.16,
+        "ai_maturity": 0.16,
+        "buying_trigger": 0.16,
+        "displacement_ease": 0.16,
+        "made_up_dim": 0.04,  # unknown
+    }
+    r = client.post("/discovery/runs", json=body)
+    assert r.status_code == 422, r.text
+
+
+def test_create_run_rejects_negative_weight(client):
+    body = dict(_BASE_BODY)
+    body["weights_override"] = {
+        "pain_severity": -0.1,
+        "data_complexity": 0.22,
+        "governance_need": 0.22,
+        "ai_maturity": 0.22,
+        "buying_trigger": 0.22,
+        "displacement_ease": 0.22,
+    }
+    r = client.post("/discovery/runs", json=body)
+    assert r.status_code == 422, r.text
+
+
+def test_recompute_rejects_partial_weights(client, monkeypatch):
+    """Recompute body uses the same complete-snapshot contract."""
+    monkeypatch.setattr(
+        "src.api.runner.execute_discovery_run", _fake_run_factory()
+    )
+    r1 = client.post("/discovery/runs", json=_BASE_BODY)
+    assert r1.status_code == 202
+    run_id = r1.json()["run_id"]
+    r2 = client.post(
+        f"/discovery/runs/{run_id}/recompute",
+        json={"weights": {"pain_severity": 1.0}},
+    )
+    assert r2.status_code == 422, r2.text
+
+
+def test_run_persists_weights_snapshot(client, monkeypatch):
+    """First-run path stores normalized weights so reopening the run shows
+    `weights_applied` in the summary (past-run reproducibility)."""
+    # Use the real runner so the snapshot save fires; but inject a
+    # discover_targets fake that returns a deterministic result.
+    from datetime import datetime, timezone
+    from src.core.discover_types import Candidate, DiscoveryResult
+
+    def _fake_discover(**kwargs):
+        weights_override = kwargs.get("weights_override")
+        # If override given, it's already a complete snapshot (Pydantic
+        # validated). Echo it back as weights_applied.
+        applied = (
+            dict(weights_override) if weights_override is not None
+            else {
+                "pain_severity": 0.25,
+                "data_complexity": 0.20,
+                "governance_need": 0.15,
+                "ai_maturity": 0.15,
+                "buying_trigger": 0.15,
+                "displacement_ease": 0.10,
+            }
+        )
+        return DiscoveryResult(
+            generated_at=datetime.now(timezone.utc),
+            seed_doc_count=1,
+            seed_chunk_count=1,
+            seed_summary="x",
+            industry_meta={},
+            candidates=[
+                Candidate(
+                    name="Acme",
+                    industry="Tech",
+                    scores={
+                        "pain_severity": 8,
+                        "data_complexity": 7,
+                        "governance_need": 6,
+                        "ai_maturity": 7,
+                        "buying_trigger": 6,
+                        "displacement_ease": 5,
+                    },
+                    rationale="r",
+                )
+            ],
+            usage={},
+            weights_applied=applied,
+        )
+
+    monkeypatch.setattr("src.core.discover.discover_targets", _fake_discover)
+    body = dict(_BASE_BODY)
+    body["weights_override"] = {
+        "pain_severity": 0.30,
+        "data_complexity": 0.20,
+        "governance_need": 0.15,
+        "ai_maturity": 0.15,
+        "buying_trigger": 0.10,
+        "displacement_ease": 0.10,
+    }
+    r = client.post("/discovery/runs", json=body)
+    assert r.status_code == 202, r.text
+    run_id = r.json()["run_id"]
+
+    # Re-fetch — weights_applied should be populated on the summary.
+    detail = client.get(f"/discovery/runs/{run_id}").json()
+    assert detail["weights_applied"] is not None
+    # Sum normalizes to ~1.0 (within tolerance — input already summed to 1.0).
+    total = sum(float(v) for v in detail["weights_applied"].values())
+    assert abs(total - 1.0) < 1e-6
+    assert detail["weights_applied"]["pain_severity"] == pytest.approx(0.30)
+
+
+def test_old_run_weights_applied_is_null(client, monkeypatch):
+    """A run created before the snapshot column existed (or that the
+    runner failed to update) surfaces `weights_applied=None`. Faked here
+    by skipping the snapshot save — UI uses None to show 'old format'."""
+    monkeypatch.setattr(
+        "src.api.runner.execute_discovery_run", _fake_run_factory()
+    )
+    r = client.post("/discovery/runs", json=_BASE_BODY)
+    assert r.status_code == 202
+    run_id = r.json()["run_id"]
+    detail = client.get(f"/discovery/runs/{run_id}").json()
+    # _fake_run_factory doesn't call update_weights_snapshot.
+    assert detail["weights_applied"] is None

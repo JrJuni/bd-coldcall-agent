@@ -122,6 +122,11 @@ class DiscoveryResult:
     industry_meta: dict[str, str]
     candidates: list[Candidate]
     usage: dict[str, int] = field(default_factory=dict)
+    # Phase 12 follow-up (B5) — normalized weight vector actually used for
+    # final scoring (after override/profile resolution + normalization).
+    # Persisted by the runner via `update_weights_snapshot` so past runs
+    # stay reproducible even after yaml edits.
+    weights_applied: dict[str, float] = field(default_factory=dict)
 
 
 def parse_discovery(

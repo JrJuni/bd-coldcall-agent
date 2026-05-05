@@ -1,7 +1,7 @@
 """Phase 9.1 — scoring engine tests.
 
 Cover the deterministic decision layer separately from the LLM call:
-- weight load + product override merge + auto-normalize
+- weight load + profile override merge + auto-normalize
 - tier rules: descending sort, missing tier rejection
 - final_score weighted sum with epsilon tolerance
 - decide_tier boundary cases (8.0 exactly, 4.99 → C clamp)
@@ -53,7 +53,7 @@ def _patch_yaml(monkeypatch, tmp_path, *, weights_body: str | None = None, rules
 # ---- load_weights --------------------------------------------------------
 
 
-def test_load_weights_default_only_no_product(monkeypatch, tmp_path):
+def test_load_weights_default_only_no_profile(monkeypatch, tmp_path):
     _patch_yaml(monkeypatch, tmp_path, weights_body="""\
         version: 1
         default:
@@ -63,7 +63,7 @@ def test_load_weights_default_only_no_product(monkeypatch, tmp_path):
           ai_maturity: 0.15
           buying_trigger: 0.15
           displacement_ease: 0.10
-        products: {}
+        profiles: {}
     """)
     w = load_weights()
     assert sum(w.values()) == pytest.approx(1.0, abs=1e-9)
@@ -71,7 +71,7 @@ def test_load_weights_default_only_no_product(monkeypatch, tmp_path):
     assert w["pain_severity"] == 0.25
 
 
-def test_load_weights_product_override_merges_and_normalizes(monkeypatch, tmp_path):
+def test_load_weights_profile_override_merges_and_normalizes(monkeypatch, tmp_path):
     _patch_yaml(monkeypatch, tmp_path, weights_body="""\
         version: 1
         default:
@@ -81,7 +81,7 @@ def test_load_weights_product_override_merges_and_normalizes(monkeypatch, tmp_pa
           ai_maturity: 0.15
           buying_trigger: 0.15
           displacement_ease: 0.10
-        products:
+        profiles:
           databricks:
             data_complexity: 0.25
             governance_need: 0.20
@@ -100,7 +100,7 @@ def test_load_weights_product_override_merges_and_normalizes(monkeypatch, tmp_pa
     assert db_ratio > default_ratio  # override pulled data_complexity up
 
 
-def test_load_weights_unknown_product_falls_back_to_default(monkeypatch, tmp_path):
+def test_load_weights_unknown_profile_falls_back_to_default(monkeypatch, tmp_path):
     _patch_yaml(monkeypatch, tmp_path, weights_body="""\
         version: 1
         default:
@@ -110,7 +110,7 @@ def test_load_weights_unknown_product_falls_back_to_default(monkeypatch, tmp_pat
           ai_maturity: 0.15
           buying_trigger: 0.15
           displacement_ease: 0.10
-        products:
+        profiles:
           databricks:
             data_complexity: 0.30
     """)
@@ -125,7 +125,7 @@ def test_load_weights_missing_dimension_raises(monkeypatch, tmp_path):
         default:
           pain_severity: 0.5
           data_complexity: 0.5
-        products: {}
+        profiles: {}
     """)
     with pytest.raises(ValueError, match="missing dimensions"):
         load_weights()
@@ -141,7 +141,7 @@ def test_load_weights_zero_sum_raises(monkeypatch, tmp_path):
           ai_maturity: 0.0
           buying_trigger: 0.0
           displacement_ease: 0.0
-        products: {}
+        profiles: {}
     """)
     with pytest.raises(ValueError, match="must be positive"):
         load_weights()
@@ -242,7 +242,7 @@ def test_load_dimensions_from_yaml(monkeypatch, tmp_path):
         default:
           pain_severity: 0.6
           budget_authority: 0.4
-        products: {}
+        profiles: {}
     """)
     dims = load_dimensions()
     assert [d.key for d in dims] == ["pain_severity", "budget_authority"]
@@ -261,7 +261,7 @@ def test_load_dimensions_fallback_when_block_absent(monkeypatch, tmp_path):
           ai_maturity: 0.15
           buying_trigger: 0.15
           displacement_ease: 0.10
-        products: {}
+        profiles: {}
     """)
     dims = load_dimensions()
     keys = [d.key for d in dims]
@@ -286,7 +286,7 @@ def test_load_weights_with_custom_dimension(monkeypatch, tmp_path):
         default:
           pain_severity: 0.5
           budget_authority: 0.5
-        products:
+        profiles:
           enterprise:
             description: Enterprise tilt
             weights:
@@ -315,7 +315,7 @@ def test_load_weights_missing_custom_dimension_raises(monkeypatch, tmp_path):
             description: ""
         default:
           pain_severity: 1.0
-        products: {}
+        profiles: {}
     """)
     with pytest.raises(ValueError, match="missing dimensions.*budget_authority"):
         load_weights()
@@ -335,7 +335,7 @@ def test_calc_final_score_uses_yaml_dimensions(monkeypatch, tmp_path):
         default:
           pain_severity: 0.5
           budget_authority: 0.5
-        products: {}
+        profiles: {}
     """)
     weights = {"pain_severity": 0.5, "budget_authority": 0.5}
     scores = {"pain_severity": 8, "budget_authority": 6}
@@ -354,7 +354,7 @@ def test_dimensions_yaml_rejects_duplicate_keys(monkeypatch, tmp_path):
             description: ""
         default:
           pain_severity: 1.0
-        products: {}
+        profiles: {}
     """)
     with pytest.raises(ValueError, match="duplicate dimension key"):
         load_dimensions()

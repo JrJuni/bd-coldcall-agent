@@ -134,7 +134,7 @@ def _gather_records() -> tuple[list[dict[str, Any]], str]:
                     "usage": usage or {},
                     "label": (
                         f"{run.get('namespace') or 'default'} · "
-                        f"{run.get('product') or ''}"
+                        f"{run.get('profile') or ''}"
                     ),
                     "status": run.get("status") or "queued",
                     "candidate_count": int(run.get("candidate_count") or 0),

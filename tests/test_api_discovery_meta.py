@@ -2,7 +2,8 @@
 
 Currently covers:
   - GET /discovery/regions — country master sourced from `config/regions.yaml`
-  - GET /discovery/products — product profiles sourced from `config/weights.yaml`
+  - GET /discovery/profiles — scoring profiles from `config/weights.yaml`
+  - GET /discovery/dimensions — yaml-driven scoring dimensions
 """
 from __future__ import annotations
 
@@ -65,36 +66,66 @@ def test_list_regions_contains_anchor_countries(client):
         assert required in flat, f"regions.yaml is missing anchor country {required!r}"
 
 
-def test_list_products_returns_default_first(client):
-    """The /discovery/products endpoint always prepends an implicit
+def test_list_profiles_returns_default_first(client):
+    """The /discovery/profiles endpoint always prepends an implicit
     `default` entry so a fresh user sees a no-override option even before
-    config/weights.yaml has any product profiles."""
-    r = client.get("/discovery/products")
+    config/weights.yaml has any named profiles."""
+    r = client.get("/discovery/profiles")
     assert r.status_code == 200, r.text
     body = r.json()
-    products = body["products"]
-    assert isinstance(products, list)
-    assert len(products) >= 1
-    first = products[0]
+    profiles = body["profiles"]
+    assert isinstance(profiles, list)
+    assert len(profiles) >= 1
+    first = profiles[0]
     assert first["key"] == "default"
     assert first["is_default"] is True
     assert isinstance(first["description"], str) and first["description"]
+    assert "effective_weights" in first
+    assert isinstance(first["effective_weights"], dict)
+    # Default profile's effective weights must sum to ~1.0 (normalized yaml).
+    total = sum(float(v) for v in first["effective_weights"].values())
+    assert abs(total - 1.0) < 0.02
 
 
-def test_list_products_includes_yaml_entries(client):
-    """Every key under `weights.yaml::products` should round-trip through
-    /discovery/products with its description preserved."""
-    r = client.get("/discovery/products")
+def test_list_profiles_includes_yaml_entries(client):
+    """Every key under `weights.yaml::profiles` should round-trip through
+    /discovery/profiles with its description and effective_weights preserved."""
+    r = client.get("/discovery/profiles")
     body = r.json()
-    keys = {p["key"] for p in body["products"]}
-    # Phase 12 ships at least one named product (databricks).
+    keys = {p["key"] for p in body["profiles"]}
+    # Phase 12 ships at least one named profile (databricks).
     assert "databricks" in keys
-    for p in body["products"]:
+    assert body.get("config_warning") is None
+    for p in body["profiles"]:
         assert "key" in p and "label" in p
         assert "description" in p and isinstance(p["description"], str)
         assert "is_default" in p
+        assert "effective_weights" in p
+        assert isinstance(p["effective_weights"], dict)
         if p["key"] != "default":
             assert p["is_default"] is False
+            # Each named profile's effective weights also normalize to 1.0.
+            total = sum(float(v) for v in p["effective_weights"].values())
+            assert abs(total - 1.0) < 0.02
+
+
+def test_list_profiles_surfaces_config_warning(client, monkeypatch):
+    """If `load_weights(profile)` raises for *any* profile entry, the
+    endpoint still returns 200 with `effective_weights = {}` for that
+    entry plus a populated `config_warning` so the UI can warn instead of
+    silently shipping broken effective weights."""
+    from src.api.routes import discovery as _routes
+
+    def _broken(profile=None):
+        raise ValueError("weights.yaml is malformed: missing dimension X")
+
+    monkeypatch.setattr(_routes._scoring, "load_weights", _broken)
+    r = client.get("/discovery/profiles")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["config_warning"], "config_warning must be populated"
+    for p in body["profiles"]:
+        assert p["effective_weights"] == {}
 
 
 # ── /discovery/dimensions (Phase 12 B4a) ───────────────────────────────
@@ -142,7 +173,7 @@ def test_list_dimensions_surfaces_config_warning(client, monkeypatch):
 
     def _broken():
         raise ValueError(
-            "weights for product=None missing dimensions: ['budget_authority']"
+            "weights for profile=None missing dimensions: ['budget_authority']"
         )
 
     monkeypatch.setattr(_routes._scoring, "load_weights", _broken)

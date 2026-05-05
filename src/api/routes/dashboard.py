@@ -81,7 +81,7 @@ def _recent_discovery() -> DashboardRecentDiscovery | None:
     return DashboardRecentDiscovery(
         run_id=latest["run_id"],
         namespace=latest.get("namespace") or DEFAULT_NAMESPACE,
-        product=latest.get("product") or "",
+        profile=latest.get("profile") or "",
         status=latest.get("status") or "queued",
         candidate_count=len(candidates),
         tier_distribution=tier_dist,

@@ -36,7 +36,7 @@ def isolated_config(monkeypatch, tmp_path):
         "default:\n"
         "  pain_severity: 0.5\n"
         "  data_complexity: 0.5\n"
-        "products: {}\n"
+        "profiles: {}\n"
     )
     (cfg / "weights.yaml").write_text(weights, encoding="utf-8")
     tier_rules = (

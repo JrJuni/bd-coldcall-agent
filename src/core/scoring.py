@@ -123,12 +123,12 @@ def __getattr__(name: str):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-def load_weights(product: str | None = None) -> dict[str, float]:
-    """Resolve effective weight vector for `product`.
+def load_weights(profile: str | None = None) -> dict[str, float]:
+    """Resolve effective weight vector for `profile`.
 
     Steps:
       1. Load default vector from yaml (must list every dimension key).
-      2. If product != None, partial-override per-product entries.
+      2. If profile != None, partial-override per-profile entries.
       3. Validate every dimension present (raise ValueError on miss).
       4. If sum != 1.0 (tol 0.01), warn + auto-normalize so final_score stays 0-10.
 
@@ -142,22 +142,22 @@ def load_weights(product: str | None = None) -> dict[str, float]:
     )
 
     weights: dict[str, float] = dict(cfg.default)
-    if product is not None:
-        profile = cfg.products.get(product)
-        if profile is None:
+    if profile is not None:
+        profile_cfg = cfg.profiles.get(profile)
+        if profile_cfg is None:
             _LOGGER.warning(
-                "weights: product %r not in products map (have: %s) — using default only",
-                product,
-                sorted(cfg.products.keys()),
+                "weights: profile %r not in profiles map (have: %s) — using default only",
+                profile,
+                sorted(cfg.profiles.keys()),
             )
         else:
-            for k, v in profile.weights.items():
+            for k, v in profile_cfg.weights.items():
                 weights[k] = float(v)
 
     missing = [d for d in dim_keys if d not in weights]
     if missing:
         raise ValueError(
-            f"weights for product={product!r} missing dimensions: {missing}. "
+            f"weights for profile={profile!r} missing dimensions: {missing}. "
             f"Required: {list(dim_keys)}"
         )
     extra = [k for k in weights if k not in dim_keys]
@@ -175,8 +175,8 @@ def load_weights(product: str | None = None) -> dict[str, float]:
         raise ValueError(f"weight sum must be positive, got {total}")
     if abs(total - 1.0) > 0.01:
         _LOGGER.warning(
-            "weights for product=%r sum to %.4f != 1.0 — auto-normalizing",
-            product,
+            "weights for profile=%r sum to %.4f != 1.0 — auto-normalizing",
+            profile,
             total,
         )
         weights = {k: v / total for k, v in weights.items()}

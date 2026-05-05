@@ -630,7 +630,7 @@ def test_dimensions_block_with_custom_dim(patched_rag, tmp_path: Path, monkeypat
     # downstream doesn't blow up.
     monkeypatch.setattr(
         _scoring, "load_weights",
-        lambda product=None: {"pain_severity": 0.5, "budget_authority": 0.5},
+        lambda profile=None: {"pain_severity": 0.5, "budget_authority": 0.5},
     )
     monkeypatch.setattr(
         _scoring, "load_tier_rules",

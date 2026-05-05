@@ -155,7 +155,7 @@ def execute_discovery_run(
     run_id: str,
     namespace: str,
     regions: list[str],
-    product: str,
+    profile: str,
     seed_summary: str | None,
     seed_queries: list[str] | None,
     top_k: int | None,
@@ -163,6 +163,7 @@ def execute_discovery_run(
     n_per_industry: int,
     lang: str,
     include_sector_leaders: bool,
+    weights_override: dict[str, float] | None = None,
     store: DiscoveryStore | None = None,
 ) -> None:
     """Drive `discover_targets()` and persist the result into SQLite.
@@ -194,7 +195,7 @@ def execute_discovery_run(
         {
             "run_id": run_id,
             "namespace": namespace,
-            "product": product,
+            "profile": profile,
             "regions": list(regions),
         },
     )
@@ -205,7 +206,7 @@ def execute_discovery_run(
             n_industries=n_industries,
             n_per_industry=n_per_industry,
             seed_summary=seed_summary,
-            product=product,
+            profile=profile,
             regions=list(regions),
             namespace=namespace,
             include_sector_leaders=include_sector_leaders,
@@ -215,6 +216,8 @@ def execute_discovery_run(
             kwargs["seed_queries"] = list(seed_queries)
         if top_k is not None:
             kwargs["top_k"] = top_k
+        if weights_override is not None:
+            kwargs["weights_override"] = dict(weights_override)
 
         result = _discover.discover_targets(**kwargs)
 
@@ -231,6 +234,9 @@ def execute_discovery_run(
             for c in result.candidates
         ]
         store.insert_candidates(run_id, candidates_payload)
+
+        if result.weights_applied:
+            store.update_weights_snapshot(run_id, dict(result.weights_applied))
 
         store.update_run(
             run_id,
@@ -277,7 +283,7 @@ def execute_discovery_recompute(
     *,
     run_id: str,
     weights_override: dict[str, float] | None = None,
-    product: str | None = None,
+    profile: str | None = None,
     store: DiscoveryStore | None = None,
 ) -> dict[str, Any]:
     """Re-score every candidate in `run_id` with new weights.
@@ -288,10 +294,17 @@ def execute_discovery_recompute(
 
     Resolution order for the weight vector:
       1. `weights_override` (UI slider state) — used as-is, normalized
-         only if its sum drifts from 1.0.
-      2. `product` key (if no override) → `load_weights(product)` from
-         `config/weights.yaml::products.<name>`.
-      3. The run's stored `product` field (fallback) → same lookup.
+         only if its sum drifts from 1.0. Pydantic layer above guarantees
+         this is a complete snapshot (every active dimension key) when
+         non-None.
+      2. `profile` key (if no override) → `load_weights(profile)` from
+         `config/weights.yaml::profiles.<name>`.
+      3. The run's stored `profile` field (fallback) → same lookup.
+
+    Phase 12 follow-up (B5): when this entry-point is used outside the API
+    layer (tests, CLI), it skips Pydantic validation, so we apply the same
+    complete-snapshot rules locally — partial keys raise ValueError
+    instead of silently zero-filling.
     """
     from src.core import scoring as _scoring
 
@@ -301,10 +314,25 @@ def execute_discovery_recompute(
         raise KeyError(f"run_id {run_id!r} not found")
 
     if weights_override is not None:
+        # Defensive validation — API layer already enforced this, but the
+        # function is also reachable from tests / CLI without going through
+        # Pydantic. Reject partial / unknown keys here too.
+        active_dims = {d.key for d in _scoring.load_dimensions()}
+        override_keys = set(weights_override.keys())
+        missing = active_dims - override_keys
+        unknown = override_keys - active_dims
+        if missing or unknown:
+            raise ValueError(
+                f"weights_override must include exactly the active dimensions; "
+                f"missing={sorted(missing)}, unknown={sorted(unknown)}"
+            )
+        for k, v in weights_override.items():
+            if float(v) < 0:
+                raise ValueError(f"weights_override[{k!r}] must be ≥ 0, got {v}")
         weights = _normalize_weights(weights_override)
     else:
-        product_key = product if product is not None else run.get("product") or None
-        weights = _scoring.load_weights(product_key)
+        profile_key = profile if profile is not None else run.get("profile") or None
+        weights = _scoring.load_weights(profile_key)
 
     rules = _scoring.load_tier_rules()
     candidates = store.list_candidates(run_id)
@@ -324,6 +352,9 @@ def execute_discovery_recompute(
         tier_dist[tier] = tier_dist.get(tier, 0) + 1
 
     store.bulk_update_tiers(updates)
+    # Phase 12 follow-up (B5) — recompute also persists the applied weights
+    # so reopening the run shows the latest tier interpretation.
+    store.update_weights_snapshot(run_id, dict(weights))
     refreshed = store.list_candidates(run_id)
     return {
         "candidates": refreshed,

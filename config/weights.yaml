@@ -3,14 +3,14 @@
 # Sonnet emits 0-10 scores per dimension; the runtime computes
 # final_score = sum(score[k] * weight[k]) and decides tier via tier_rules.yaml.
 #
-# Layer 1: `default` — applied to every product unless overridden.
-# Layer 2: `products.<name>.weights` — partial override. Dimensions not listed
+# Layer 1: `default` — applied to every profile unless overridden.
+# Layer 2: `profiles.<name>.weights` — partial override. Dimensions not listed
 #          inherit from `default`. The runtime auto-normalizes the merged
 #          weight vector so the absolute values here can drift from 1.0;
 #          relative ratios are what matters.
 #
-# Phase 12: each product entry now also carries a `description` shown as a
-# tooltip in the Discovery form's product dropdown. Legacy flat-dict yamls
+# Phase 12: each profile entry carries a `description` shown as a
+# tooltip in the Discovery form's profile dropdown. Legacy flat-dict yamls
 # (no `weights:` key) still parse — pydantic wraps them transparently.
 #
 # Phase 12 (B4a): scoring dimensions themselves are yaml-driven. The
@@ -20,9 +20,13 @@
 # stay snake_case alnum/underscore. Removing a dimension makes any past run's
 # scores ignore that key during recompute (graceful, no crash).
 #
+# Phase 12 follow-up (B5): renamed `products:` → `profiles:` to clarify the
+# domain meaning — these are *named scoring profiles* (selling angle / target
+# perspective), not product offerings the user sells.
+#
 # Editing notes:
-#   - Higher weight = dimension matters more for THIS product.
-#   - Add a new product by adding a new key under `products` with a
+#   - Higher weight = dimension matters more for THIS profile.
+#   - Add a new profile by adding a new key under `profiles` with a
 #     `description` and a `weights` map listing only the dimensions you
 #     want to bend; everything else uses `default`.
 
@@ -64,7 +68,7 @@ default:
   buying_trigger: 0.15        # 최근 투자, 조직개편, 제품출시, 비용절감 압박 등 why now
   displacement_ease: 0.10     # 경쟁 솔루션/내재화 장벽을 뚫기 쉬운가
 
-products:
+profiles:
   databricks:
     description: >
       Databricks / Lakehouse 플랫폼 — data complexity + governance 가중.

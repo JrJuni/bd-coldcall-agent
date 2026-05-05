@@ -9,7 +9,13 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 
 RunState = Literal["queued", "running", "failed", "completed"]
@@ -370,12 +376,18 @@ def _normalize_seed_queries(items: list[Any]) -> list[str]:
 
 
 class DiscoveryRunCreate(BaseModel):
+    # Phase 12 follow-up (B5) — strict body validation. Old `product` key,
+    # typos, or any forward-compat experiments must surface as 422 instead
+    # of being silently dropped (which would default `profile` to
+    # "databricks" and cause a confusing scoring run).
+    model_config = ConfigDict(extra="forbid")
+
     namespace: str = Field(default="default", min_length=1, max_length=80)
     # Phase 12 — list of ISO 3166-1 alpha-2 codes (or "global"). Empty list
     # / None means "no region filter". Legacy `region` key in JSON is
     # accepted via a model_validator and folded into this field.
     regions: list[str] = Field(default_factory=list)
-    product: str = Field(default="databricks", min_length=1, max_length=80)
+    profile: str = Field(default="databricks", min_length=1, max_length=80)
     seed_summary: str | None = None
     # Phase 12 — list of RAG retrieve queries. Empty list / None → core
     # discover_targets default. Legacy `seed_query: str` JSON key is
@@ -386,6 +398,11 @@ class DiscoveryRunCreate(BaseModel):
     n_per_industry: int = Field(default=5, ge=1, le=20)
     lang: Literal["en", "ko"] = "en"
     include_sector_leaders: bool = True
+    # Phase 12 follow-up (B5) — complete effective weight snapshot. Either
+    # null (server falls back to load_weights(profile)) or a dict
+    # containing every active dimension key. The model_validator below
+    # enforces the complete-snapshot rule when present.
+    weights_override: dict[str, float] | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -458,13 +475,62 @@ class DiscoveryRunCreate(BaseModel):
             )
         return _normalize_seed_queries(v)
 
+    @model_validator(mode="after")
+    def _validate_weights_override(self) -> "DiscoveryRunCreate":
+        """Phase 12 follow-up (B5) — complete-snapshot contract.
+
+        `weights_override` is either None (use profile lookup) or a dict
+        containing every active dimension key. Partial dicts are rejected
+        rather than silently zero-filled.
+        """
+        if self.weights_override is None:
+            return self
+        # Lazy-import keeps the schema module free of scoring/yaml deps at
+        # import time (matters for test fixtures that mock the loader).
+        from src.core import scoring as _scoring
+
+        active = {d.key for d in _scoring.load_dimensions()}
+        keys = set(self.weights_override.keys())
+        missing = active - keys
+        unknown = keys - active
+        if missing or unknown:
+            raise ValueError(
+                f"weights_override must include exactly the active dimensions "
+                f"(missing={sorted(missing)}, unknown={sorted(unknown)})"
+            )
+        for k, v in self.weights_override.items():
+            try:
+                fv = float(v)
+            except (TypeError, ValueError) as e:
+                raise ValueError(
+                    f"weights_override[{k!r}] must be numeric, got {v!r}"
+                ) from e
+            if fv < 0:
+                raise ValueError(
+                    f"weights_override[{k!r}] must be ≥ 0, got {fv}"
+                )
+        total = sum(float(v) for v in self.weights_override.values())
+        if total <= 0:
+            raise ValueError(
+                f"weights_override sum must be positive, got {total}"
+            )
+        return self
+
 
 class DiscoveryRunSummary(BaseModel):
+    # NOTE: response model deliberately *doesn't* use extra="forbid" — the
+    # DiscoveryStore row dict carries internal columns (source_yaml_path,
+    # candidate counts, etc.) that aren't part of the wire contract.
+    # Pydantic's default `ignore` lets us instantiate from the dict without
+    # filtering. Strictness on the *request* side (DiscoveryRunCreate /
+    # DiscoveryRecomputeRequest) is what guards against silent drops of
+    # mistyped client fields.
+
     run_id: str
     generated_at: str
     status: DiscoveryStatus
     namespace: str
-    product: str
+    profile: str
     # Phase 12 — list of ISO alpha-2 codes; empty = no filter applied.
     regions: list[str] = Field(default_factory=list)
     lang: str
@@ -477,6 +543,10 @@ class DiscoveryRunSummary(BaseModel):
     error_message: str | None = None
     usage: dict[str, int] = Field(default_factory=dict)
     claude_model: str | None = None
+    # Phase 12 follow-up (B5) — normalized weight vector actually used at
+    # run time. Pre-B5 runs (no snapshot) carry None; UI shows
+    # "snapshot 없음 — 옛 형식 run".
+    weights_applied: dict[str, float] | None = None
     created_at: str
     candidate_count: int = 0
     tier_distribution: dict[str, int] = Field(default_factory=dict)
@@ -513,8 +583,44 @@ class DiscoveryCandidateUpdate(BaseModel):
 
 
 class DiscoveryRecomputeRequest(BaseModel):
-    weights: dict[str, float] | None = None  # 6-dim slider state from UI
-    product: str | None = None  # fallback to weights.yaml::products.<name>
+    # Phase 12 follow-up (B5) — strict body. Old `product` field rejected
+    # so callers can't accidentally route through stale code paths.
+    model_config = ConfigDict(extra="forbid")
+
+    weights: dict[str, float] | None = None  # complete snapshot or null
+    profile: str | None = None  # fallback to weights.yaml::profiles.<name>
+
+    @model_validator(mode="after")
+    def _validate_weights(self) -> "DiscoveryRecomputeRequest":
+        """Phase 12 follow-up (B5) — same complete-snapshot contract as
+        first-run. Partial dicts rejected rather than silently zero-filled.
+        """
+        if self.weights is None:
+            return self
+        from src.core import scoring as _scoring
+
+        active = {d.key for d in _scoring.load_dimensions()}
+        keys = set(self.weights.keys())
+        missing = active - keys
+        unknown = keys - active
+        if missing or unknown:
+            raise ValueError(
+                f"weights must include exactly the active dimensions "
+                f"(missing={sorted(missing)}, unknown={sorted(unknown)})"
+            )
+        for k, v in self.weights.items():
+            try:
+                fv = float(v)
+            except (TypeError, ValueError) as e:
+                raise ValueError(
+                    f"weights[{k!r}] must be numeric, got {v!r}"
+                ) from e
+            if fv < 0:
+                raise ValueError(f"weights[{k!r}] must be ≥ 0, got {fv}")
+        total = sum(float(v) for v in self.weights.values())
+        if total <= 0:
+            raise ValueError(f"weights sum must be positive, got {total}")
+        return self
 
 
 class DiscoveryRecomputeResponse(BaseModel):
@@ -699,7 +805,7 @@ class DashboardRecentRun(BaseModel):
 class DashboardRecentDiscovery(BaseModel):
     run_id: str
     namespace: str
-    product: str
+    profile: str
     status: str
     candidate_count: int
     tier_distribution: dict[str, int]

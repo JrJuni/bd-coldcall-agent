@@ -340,13 +340,27 @@ class DiscoveryStore:
         # legacy enum ("any"/"ko"/"us"/"eu"/"global") which we map back to
         # a list at read time so the wire format stays consistent.
         regions = _decode_regions_column(row["region"])
+        # Phase 12 follow-up (B5) — weight snapshot stored on run completion.
+        # NULL for pre-B5 runs → API surfaces as `weights_applied=None`.
+        weights_applied: dict[str, float] | None = None
+        if "weights_snapshot_json" in keys:
+            raw = row["weights_snapshot_json"]
+            if raw:
+                try:
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, dict):
+                        weights_applied = {
+                            str(k): float(v) for k, v in parsed.items()
+                        }
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    weights_applied = None
         return {
             "run_id": row["run_id"],
             "generated_at": row["generated_at"],
             "seed_doc_count": row["seed_doc_count"] or 0,
             "seed_chunk_count": row["seed_chunk_count"] or 0,
             "seed_summary": row["seed_summary"],
-            "product": row["product"] or "",
+            "profile": row["profile"] or "",
             "regions": regions,
             "lang": row["lang"] or "en",
             "namespace": row["namespace"] or "default",
@@ -357,6 +371,7 @@ class DiscoveryStore:
             "error_message": row["error_message"],
             "source_yaml_path": row["source_yaml_path"],
             "claude_model": row["claude_model"] if "claude_model" in keys else None,
+            "weights_applied": weights_applied,
             "usage": usage,
             "created_at": row["created_at"],
         }
@@ -394,7 +409,7 @@ class DiscoveryStore:
         run_id: str,
         generated_at: str,
         namespace: str,
-        product: str,
+        profile: str,
         regions: list[str],
         lang: str,
         seed_summary: str | None,
@@ -405,11 +420,11 @@ class DiscoveryStore:
         with _db.connect(self._db_path) as conn:
             conn.execute(
                 "INSERT INTO discovery_runs("
-                " run_id, generated_at, namespace, product, region, lang,"
+                " run_id, generated_at, namespace, profile, region, lang,"
                 " seed_summary, status, usage_json, claude_model, created_at)"
                 " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (
-                    run_id, generated_at, namespace, product, region_blob, lang,
+                    run_id, generated_at, namespace, profile, region_blob, lang,
                     seed_summary, "queued", "{}", claude_model, ts,
                 ),
             )
@@ -417,6 +432,26 @@ class DiscoveryStore:
                 "SELECT * FROM discovery_runs WHERE run_id=?", (run_id,)
             ).fetchone()
         return self._run_row_to_dict(row)
+
+    def update_weights_snapshot(
+        self, run_id: str, weights: dict[str, float]
+    ) -> None:
+        """Phase 12 follow-up (B5) — persist normalized weight vector.
+
+        Called by the runner after final scoring is done. Failures don't
+        propagate (warn log only) — candidates are already stored, the
+        snapshot is a nice-to-have for past-run audit. UI shows
+        "snapshot 없음" if NULL.
+        """
+        try:
+            blob = json.dumps(weights, separators=(",", ":"))
+        except (TypeError, ValueError):
+            return
+        with _db.connect(self._db_path) as conn:
+            conn.execute(
+                "UPDATE discovery_runs SET weights_snapshot_json=? WHERE run_id=?",
+                (blob, run_id),
+            )
 
     def update_run(self, run_id: str, **fields: Any) -> dict[str, Any] | None:
         col_map: dict[str, Any] = {}

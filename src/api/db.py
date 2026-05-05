@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS discovery_runs (
     seed_doc_count INTEGER NOT NULL DEFAULT 0,
     seed_chunk_count INTEGER NOT NULL DEFAULT 0,
     seed_summary TEXT,
-    product TEXT,
+    profile TEXT,
     region TEXT,
     lang TEXT,
     namespace TEXT NOT NULL DEFAULT 'default',
@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS discovery_runs (
     source_yaml_path TEXT,
     usage_json TEXT,
     claude_model TEXT,
+    weights_snapshot_json TEXT,
     created_at TEXT NOT NULL
 );
 
@@ -199,6 +200,9 @@ _DISCOVERY_RUNS_NEW_COLUMNS = (
     # Phase 11+ Cost Explorer — model active at run-start, so swapping
     # the active model later doesn't retroactively reprice old runs.
     ("claude_model", "TEXT"),
+    # Phase 12 follow-up (B5) — normalized weight vector used at run time.
+    # NULL for pre-B5 runs (UI shows "snapshot 없음 — 옛 형식 run").
+    ("weights_snapshot_json", "TEXT"),
 )
 
 
@@ -207,6 +211,14 @@ def _migrate_discovery_runs(conn: sqlite3.Connection) -> None:
         row[1]
         for row in conn.execute("PRAGMA table_info(discovery_runs)").fetchall()
     }
+    # Phase 12 follow-up (B5) — rename `product` → `profile` (clean break).
+    # SQLite 3.25+ supports RENAME COLUMN; the project requires it for
+    # other migrations already so we don't probe version. Idempotent — if
+    # `profile` already present we skip.
+    if "profile" not in existing and "product" in existing:
+        conn.execute("ALTER TABLE discovery_runs RENAME COLUMN product TO profile")
+        existing.discard("product")
+        existing.add("profile")
     for col, decl in _DISCOVERY_RUNS_NEW_COLUMNS:
         if col not in existing:
             conn.execute(f"ALTER TABLE discovery_runs ADD COLUMN {col} {decl}")

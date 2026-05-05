@@ -219,7 +219,7 @@ def test_discover_rejects_invalid_lang(monkeypatch):
     assert result.exit_code != 0
 
 
-def test_discover_forwards_product_and_region(monkeypatch, tmp_path: Path):
+def test_discover_forwards_profile_and_region(monkeypatch, tmp_path: Path):
     captured: dict = {}
 
     def _fake_discover(**kwargs):
@@ -233,14 +233,14 @@ def test_discover_forwards_product_and_region(monkeypatch, tmp_path: Path):
         [
             "discover",
             "--lang", "en",
-            "--product", "snowflake",
+            "--profile", "snowflake",
             "--region", "ko",
             "--no-sector-leaders",
             "--output-root", str(tmp_path),
         ],
     )
     assert result.exit_code == 0, result.stdout
-    assert captured["product"] == "snowflake"
+    assert captured["profile"] == "snowflake"
     assert captured["region"] == "ko"
     assert captured["include_sector_leaders"] is False
 
