@@ -20,7 +20,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-from src.core.scoring import TIER_VALUES, WEIGHT_DIMENSIONS
+from src.core.scoring import TIER_VALUES, get_dimension_keys
 
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
@@ -91,14 +91,18 @@ class Candidate(BaseModel):
     @field_validator("scores")
     @classmethod
     def _validate_scores(cls, v: dict[str, int]) -> dict[str, int]:
-        missing = [d for d in WEIGHT_DIMENSIONS if d not in v]
+        # Dimension keys are read at validation time (not import time) so a
+        # yaml change picked up by load_weights_config() is reflected on the
+        # next Candidate construction.
+        dim_keys = get_dimension_keys()
+        missing = [d for d in dim_keys if d not in v]
         if missing:
             raise ValueError(
                 f"scores missing dimensions: {missing}. "
-                f"Required: {list(WEIGHT_DIMENSIONS)}"
+                f"Required: {list(dim_keys)}"
             )
         clean: dict[str, int] = {}
-        for d in WEIGHT_DIMENSIONS:
+        for d in dim_keys:
             try:
                 n = int(v[d])
             except (TypeError, ValueError) as e:

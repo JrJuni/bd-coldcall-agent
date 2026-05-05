@@ -44,6 +44,31 @@ _SYSTEM_TASK_SEPARATOR = "---TASK---"
 _DEFAULT_SEED_QUERY = "core capabilities and target use cases"
 
 
+def _render_dimensions_block(dims: list[Any]) -> str:
+    """Render dimensions as an indented bullet list for prompt injection.
+
+    The placeholder lives inside `str.format()` so the bullet body must NOT
+    contain raw `{` or `}` (they would re-trigger format substitution).
+    Pydantic's `Dimension` description is plain text in our schemas — we
+    still escape defensively in case a user puts curly braces in yaml.
+    """
+    if not dims:
+        return "(no dimensions configured — check config/weights.yaml)"
+    lines: list[str] = []
+    for d in dims:
+        desc = (d.description or "").strip().replace("{", "{{").replace("}", "}}")
+        if desc:
+            lines.append(f"    - `{d.key}`: {desc}")
+        else:
+            lines.append(f"    - `{d.key}`")
+    return "\n".join(lines)
+
+
+def _render_dimension_keys_csv(dims: list[Any]) -> str:
+    """Render the comma-joined backtick-quoted key list for the schema line."""
+    return ", ".join(f"`{d.key}`" for d in dims)
+
+
 def _load_prompt(lang: Literal["en", "ko"]) -> tuple[str, str]:
     path = PROJECT_ROOT / "src" / "prompts" / lang / "discover.txt"
     content = path.read_text(encoding="utf-8")
@@ -192,11 +217,16 @@ _TIER_RANK = {"S": 0, "A": 1, "B": 2, "C": 3}
 def _top_dimensions(scores: dict[str, int], n: int = 2) -> str:
     """Pick the top-N highest-scoring dimensions for the report Signals column.
 
-    Ties broken by WEIGHT_DIMENSIONS order so output is deterministic.
+    Ties broken by declaration order from `load_dimensions()` so output is
+    deterministic for a given weights.yaml.
     """
+    keys = _scoring.get_dimension_keys()
+    if not keys:
+        return ""
+    index = {k: i for i, k in enumerate(keys)}
     ordered = sorted(
-        _scoring.WEIGHT_DIMENSIONS,
-        key=lambda d: (-int(scores.get(d, 0)), _scoring.WEIGHT_DIMENSIONS.index(d)),
+        keys,
+        key=lambda d: (-int(scores.get(d, 0)), index[d]),
     )
     picks = ordered[:n]
     return ", ".join(f"{d}={scores.get(d, 0)}" for d in picks)
@@ -385,10 +415,14 @@ def discover_targets(
 
     settings = get_settings()
     system_template, task_template = _load_prompt(lang)
+    dims = _scoring.load_dimensions()
     fmt_kwargs = {
         "n_industries": n_industries,
         "n_per_industry": n_per_industry,
         "expected_total": n_industries * n_per_industry,
+        "n_dimensions": len(dims),
+        "dimensions_block": _render_dimensions_block(dims),
+        "dimension_keys_csv": _render_dimension_keys_csv(dims),
     }
     system = system_template.format(**fmt_kwargs)
     task = task_template.format(**fmt_kwargs)

@@ -5,6 +5,11 @@ score and tier deterministically. The split lets weights / thresholds live in
 external yaml so re-running with different weights costs $0 — no Sonnet call,
 no re-prompting, just `for c in candidates: c.final_score = ...; c.tier = ...`.
 
+Phase 12: dimensions themselves are yaml-driven. `config/weights.yaml` may
+declare a top-level `dimensions:` list (`{key, label, description}` triples);
+the legacy 6-dimension hardcoded set under `_FALLBACK_DIMENSIONS` is used
+only when the yaml omits the block (legacy Phase 9.1 layout).
+
 Dimension list, default weights, and tier thresholds are user-editable in
 `config/weights.yaml` and `config/tier_rules.yaml`. Per-product overrides
 under `weights.yaml::products.<name>` partial-override the default — missing
@@ -17,20 +22,60 @@ import logging
 from typing import Literal
 
 from src.config import loader as _loader
+from src.config.schemas import Dimension
 
 
 _LOGGER = logging.getLogger(__name__)
 
 
-# Locked dimension order. New dimensions require yaml + this constant + prompt
-# update — keeping it explicit in code avoids silent drift.
-WEIGHT_DIMENSIONS: tuple[str, ...] = (
-    "pain_severity",
-    "data_complexity",
-    "governance_need",
-    "ai_maturity",
-    "buying_trigger",
-    "displacement_ease",
+# Phase 9.1 hardcoded set — used as fallback when weights.yaml lacks a
+# `dimensions:` block. Production yamls should declare their own dimensions
+# block; this is purely a back-compat anchor.
+_FALLBACK_DIMENSIONS: tuple[Dimension, ...] = (
+    Dimension(
+        key="pain_severity",
+        label="Pain severity",
+        description=(
+            "How acutely the buyer feels the data/AI problem our product "
+            "addresses (high = urgent, low = nice-to-have)."
+        ),
+    ),
+    Dimension(
+        key="data_complexity",
+        label="Data complexity",
+        description="Scale, real-time-ness, structured/unstructured data mix.",
+    ),
+    Dimension(
+        key="governance_need",
+        label="Governance need",
+        description=(
+            "Regulatory, security, access control, lineage requirements."
+        ),
+    ),
+    Dimension(
+        key="ai_maturity",
+        label="AI maturity",
+        description=(
+            "Existing AI/ML team and active production workloads "
+            "(high = ready to buy, low = still exploring)."
+        ),
+    ),
+    Dimension(
+        key="buying_trigger",
+        label="Buying trigger",
+        description=(
+            'Recent investment, reorg, product launch, cost-cut pressure '
+            '("why now").'
+        ),
+    ),
+    Dimension(
+        key="displacement_ease",
+        label="Displacement ease",
+        description=(
+            "Ease of breaking incumbent solution / internal-build lock-in "
+            "(low for hyperscaler core ops, direct competitors)."
+        ),
+    ),
 )
 
 
@@ -38,11 +83,45 @@ Tier = Literal["S", "A", "B", "C"]
 TIER_VALUES: tuple[str, ...] = ("S", "A", "B", "C")
 
 
+def load_dimensions() -> list[Dimension]:
+    """Return the active dimension list.
+
+    Reads `config/weights.yaml::dimensions`. If the block is absent (legacy
+    Phase 9.1 layout) returns the hardcoded six-dimension fallback so old
+    yamls keep working until they're migrated.
+
+    Re-loads from disk on every call — caller is responsible for caching if
+    they care about cost.
+    """
+    cfg = _loader.load_weights_config()
+    if cfg.dimensions:
+        return list(cfg.dimensions)
+    return list(_FALLBACK_DIMENSIONS)
+
+
+def get_dimension_keys() -> tuple[str, ...]:
+    """Convenience: just the keys, in declaration order."""
+    return tuple(d.key for d in load_dimensions())
+
+
+def __getattr__(name: str):
+    """Module-level lazy `WEIGHT_DIMENSIONS` for back-compat.
+
+    Old imports (`from src.core.scoring import WEIGHT_DIMENSIONS`) keep
+    working but now resolve dynamically against the yaml-driven dimension
+    list. Tests that rebind the loader before importing still see the
+    patched dimensions because resolution is deferred to attribute access.
+    """
+    if name == "WEIGHT_DIMENSIONS":
+        return get_dimension_keys()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 def load_weights(product: str | None = None) -> dict[str, float]:
     """Resolve effective weight vector for `product`.
 
     Steps:
-      1. Load default vector from yaml (must list every WEIGHT_DIMENSIONS key).
+      1. Load default vector from yaml (must list every dimension key).
       2. If product != None, partial-override per-product entries.
       3. Validate every dimension present (raise ValueError on miss).
       4. If sum != 1.0 (tol 0.01), warn + auto-normalize so final_score stays 0-10.
@@ -52,6 +131,9 @@ def load_weights(product: str | None = None) -> dict[str, float]:
     skip lru_cache here.
     """
     cfg = _loader.load_weights_config()
+    dim_keys = tuple(d.key for d in cfg.dimensions) if cfg.dimensions else tuple(
+        d.key for d in _FALLBACK_DIMENSIONS
+    )
 
     weights: dict[str, float] = dict(cfg.default)
     if product is not None:
@@ -66,17 +148,18 @@ def load_weights(product: str | None = None) -> dict[str, float]:
             for k, v in profile.weights.items():
                 weights[k] = float(v)
 
-    missing = [d for d in WEIGHT_DIMENSIONS if d not in weights]
+    missing = [d for d in dim_keys if d not in weights]
     if missing:
         raise ValueError(
             f"weights for product={product!r} missing dimensions: {missing}. "
-            f"Required: {list(WEIGHT_DIMENSIONS)}"
+            f"Required: {list(dim_keys)}"
         )
-    extra = [k for k in weights if k not in WEIGHT_DIMENSIONS]
+    extra = [k for k in weights if k not in dim_keys]
     if extra:
         _LOGGER.warning(
-            "weights: unknown dimensions %s — ignoring (not in WEIGHT_DIMENSIONS)",
+            "weights: unknown dimensions %s — ignoring (not in declared dimensions %s)",
             extra,
+            list(dim_keys),
         )
         for k in extra:
             weights.pop(k, None)
@@ -130,13 +213,14 @@ def calc_final_score(
     weights: dict[str, float],
 ) -> float:
     """Weighted sum of 0-10 scores. Caller pre-validates score range."""
-    missing = [d for d in WEIGHT_DIMENSIONS if d not in scores]
+    dim_keys = get_dimension_keys()
+    missing = [d for d in dim_keys if d not in scores]
     if missing:
         raise ValueError(
             f"scores missing dimensions: {missing}. "
-            f"Required: {list(WEIGHT_DIMENSIONS)}"
+            f"Required: {list(dim_keys)}"
         )
-    return sum(float(scores[d]) * float(weights[d]) for d in WEIGHT_DIMENSIONS)
+    return sum(float(scores[d]) * float(weights[d]) for d in dim_keys)
 
 
 _TIER_EPSILON = 1e-6

@@ -5,13 +5,8 @@
 필수 규칙:
 - 제품과 명확히 핏이 맞는 산업을 정확히 {n_industries} 개, 핏 강도 순으로 선정 (가장 좋은 것부터).
 - 각 산업마다 실제로 존재하는 회사를 정확히 {n_per_industry} 개 나열. 널리 알려진 이름 (예: Stripe, Siemens) 만 사용하고, 회사명을 절대 창작하지 마세요. 존재 확신이 없으면 다른 회사로 교체.
-- 각 회사에 대해 다음 6 차원을 0-10 정수로 점수 매김 (높을수록 우리 제품에 유리):
-    - `pain_severity`: 이 회사가 가진 데이터/AI 문제가 우리 제품이 푸는 문제와 얼마나 정확히 맞물리고 절박한가
-    - `data_complexity`: 데이터 규모, 실시간성, 정형/비정형 혼합도
-    - `governance_need`: 규제, 보안, 권한관리, lineage 필요성
-    - `ai_maturity`: 이미 AI/ML 조직과 활성 워크로드가 있나 (높을수록 구매 단계, 탐색 단계 X)
-    - `buying_trigger`: 최근 투자, 조직 개편, 제품 출시, 비용 절감 압박 등 "why now"
-    - `displacement_ease`: 기존 솔루션·자체 구축 락-인을 뚫기 쉬운가 (hyperscaler 본체·직접 경쟁사·자체 플랫폼 강 락-인은 LOW)
+- 각 회사에 대해 다음 {n_dimensions} 차원을 0-10 정수로 점수 매김 (높을수록 우리 제품에 유리):
+{dimensions_block}
 - 특정 차원이 불확실하면 5 (중립) 로 기본값 + `rationale` 에 불확실성 기록.
 - `rationale` 은 정확히 1문장, 회사 자체 (차원별 X) — 이 회사가 왜 사겠는지 헤드라인. 약 25어 이내. 차원별 판단은 이미 0-10 scores 에 담김.
 - `industry_meta` rationale 은 산업 전체에 왜 이 제품이 핏인지 1문장.
@@ -23,7 +18,7 @@
 - 정확히 두 개의 top-level 키를 가진 단일 JSON 객체:
     - `industry_meta`: 산업명 → 1문장 rationale 매핑 객체.
     - `candidates`: `name`, `industry`, `scores`, `rationale` 키를 가진 객체의 평면 배열.
-- `scores` 는 정확히 6개 정수 키: `pain_severity`, `data_complexity`, `governance_need`, `ai_maturity`, `buying_trigger`, `displacement_ease`.
+- `scores` 는 정확히 {n_dimensions} 개 정수 키: {dimension_keys_csv}.
 - 모든 `candidate.industry` 값은 `industry_meta` 키 중 하나와 정확히 일치해야 함.
 - `candidates` 배열은 정확히 {n_industries} × {n_per_industry} = {expected_total} 개 항목, 산업당 정확히 {n_per_industry} 개.
 

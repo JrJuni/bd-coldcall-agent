@@ -98,6 +98,42 @@ class ProductProfile(BaseModel):
     weights: dict[str, float] = Field(default_factory=dict)
 
 
+class Dimension(BaseModel):
+    """One scoring dimension — Phase 12 yaml-driven dimensions.
+
+    `key` is the snake_case identifier the LLM emits in `scores` and the
+    user references in `weights.yaml::default` / `products.<k>.weights`.
+    `label` and `description` flow into the Discovery prompt and the
+    WeightSliders UI tooltip — keep them short (description ≤ ~140 chars
+    so prompt budget doesn't balloon when a user adds custom dimensions).
+    """
+
+    key: str
+    label: str
+    description: str = ""
+
+    @field_validator("key", mode="before")
+    @classmethod
+    def _validate_key(cls, v: Any) -> str:
+        s = str(v or "").strip()
+        if not s:
+            raise ValueError("dimension key must be non-empty")
+        # snake_case alphanumerics — keeps prompt + json safe.
+        if not all(ch.isalnum() or ch == "_" for ch in s):
+            raise ValueError(
+                f"dimension key must be snake_case alnum/underscore, got {v!r}"
+            )
+        return s
+
+    @field_validator("label", mode="before")
+    @classmethod
+    def _label_non_empty(cls, v: Any) -> str:
+        s = str(v or "").strip()
+        if not s:
+            raise ValueError("dimension label must be non-empty")
+        return s
+
+
 class WeightsConfig(BaseModel):
     """Shape of `config/weights.yaml` — Phase 9.1 scoring engine.
 
@@ -105,9 +141,15 @@ class WeightsConfig(BaseModel):
     partial override — only the dimensions you want to bend need to appear.
     The runtime merges default + override, then auto-normalizes so the
     weighted sum of 0-10 scores stays in 0-10.
+
+    Phase 12: `dimensions` is the canonical list of scoring dimensions. The
+    field is optional — yamls without it fall through to a hardcoded
+    six-dimension fallback in `src.core.scoring._FALLBACK_DIMENSIONS` so
+    legacy Phase 9.1 configs keep parsing during the migration.
     """
 
     version: int = 1
+    dimensions: list[Dimension] = Field(default_factory=list)
     default: dict[str, float] = Field(default_factory=dict)
     products: dict[str, ProductProfile] = Field(default_factory=dict)
 
@@ -134,6 +176,17 @@ class WeightsConfig(BaseModel):
                     continue
             out[key] = raw
         return out
+
+    @model_validator(mode="after")
+    def _check_dimension_keys_unique(self) -> "WeightsConfig":
+        if not self.dimensions:
+            return self
+        seen: set[str] = set()
+        for d in self.dimensions:
+            if d.key in seen:
+                raise ValueError(f"duplicate dimension key: {d.key!r}")
+            seen.add(d.key)
+        return self
 
 
 class TierRulesConfig(BaseModel):

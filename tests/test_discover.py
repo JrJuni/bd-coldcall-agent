@@ -583,3 +583,125 @@ def test_legacy_seed_query_still_works(recording_rag, tmp_path: Path):
         seed_query="legacy keyword", write_artifacts=False,
     )
     assert recording_rag.queries == ["legacy keyword"]
+
+
+# ---- Phase 12 (B4a): yaml-driven dimensions in prompt ------------------
+
+
+def test_dimensions_block_injected_into_system_prompt(patched_rag, tmp_path: Path):
+    """The default 6-dim list flows through `{dimensions_block}` substitution
+    so the LLM sees per-dimension descriptions, not the old hardcoded text."""
+    fake = _FakeClient([_payload()])
+    discover_targets(
+        lang="en", n_industries=2, n_per_industry=2,
+        seed_summary="x", output_root=tmp_path, client=fake,
+        write_artifacts=False,
+    )
+    system_sent = fake.messages.calls[0]["system"]
+    # Each dimension key should appear as a backticked bullet in the block.
+    for key in (
+        "pain_severity", "data_complexity", "governance_need",
+        "ai_maturity", "buying_trigger", "displacement_ease",
+    ):
+        assert f"`{key}`" in system_sent
+    # The "exactly N integer keys" line should mention all six.
+    assert "EXACTLY these 6 integer keys" in system_sent
+    # No leftover format-string placeholders.
+    assert "{dimensions_block}" not in system_sent
+    assert "{dimension_keys_csv}" not in system_sent
+    assert "{n_dimensions}" not in system_sent
+
+
+def test_dimensions_block_with_custom_dim(patched_rag, tmp_path: Path, monkeypatch):
+    """Swapping the dimension list reflects in the prompt + parser accepts the new keys."""
+    from src.config.schemas import Dimension
+    from src.core import scoring as _scoring
+
+    custom_dims = [
+        Dimension(key="pain_severity", label="Pain", description="Pain desc."),
+        Dimension(
+            key="budget_authority",
+            label="Budget",
+            description="Has signing authority.",
+        ),
+    ]
+    monkeypatch.setattr(_scoring, "load_dimensions", lambda: list(custom_dims))
+    # load_weights must also reflect the new dimension set so calc_final_score
+    # downstream doesn't blow up.
+    monkeypatch.setattr(
+        _scoring, "load_weights",
+        lambda product=None: {"pain_severity": 0.5, "budget_authority": 0.5},
+    )
+    monkeypatch.setattr(
+        _scoring, "load_tier_rules",
+        lambda: [("S", 8.0), ("A", 7.0), ("B", 6.0), ("C", 5.0)],
+    )
+    monkeypatch.setattr(
+        _scoring, "get_dimension_keys",
+        lambda: ("pain_severity", "budget_authority"),
+    )
+
+    payload = json.dumps({
+        "industry_meta": {"a": "ra", "b": "rb"},
+        "candidates": [
+            {"name": "X1", "industry": "a",
+             "scores": {"pain_severity": 8, "budget_authority": 7},
+             "rationale": "ok"},
+            {"name": "X2", "industry": "a",
+             "scores": {"pain_severity": 7, "budget_authority": 6},
+             "rationale": "ok"},
+            {"name": "Y1", "industry": "b",
+             "scores": {"pain_severity": 6, "budget_authority": 5},
+             "rationale": "ok"},
+            {"name": "Y2", "industry": "b",
+             "scores": {"pain_severity": 5, "budget_authority": 4},
+             "rationale": "ok"},
+        ],
+    })
+    fake = _FakeClient([payload])
+    result = discover_targets(
+        lang="en", n_industries=2, n_per_industry=2,
+        seed_summary="x", output_root=tmp_path, client=fake,
+        write_artifacts=False,
+    )
+    system_sent = fake.messages.calls[0]["system"]
+    assert "`budget_authority`" in system_sent
+    # Old hardcoded keys must NOT leak in once the yaml swaps.
+    assert "data_complexity" not in system_sent
+    assert "EXACTLY these 2 integer keys" in system_sent
+    # Parser accepted the 2-key score dicts.
+    assert all(set(c.scores.keys()) == {"pain_severity", "budget_authority"}
+               for c in result.candidates)
+
+
+def test_dimensions_block_escapes_curly_braces(patched_rag, tmp_path: Path, monkeypatch):
+    """A description containing `{` / `}` must not break str.format on the prompt."""
+    from src.config.schemas import Dimension
+    from src.core import scoring as _scoring
+
+    custom_dims = [
+        Dimension(
+            key="pain_severity",
+            label="Pain",
+            description="Has {curly} braces and {nested {inside}} too.",
+        ),
+        Dimension(
+            key="data_complexity",
+            label="Data",
+            description="Plain.",
+        ),
+        Dimension(key="governance_need", label="Gov", description="Plain."),
+        Dimension(key="ai_maturity", label="AI", description="Plain."),
+        Dimension(key="buying_trigger", label="Trig", description="Plain."),
+        Dimension(key="displacement_ease", label="Disp", description="Plain."),
+    ]
+    monkeypatch.setattr(_scoring, "load_dimensions", lambda: list(custom_dims))
+    fake = _FakeClient([_payload()])
+    discover_targets(
+        lang="en", n_industries=2, n_per_industry=2,
+        seed_summary="x", output_root=tmp_path, client=fake,
+        write_artifacts=False,
+    )
+    system_sent = fake.messages.calls[0]["system"]
+    # Curly braces in description survive escaping (single braces in output).
+    assert "{curly}" in system_sent

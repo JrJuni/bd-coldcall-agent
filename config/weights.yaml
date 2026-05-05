@@ -13,6 +13,13 @@
 # tooltip in the Discovery form's product dropdown. Legacy flat-dict yamls
 # (no `weights:` key) still parse — pydantic wraps them transparently.
 #
+# Phase 12 (B4a): scoring dimensions themselves are yaml-driven. The
+# `dimensions:` block below lists the keys the LLM scores and the slider UI
+# renders. Add a row (key/label/description) and update `default` with a
+# weight to introduce a new dimension — no code change required. Keys must
+# stay snake_case alnum/underscore. Removing a dimension makes any past run's
+# scores ignore that key during recompute (graceful, no crash).
+#
 # Editing notes:
 #   - Higher weight = dimension matters more for THIS product.
 #   - Add a new product by adding a new key under `products` with a
@@ -20,6 +27,34 @@
 #     want to bend; everything else uses `default`.
 
 version: 1
+
+dimensions:
+  - key: pain_severity
+    label: Pain severity
+    description: >
+      How acutely the buyer feels the data/AI problem our product addresses
+      (high = urgent, low = nice-to-have).
+  - key: data_complexity
+    label: Data complexity
+    description: Scale, real-time-ness, structured/unstructured data mix.
+  - key: governance_need
+    label: Governance need
+    description: Regulatory, security, access control, lineage requirements.
+  - key: ai_maturity
+    label: AI maturity
+    description: >
+      Existing AI/ML team and active production workloads
+      (high = ready to buy, low = still exploring).
+  - key: buying_trigger
+    label: Buying trigger
+    description: >
+      Recent investment, reorg, product launch, cost-cut pressure
+      ("why now").
+  - key: displacement_ease
+    label: Displacement ease
+    description: >
+      Ease of breaking incumbent solution / internal-build lock-in
+      (low for hyperscaler core ops, direct competitors).
 
 default:
   pain_severity: 0.25         # 고객사가 해결해야 할 데이터/AI 문제의 크기

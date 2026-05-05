@@ -21,6 +21,8 @@ from src.core.scoring import (
     WEIGHT_DIMENSIONS,
     calc_final_score,
     decide_tier,
+    get_dimension_keys,
+    load_dimensions,
     load_tier_rules,
     load_weights,
 )
@@ -221,3 +223,138 @@ def test_decide_tier_epsilon_absorbs_normalize_drift():
     not B (the user wrote scores=[7,7,7,7,7,7] expecting A)."""
     drifted = 7.0 - 1e-9
     assert decide_tier(drifted, _rules()) == "A"
+
+
+# ---- Phase 12 (B4a): yaml-driven dimensions ----------------------------
+
+
+def test_load_dimensions_from_yaml(monkeypatch, tmp_path):
+    """An explicit `dimensions:` block returns the listed entries verbatim."""
+    _patch_yaml(monkeypatch, tmp_path, weights_body="""\
+        version: 1
+        dimensions:
+          - key: pain_severity
+            label: Pain
+            description: How much it hurts.
+          - key: budget_authority
+            label: Budget authority
+            description: Decision maker has signing authority.
+        default:
+          pain_severity: 0.6
+          budget_authority: 0.4
+        products: {}
+    """)
+    dims = load_dimensions()
+    assert [d.key for d in dims] == ["pain_severity", "budget_authority"]
+    assert dims[0].label == "Pain"
+    assert dims[1].description.startswith("Decision maker")
+
+
+def test_load_dimensions_fallback_when_block_absent(monkeypatch, tmp_path):
+    """A legacy yaml without `dimensions:` falls back to the hardcoded six."""
+    _patch_yaml(monkeypatch, tmp_path, weights_body="""\
+        version: 1
+        default:
+          pain_severity: 0.25
+          data_complexity: 0.20
+          governance_need: 0.15
+          ai_maturity: 0.15
+          buying_trigger: 0.15
+          displacement_ease: 0.10
+        products: {}
+    """)
+    dims = load_dimensions()
+    keys = [d.key for d in dims]
+    assert keys == [
+        "pain_severity", "data_complexity", "governance_need",
+        "ai_maturity", "buying_trigger", "displacement_ease",
+    ]
+    assert get_dimension_keys() == tuple(keys)
+
+
+def test_load_weights_with_custom_dimension(monkeypatch, tmp_path):
+    """Adding a brand-new dimension via yaml wires through load_weights."""
+    _patch_yaml(monkeypatch, tmp_path, weights_body="""\
+        version: 1
+        dimensions:
+          - key: pain_severity
+            label: Pain
+            description: ""
+          - key: budget_authority
+            label: Budget
+            description: ""
+        default:
+          pain_severity: 0.5
+          budget_authority: 0.5
+        products:
+          enterprise:
+            description: Enterprise tilt
+            weights:
+              budget_authority: 0.7
+    """)
+    w_default = load_weights()
+    w_ent = load_weights("enterprise")
+    assert set(w_default.keys()) == {"pain_severity", "budget_authority"}
+    assert sum(w_default.values()) == pytest.approx(1.0, abs=1e-9)
+    # enterprise tilt raises budget_authority relative weight
+    assert w_ent["budget_authority"] / w_ent["pain_severity"] > (
+        w_default["budget_authority"] / w_default["pain_severity"]
+    )
+
+
+def test_load_weights_missing_custom_dimension_raises(monkeypatch, tmp_path):
+    """If yaml declares a dimension but `default` omits it, load fails loud."""
+    _patch_yaml(monkeypatch, tmp_path, weights_body="""\
+        version: 1
+        dimensions:
+          - key: pain_severity
+            label: Pain
+            description: ""
+          - key: budget_authority
+            label: Budget
+            description: ""
+        default:
+          pain_severity: 1.0
+        products: {}
+    """)
+    with pytest.raises(ValueError, match="missing dimensions.*budget_authority"):
+        load_weights()
+
+
+def test_calc_final_score_uses_yaml_dimensions(monkeypatch, tmp_path):
+    """`calc_final_score` walks the yaml-declared dimension set, not the legacy 6."""
+    _patch_yaml(monkeypatch, tmp_path, weights_body="""\
+        version: 1
+        dimensions:
+          - key: pain_severity
+            label: Pain
+            description: ""
+          - key: budget_authority
+            label: Budget
+            description: ""
+        default:
+          pain_severity: 0.5
+          budget_authority: 0.5
+        products: {}
+    """)
+    weights = {"pain_severity": 0.5, "budget_authority": 0.5}
+    scores = {"pain_severity": 8, "budget_authority": 6}
+    assert calc_final_score(scores, weights) == pytest.approx(7.0, abs=1e-9)
+
+
+def test_dimensions_yaml_rejects_duplicate_keys(monkeypatch, tmp_path):
+    _patch_yaml(monkeypatch, tmp_path, weights_body="""\
+        version: 1
+        dimensions:
+          - key: pain_severity
+            label: Pain
+            description: ""
+          - key: pain_severity
+            label: Other
+            description: ""
+        default:
+          pain_severity: 1.0
+        products: {}
+    """)
+    with pytest.raises(ValueError, match="duplicate dimension key"):
+        load_dimensions()

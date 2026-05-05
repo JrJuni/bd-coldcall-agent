@@ -95,3 +95,37 @@ def test_list_products_includes_yaml_entries(client):
         assert "is_default" in p
         if p["key"] != "default":
             assert p["is_default"] is False
+
+
+# ── /discovery/dimensions (Phase 12 B4a) ───────────────────────────────
+
+
+def test_list_dimensions_returns_active_set(client):
+    """The shipped weights.yaml ships the Phase 9.1 six-dim spine — the
+    endpoint must surface every key, label, description, and default_weight."""
+    r = client.get("/discovery/dimensions")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    dims = body["dimensions"]
+    assert isinstance(dims, list) and len(dims) >= 1
+    keys = [d["key"] for d in dims]
+    for required in (
+        "pain_severity", "data_complexity", "governance_need",
+        "ai_maturity", "buying_trigger", "displacement_ease",
+    ):
+        assert required in keys, f"weights.yaml missing dimension {required!r}"
+    for d in dims:
+        assert isinstance(d["key"], str) and d["key"]
+        assert isinstance(d["label"], str) and d["label"]
+        assert isinstance(d["description"], str)
+        assert isinstance(d["default_weight"], (int, float))
+        assert d["default_weight"] >= 0
+
+
+def test_list_dimensions_default_weights_sum_to_one(client):
+    """Default weights from the shipped yaml must auto-normalize to ~1.0
+    so the slider UI can seed sliders directly without further math."""
+    r = client.get("/discovery/dimensions")
+    body = r.json()
+    total = sum(d["default_weight"] for d in body["dimensions"])
+    assert abs(total - 1.0) < 0.02, f"weights don't sum to 1.0: {total}"

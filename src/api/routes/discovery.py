@@ -24,6 +24,7 @@ from sse_starlette.sse import EventSourceResponse
 from src.api import runner as _runner
 from src.api import store as _store
 from src.config import loader as _config_loader
+from src.core import scoring as _scoring
 from src.api.schemas import (
     DiscoveryCandidate,
     DiscoveryCandidateUpdate,
@@ -131,6 +132,39 @@ async def list_discovery_products() -> dict:
             }
         )
     return {"products": products}
+
+
+# ── Dimensions (Phase 12 B4a) ──────────────────────────────────────────
+
+
+@router.get("/discovery/dimensions")
+async def list_discovery_dimensions() -> dict:
+    """Return the active scoring dimensions for the WeightSliders UI.
+
+    Sourced from `config/weights.yaml::dimensions`. Each entry carries the
+    `default_weight` from the top-level `default` block so the UI can
+    seed a fresh slider state without a second fetch. Falls back to the
+    Phase 9.1 hardcoded six-dim list when the yaml omits the block.
+    """
+    dims = _scoring.load_dimensions()
+    try:
+        weights = _scoring.load_weights()
+    except ValueError:
+        # Yaml is malformed (missing key in default for a declared dimension).
+        # Surface the dimensions anyway with 0.0 default — the UI will show
+        # 0.0 sliders and the server-side recompute will reject the bad yaml.
+        weights = {}
+    return {
+        "dimensions": [
+            {
+                "key": d.key,
+                "label": d.label,
+                "description": (d.description or "").strip(),
+                "default_weight": float(weights.get(d.key, 0.0)),
+            }
+            for d in dims
+        ]
+    }
 
 
 # ── Runs ───────────────────────────────────────────────────────────────
