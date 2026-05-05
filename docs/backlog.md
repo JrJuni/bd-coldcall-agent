@@ -301,3 +301,22 @@ Exaone 요약·분류 품질 한계 시 Qwen / Gemma / Llama 계열 벤치마크
 - **재사용**: `recomputeDiscovery` API helper 가 B5c 에서 frontend 에서 삭제됐는데 이 화면이 다시 부활시킴. 백엔드 endpoint 는 의도적으로 살려둠
 - **의존성**: 없음. 단, 사용자 사용 패턴 데이터 확보 (실제로 자주 비교하는지) 후 우선순위 재평가
 - **범위 밖**: weights 슬라이더 ad-hoc 비교 (저장된 profile 이 아니라 슬라이더 N개 그룹) — UI 복잡도 큼, MVP 는 profile 별 비교만
+
+### 26. RunWeightsEditor 슬라이더 한계 → lower-level 편집 surface
+
+- **상태 (2026-05-05)**: B5c 라이브 click-through 직후 사용자 평가 — *"이 바 움직이는 UI 가 보기는 좋아도 실용성은 애매"*. 슬라이더로 6 dim 미세 조정은 키보드/숫자 입력보다 부정확. dim 12개 넘어가면 UX 가 더 무너짐. 우선순위 P3.
+- **왜**: 실사용자는 (a) "0.05 단위로 정밀 입력" 하거나 (b) "여러 dim 한꺼번에 수정·복사·복원" 하고 싶어함. 슬라이더는 *시각화* 에는 좋지만 *편집 도구* 로는 부족. 또 가중치를 자주 만지는 power user 는 yaml/json 직접 편집을 선호 (Settings WeightsEditor 의 form+YAML escape 패턴과 동일 동기).
+- **옵션** (둘 중 또는 둘 다 — 의사결정 필요):
+  1. **RunWeightsEditor 에 "JSON 편집" 토글 추가**. raw `{dim: float}` dict 를 textarea 로 직접 편집 → submit 시 그대로 `weights_override` 로 전송. playbook #21 (form + YAML/JSON escape) 의 RunForm 적용. 빠른 해결, dim 많을 때 유리
+  2. **ad-hoc weights 자체를 제거하고 named profile only** — RunWeightsEditor 에선 슬라이더 *미리보기 only* (read-only), 실제 변경은 Settings → Discovery weights 의 폼+YAML editor 에서 새 profile 등록 후 RunForm 에서 그 profile 선택. mental model 가장 깨끗 (yaml 이 SSOT, run 시점은 lookup 만), 다만 "한 번 다른 가중치로 시도" 동선이 길어짐
+- **스케치 (옵션 1)**:
+  - `RunWeightsEditor` 헤더 옆 `[Sliders] [JSON]` 토글
+  - JSON 모드: textarea 에 현재 effective_weights 직렬화. 사용자가 편집 → onBlur 또는 [적용] 버튼 시 parse → idempotent compare (동일하면 null) → 부모 state 갱신
+  - 422 (음수 / partial / unknown dim) 는 그대로 backend 422 메시지 표시 — 폼 모드와 동일 검증
+  - 슬라이더 ↔ JSON 모드 전환 시 dirty state 보존 (양방향 round-trip)
+- **스케치 (옵션 2)**:
+  - `RunWeightsEditor` 의 슬라이더는 disabled (preview-only). "편집하려면 Settings 에서 새 profile 생성" 한 줄 안내 + 링크
+  - Settings → Discovery weights 의 폼+YAML 토글에서 "+새 profile 추가" 버튼 → label/key/description/weights 6 input + YAML escape 동일 가능
+  - 첫 사용자는 default + databricks 로도 충분, ad-hoc 빈도 데이터 누적 후 옵션 1 도 도입할지 재평가
+- **의존성**: 없음. 다만 dim 개수 변경 빈도 (`weights.yaml::dimensions` 편집) 가 늘어나면 우선순위 ↑
+- **범위 밖**: 가중치 자동 추천 (LLM 이 산업 keyword 보고 적정 weights 제안) — 별도 backlog 필요 시 분기
