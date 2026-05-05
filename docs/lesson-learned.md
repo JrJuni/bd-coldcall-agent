@@ -1,226 +1,226 @@
 # Lessons Learned
 
-개발 중 시도한 접근 방식, 실패 원인, 잘 된 노하우를 날짜별로 누적.
+Append-only log of approaches tried, failure causes, and validated know-how, accumulated by date.
 
-## 기록 형식
+## Entry format
 
 ```
-## [YYYY-MM-DD] 주제 한 줄
-**시도**: 어떤 접근을 취했는가
-**결과**: 성공 / 실패 + 관찰한 현상
-**배운 점**: 다음에 어떻게 할 것인가
+## [YYYY-MM-DD] One-line topic
+**Tried**: which approach was taken
+**Result**: success / failure + observed behavior
+**Lesson**: what to do next time
 ```
 
 ---
 
-## [2026-04-20] Windows `python` 명령이 Microsoft Store 스텁으로 연결됨
-**시도**: `python --version` 실행으로 환경 확인.
-**결과**: 실제 Python 미설치 상태에서 `C:\Users\<user>\AppData\Local\Microsoft\WindowsApps\python.exe` 스텁이 잡히고 "Python was not found" 메시지만 출력. `py` 런처도 없음.
-**배운 점**: Windows 환경은 기본적으로 Python이 없다고 가정. 설치 전에는 `winget install Anaconda.Miniconda3 --silent --scope user` 또는 `winget install Python.Python.3.11` 로 명시 설치. Miniconda 경로는 `~/miniconda3/Scripts/conda.exe`.
+## [2026-04-20] Windows `python` command resolves to the Microsoft Store stub
+**Tried**: `python --version` to check the environment.
+**Result**: With no real Python installed, `C:\Users\<user>\AppData\Local\Microsoft\WindowsApps\python.exe` stub was picked up and only printed "Python was not found". `py` launcher also missing.
+**Lesson**: Assume Windows machines have no Python by default. Install explicitly via `winget install Anaconda.Miniconda3 --silent --scope user` or `winget install Python.Python.3.11`. Miniconda path: `~/miniconda3/Scripts/conda.exe`.
 
-## [2026-04-20] Miniconda 신규 설치 직후 채널 ToS 거절
-**시도**: `conda create -n bd-coldcall python=3.11 -y` 로 신규 env 생성.
-**결과**: `CondaToSNonInteractiveError` — `pkgs/main`, `pkgs/r`, `pkgs/msys2` 3개 채널 ToS 미수락 상태에서 어떤 env 생성도 실패.
-**배운 점**: Miniconda `py313_26.1.1` (2025-11 이후 배포) 부터 ToS 사전 수락 필수. 설치 직후 다음 3줄을 먼저 실행:
+## [2026-04-20] Fresh Miniconda install rejects channel ToS
+**Tried**: `conda create -n bd-coldcall python=3.11 -y` for new env.
+**Result**: `CondaToSNonInteractiveError` — any env creation fails until ToS for `pkgs/main`, `pkgs/r`, `pkgs/msys2` channels is accepted.
+**Lesson**: Miniconda `py313_26.1.1` (shipped after 2025-11) requires explicit ToS acceptance. Run these 3 lines right after install:
 ```
 conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
 conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
 conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/msys2
 ```
 
-## [2026-04-20] Windows Python stdout 한글 깨짐 (cp949)
-**시도**: `python -m src.search.brave --query "AI 산업" --lang ko` 실행, Brave 응답을 콘솔에 출력.
-**결과**: 응답 JSON에는 정상 UTF-8로 한글이 들어있으나 콘솔은 cp949 코드페이지로 디코딩해 모지바케 발생. 파일 리디렉션해도 동일.
-**배운 점**: CLI 진입점에서 최초에 `sys.stdout.reconfigure(encoding="utf-8")` 로 강제. `PYTHONIOENCODING=utf-8` 환경변수도 가능하지만 엔트리포인트에 직접 박는 게 재현성이 좋음. 이후 모든 CLI (`main.py`, `src/cli/*`) 에 동일 처리 필요.
+## [2026-04-20] Korean garbled in Windows Python stdout (cp949)
+**Tried**: `python -m src.search.brave --query "AI 산업" --lang ko` and printed Brave response to console.
+**Result**: Response JSON had valid UTF-8 Korean, but the console decoded as cp949 → mojibake. Same issue with file redirection.
+**Lesson**: Force `sys.stdout.reconfigure(encoding="utf-8")` at CLI entry. `PYTHONIOENCODING=utf-8` env var works too, but pinning it in the entrypoint is more reproducible. Apply across all CLIs (`main.py`, `src/cli/*`).
 
-## [2026-05-02] Tailwind 클래스 순서가 CSS specificity 를 좌우 — primary 버튼이 흰색-on-흰색
-**시도**: `ToolbarButton` 의 base className 에 `bg-white` 를 두고, primary tone 에서는 `bg-slate-900 hover:bg-slate-800` 를 toneCls 로 덧붙임. 직관적으로는 `${toneCls}` 가 마지막에 있으니 우선해야 한다고 가정.
-**결과**: primary 버튼이 hover 외엔 흰색 (= 흰 배경에 흰 텍스트 = 안 보임) 으로 렌더. 사용자가 "Re-index 와 Add Workspace 가 안 보인다" 보고. 원인은 className 문자열의 토큰 순서가 아니라 Tailwind 가 생성한 CSS 파일에서 `.bg-white { ... }` 와 `.bg-slate-900 { ... }` 가 같은 specificity 일 때 **CSS 파일 내 등장 순서** 가 결정한다는 점. 보통 알파벳/숫자 정렬이라 `bg-slate-900` 이 먼저 나오고 `bg-white` 가 나중에 나와 이긴다.
-**배운 점**: tone 별로 `bg-*` 를 토글하는 컴포넌트는 base className 에 `bg-*` 를 절대 박아두지 말고, 모든 bg 를 toneCls 안으로 옮긴다. default tone 에 `bg-white` 를 명시하고, primary/danger 도 자기 bg 를 가져가는 식. 같은 함정은 `text-*`, `border-*` 에도 적용 — base 와 modifier 가 같은 카테고리 utility 를 동시 명시하면 결과가 className 문자열 순서가 아니라 생성된 CSS 순서로 결정됨.
+## [2026-05-02] Tailwind class order drives CSS specificity — primary button rendered white-on-white
+**Tried**: `ToolbarButton` had `bg-white` in its base className, with primary tone appending `bg-slate-900 hover:bg-slate-800` as toneCls. Naively assumed the trailing `${toneCls}` would win.
+**Result**: Primary button rendered white outside hover (white-on-white = invisible). User reported "Re-index and Add Workspace are missing". Cause is not className token order but the **order in the generated Tailwind CSS file**: when `.bg-white` and `.bg-slate-900` have equal specificity, the one declared later in the CSS wins. Tailwind sorts by alpha/numeric, so `bg-slate-900` comes first and `bg-white` overrides it.
+**Lesson**: For components that toggle `bg-*` per tone, never bake a `bg-*` into the base className — push every bg into toneCls. Default tone gets explicit `bg-white`; primary/danger bring their own. Same trap applies to `text-*` and `border-*`: when base and modifier both set utilities in the same category, the result is decided by generated CSS order, not className string order.
 
-## [2026-05-02] 기존 app.db 가 schema 변경 후 lifespan init 실패 — `_SCHEMA_SQL` 의 inline CREATE INDEX 가 ALTER 보다 먼저 실행
-**시도**: P10-5 에서 `news_runs` 테이블에 `namespace` 컬럼을 ADD 하면서 `CREATE TABLE IF NOT EXISTS news_runs (..., namespace TEXT ...)` 를 `_SCHEMA_SQL` 에 업데이트하고, 같이 `CREATE INDEX IF NOT EXISTS idx_news_runs_namespace_generated ON news_runs(namespace, ...)` 도 같은 SQL 스크립트에 넣음. 추가로 `_migrate_news_runs` 가 동일 인덱스를 한 번 더 만들도록 (idempotent) 작성.
-**결과**: P10-5 이후 신규 DB 에선 정상 동작. 그런데 P10-0 시점부터 살아 있던 기존 `data/app.db` (사용자 환경) 에선 `init_db` 가 `OperationalError: no such column: namespace` 로 실패. 이유: `CREATE TABLE IF NOT EXISTS` 는 기존 테이블에 컬럼을 추가하지 않는 no-op. 그 다음 줄 `CREATE INDEX ... ON news_runs(namespace, ...)` 가 실행되면서 namespace 컬럼이 없는 기존 테이블을 참조해 죽음. `_migrate_news_runs` 의 `ALTER TABLE ADD COLUMN` 은 이 시점에 아직 실행 안 됨 (init_db 가 executescript 후 호출).
-**배운 점**: `_SCHEMA_SQL` 안에는 **fresh DB 가 처음 만들어질 때 즉시 합법적인 statement 만** 둔다. 컬럼 추가가 필요한 인덱스는 `_migrate_*` 안으로 옮겨서 `ALTER TABLE ADD COLUMN` 다음에 실행되도록. `CREATE INDEX IF NOT EXISTS` 는 idempotent 이므로 fresh DB 에서도 한 번 더 실행되는 게 무해함. 더 일반적으로: schema 변경에 의존하는 statement 는 모두 migration helper 책임으로 통일하고, `_SCHEMA_SQL` 은 "v1 fresh schema 시점" 의 모습만 유지.
+## [2026-05-02] Existing `app.db` failed lifespan init after schema change — inline `CREATE INDEX` in `_SCHEMA_SQL` ran before `ALTER`
+**Tried**: P10-5 added `namespace` column to `news_runs`, updated `_SCHEMA_SQL` with `CREATE TABLE IF NOT EXISTS news_runs (..., namespace TEXT ...)` and added `CREATE INDEX IF NOT EXISTS idx_news_runs_namespace_generated ON news_runs(namespace, ...)` in the same SQL script. `_migrate_news_runs` was also written to (idempotently) create the same index.
+**Result**: Fresh DBs after P10-5 worked. But user environments with `data/app.db` from P10-0 onward died with `OperationalError: no such column: namespace` on `init_db`. Reason: `CREATE TABLE IF NOT EXISTS` is a no-op when the table already exists — it does not add columns. Then the next line, `CREATE INDEX ... ON news_runs(namespace, ...)`, references the missing column on the existing table and fails. `_migrate_news_runs` runs `ALTER TABLE ADD COLUMN` later (after `executescript`).
+**Lesson**: `_SCHEMA_SQL` should hold **only statements that are valid the moment a fresh DB is created**. Indexes that depend on added columns belong inside `_migrate_*`, after `ALTER TABLE ADD COLUMN`. `CREATE INDEX IF NOT EXISTS` is idempotent, so re-running it on a fresh DB is harmless. More generally: any statement dependent on a schema change is a migration helper's responsibility; `_SCHEMA_SQL` stays as the "v1 fresh schema" baseline.
 
-## [2026-04-20] 스니펫만으로는 BD 요약 불가능 — trafilatura 본문 추출 불가피
-**시도**: Brave Search API 응답의 `description` (150~300자 snippet) 을 그대로 Exaone 에 넣어 구조화 JSON 요약을 생성하는 최초 설계.
-**결과**: Snippet 만으로는 BD 관점 key_events / business_signals / pain_points 를 추출할 맥락이 부족. 7.8B급 LLM 은 빈 공간을 채우려 hallucinate 할 확률이 높다고 판단.
-**배운 점**: Phase 1 (검색) 과 Phase 2 (요약) 사이에 **Phase 1.5 — 본문 추출기** 를 삽입. `trafilatura.extract(favor_precision=True)` 를 `ThreadPoolExecutor(max_workers=5)` 로 병렬 호출. 실측 "AI 산업" bilingual 20건 기준 19/20 full 추출, 평균 3894자. Reuters 만 snippet fallback. 실패 시 `body_source="snippet"` 플래그 유지해서 파이프라인 중단 없음.
+## [2026-04-20] Snippets alone aren't enough for BD summarization — full-body extraction (trafilatura) is mandatory
+**Tried**: Initial design fed Brave Search API's `description` field (150–300 char snippet) directly to Exaone for structured JSON summary.
+**Result**: Snippets lack the context needed to extract BD-grade key_events / business_signals / pain_points. A 7.8B-class LLM is highly likely to hallucinate to fill the void.
+**Lesson**: Insert **Phase 1.5 — body extractor** between Phase 1 (search) and Phase 2 (summarize). Use `trafilatura.extract(favor_precision=True)` parallelized via `ThreadPoolExecutor(max_workers=5)`. Measured on "AI 산업" bilingual 20-article run: 19/20 full extractions, average 3894 chars. Only Reuters fell back to snippet. On failure, keep `body_source="snippet"` flag so the pipeline doesn't break.
 
-## [2026-04-20] 로컬 LLM 은 reasoning 보다 결정적 전처리가 본업
-**시도**: 초기 설계에서 Exaone 7.8B 에 "기사 → BD 시그널 구조화 JSON (key_events / business_signals / pain_points / opportunities)" 요약 역할 부여.
-**결과**: 7.8B급 모델은 단순 요약이나 핵심 문장 추출은 가능하지만 **"BD 시그널 추출"은 추론 + 도메인 지식이 요구되는 태스크**. hallucination 위험이 크고 Sonnet 대비 품질 차이가 큼. 또한 Exaone 요약을 Sonnet 에 넘기면 **맥락이 이미 compress 된 상태** 라 Sonnet 도 원문 수준의 뉘앙스 복원 불가.
-**배운 점**: 로컬 LLM 의 역할을 **번역 + 9-태그 분류 + 임베딩 중복제거** 같은 "정답이 있는 결정적 전처리"로 재배치. BD 시그널 추출과 제안 작성은 Sonnet 4.6 이 번역된 full body 를 직접 받아 수행. 이렇게 하면 맥락 손실 X + 로컬 모델 hallucination 위험 격리 + 각 모델이 자기 강점 영역만 담당. (원칙: "small models for deterministic tasks, frontier models for reasoning")
+## [2026-04-20] Local LLMs are for deterministic preprocessing, not reasoning
+**Tried**: Initial design assigned Exaone 7.8B the role of "article → BD-signal structured JSON (key_events / business_signals / pain_points / opportunities)" summarization.
+**Result**: 7.8B-class models can do simple summarization or sentence extraction, but **"BD signal extraction" requires inference + domain knowledge** — high hallucination risk and a noticeable quality gap vs Sonnet. Worse, feeding Exaone summaries into Sonnet means **context is already compressed**, so Sonnet can't recover the original nuance either.
+**Lesson**: Reposition local LLMs to **translation + 9-tag classification + embedding-based dedup** — deterministic preprocessing tasks that have a "right answer". BD signal extraction and proposal drafting are owned by Sonnet 4.6, which receives translated full bodies directly. This avoids context loss, isolates local hallucination risk, and lets each model own its strength. (Principle: "small models for deterministic tasks, frontier models for reasoning")
 
-## [2026-04-20] requirements.txt 를 Phase별로 분리
-**시도**: 초기 단일 `requirements.txt` 에 `torch`, `bitsandbytes`, `chromadb`, `sentence-transformers` 등 ML 중량 deps 포함.
-**결과**: Windows 환경에서 `bitsandbytes` 는 CUDA 런타임 필요, `torch` 는 기본 PyPI CPU 휠만 제공되어 GPU 쓰려면 `--index-url https://download.pytorch.org/whl/cu121` 별도 지정 필요. Phase 1 (Brave) 에는 전혀 불필요한 deps.
-**배운 점**: `requirements.txt` = 경량 핵심 (Phase 1+: httpx/pydantic-settings/pyyaml/anthropic/langgraph/notion-client/pypdf/typer/pytest) + `requirements-ml.txt` = Phase 2+ 중량 (torch/transformers/accelerate/bitsandbytes/chromadb/sentence-transformers) 로 분리. torch 는 ml 설치 전에 `pip install torch --index-url ...` 로 사용자가 CUDA/CPU 선택. 이렇게 하면 Phase 1 테스트에 10분 넘는 설치 대기 없이 바로 진입 가능.
+## [2026-04-20] Split `requirements.txt` by phase
+**Tried**: Initial single `requirements.txt` included heavy ML deps: `torch`, `bitsandbytes`, `chromadb`, `sentence-transformers`, etc.
+**Result**: On Windows, `bitsandbytes` needs CUDA runtime, and `torch` only ships CPU wheels by default on PyPI — GPU users need `--index-url https://download.pytorch.org/whl/cu121`. Phase 1 (Brave) doesn't need any of this.
+**Lesson**: Split into `requirements.txt` = lightweight core (Phase 1+: httpx/pydantic-settings/pyyaml/anthropic/langgraph/notion-client/pypdf/typer/pytest) and `requirements-ml.txt` = Phase 2+ heavy (torch/transformers/accelerate/bitsandbytes/chromadb/sentence-transformers). User picks CUDA or CPU torch via `pip install torch --index-url ...` before installing ml deps. Phase 1 testing now starts in seconds without 10+ minute ML wheel installs.
 
-## [2026-04-20] Exaone 3.5 chat template 이 `return_tensors="pt"` 로 호출되면 `generate()` 에서 shape 실패
-**시도**: `tokenizer.apply_chat_template(messages, add_generation_prompt=True, return_tensors="pt")` 한 번에 input_ids 텐서를 받아서 `model.generate()` 에 전달.
-**결과**: `BatchEncoding` 객체가 반환되는데 transformers `generate()` 가 `inputs_tensor.shape[0]` 로 바로 접근해 `AttributeError: shape` 발생. `BatchEncoding` 은 dict-like 라 `.shape` 가 없음 (모델/템플릿 조합에 따라 이렇게 dict 로 반환되는 케이스 있음).
-**배운 점**: chat template 을 **두 단계로 분리** — `apply_chat_template(..., tokenize=False)` 로 순수 문자열 얻고 → `tokenizer(text, return_tensors="pt")` 로 별도 토크나이즈. `input_ids`, `attention_mask` 둘 다 꺼내서 `model.generate(input_ids, attention_mask=..., **kwargs)` 로 전달. 이 패턴은 HF 문서에서도 일반적이며 어떤 tokenizer 구현이든 안전.
+## [2026-04-20] Exaone 3.5 chat template called with `return_tensors="pt"` breaks `generate()` shape lookup
+**Tried**: `tokenizer.apply_chat_template(messages, add_generation_prompt=True, return_tensors="pt")` to get input_ids tensor in one shot, passed to `model.generate()`.
+**Result**: A `BatchEncoding` is returned, but transformers' `generate()` accesses `inputs_tensor.shape[0]` directly → `AttributeError: shape`. `BatchEncoding` is dict-like and has no `.shape` (some model/template combos return it this way).
+**Lesson**: **Split chat templating into two steps** — `apply_chat_template(..., tokenize=False)` for the raw string, then `tokenizer(text, return_tensors="pt")` to tokenize separately. Pull out both `input_ids` and `attention_mask` and call `model.generate(input_ids, attention_mask=..., **kwargs)`. This pattern matches HF docs and is safe across tokenizer implementations.
 
-## [2026-04-20] Exaone 3.5 7.8B (4bit) + RTX 4070 16GB VRAM 로드 확인
-**시도**: `BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=float16, bnb_4bit_use_double_quant=True)` + `device_map="auto"` 로 HuggingFace 에서 `LGAI-EXAONE/EXAONE-3.5-7.8B-Instruct` 다운로드(약 15GB) 후 로드.
-**결과**: 첫 실행 시 HF 에서 shard 7 파일 ~3:55 다운로드, 이후 warm-cache 로 291 weights 를 ~28초에 로드. 한→영 번역("삼성전자가 3분기 매출 70조원을 기록했다.") 과 태그 JSON 생성 모두 정상. CUDA 사용량 안정.
-**배운 점**: 4bit nf4 + double-quant 조합으로 16GB VRAM 카드에서 7.8B 모델이 편하게 돌아감 (실측 사용 ~5-6GB). 첫 다운로드 후에는 재실행이 빠르므로 싱글턴 캐시(`_CACHE` dict)로 모델을 재활용. Windows 에서 `huggingface_hub` 가 심볼릭 링크 경고를 띄우지만 기능엔 문제 없음 — Developer Mode 켜거나 admin 으로 돌리면 공간 절감 가능.
+## [2026-04-20] Confirmed Exaone 3.5 7.8B (4-bit) loads on RTX 4070 16GB VRAM
+**Tried**: `BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=float16, bnb_4bit_use_double_quant=True)` + `device_map="auto"`, downloaded `LGAI-EXAONE/EXAONE-3.5-7.8B-Instruct` from HuggingFace (~15GB) and loaded.
+**Result**: First run downloaded 7 shards in ~3:55, then warm cache loaded 291 weights in ~28s. Korean→English translation ("삼성전자가 3분기 매출 70조원을 기록했다.") and tag JSON generation both work. CUDA usage stable.
+**Lesson**: 4-bit nf4 + double-quant comfortably fits 7.8B on a 16GB card (measured ~5–6 GB). Subsequent runs are fast since download is cached, so reuse the model via a singleton cache (`_CACHE` dict). On Windows, `huggingface_hub` warns about symlinks but functions fine — enabling Developer Mode or running as admin saves disk space.
 
-## [2026-04-20] bge-m3 로딩이 torch 2.5 환경에서 CVE-2025-32434 로 거절됨
-**시도**: `sentence-transformers.SentenceTransformer("BAAI/bge-m3")` 기본 호출로 Phase 2 dedup 용 임베더 로드.
-**결과**: `ValueError: Due to a serious vulnerability issue in torch.load, even with weights_only=True, we now require users to upgrade torch to at least v2.6`. 설치된 torch 는 `2.5.1+cu121` 이고 bge-m3 의 HF 스냅샷에는 `.safetensors` 와 `pytorch_model.bin` 이 공존하는데 sentence-transformers 가 `.bin` 을 선택하면서 CVE 게이트에 걸림.
-**배운 점**: `SentenceTransformer(..., model_kwargs={"use_safetensors": True})` 로 safetensors 강제. safetensors 포맷은 CVE-2025-32434 대상이 아니라 torch 2.5 환경에서도 바로 로드됨. torch 2.6 업그레이드를 기다릴 필요 없이 단일 플래그로 우회 가능 — 공급망 보안 관점에서도 `.bin` pickle 실행 리스크 제거 효과. `src/rag/embeddings.py` 싱글턴에 영구 적용, `docs/security-audit.md` 에도 기록.
+## [2026-04-20] bge-m3 load rejected by CVE-2025-32434 on torch 2.5
+**Tried**: `sentence-transformers.SentenceTransformer("BAAI/bge-m3")` for Phase 2 dedup embedder.
+**Result**: `ValueError: Due to a serious vulnerability issue in torch.load, even with weights_only=True, we now require users to upgrade torch to at least v2.6`. Installed torch is `2.5.1+cu121`; the bge-m3 HF snapshot has both `.safetensors` and `pytorch_model.bin`, and sentence-transformers picked the `.bin` and tripped the CVE gate.
+**Lesson**: Force safetensors via `SentenceTransformer(..., model_kwargs={"use_safetensors": True})`. The safetensors format is not affected by CVE-2025-32434 and loads fine on torch 2.5. No need to wait for torch 2.6 — single flag is the workaround. Also a supply-chain win: avoids `.bin` pickle execution risk. Applied permanently in the `src/rag/embeddings.py` singleton, recorded in `docs/security-audit.md`.
 
-## [2026-04-20] Exaone 7.8B 태그 분류는 "후보 좁히기" 용 — 정확도 기대 금지
-**시도**: Phase 2 검증에서 "한국 공공기관 AI 전환" 뉴스 20건에 대해 9-태그 분류 실행.
-**결과**: 정부 R&D 공모사업 기사("과기정통부 AI 과제 100억 지원") 여러 건에 `m_and_a` 태그가 과다 부여됨. 실제로는 공공 과제 공고 → 펀딩(`funding`) 또는 `regulatory` 가 맞음. 7.8B 모델이 "자금이 움직인다" 는 표면 시그널로 m_and_a 를 선택하는 경향.
-**배운 점**: 태그는 Phase 4 Sonnet 이 기사 서브셋을 고를 때의 **조잡한 필터**로만 취급. 실제 딜 판별·시그널 해석은 Sonnet 이 full body 를 보고 수행. 태그 품질을 올리려 few-shot 프롬프트를 계속 튜닝하는 것보다, 고가치 태그 7개에 한 번이라도 걸리면 full body 로 Sonnet 에 보내는 tier 정책이 실질 품질을 결정. (원칙: 로컬 모델의 분류는 recall 우선, precision 은 Sonnet 담당)
+## [2026-04-20] Exaone 7.8B tag classification is for "narrowing candidates" — don't expect precision
+**Tried**: Phase 2 validation, ran 9-tag classification over 20 articles for "한국 공공기관 AI 전환".
+**Result**: Government R&D RFPs ("MSIT to invest ₩10B in AI projects") were over-tagged with `m_and_a`. The right tags would be `funding` or `regulatory`. The 7.8B model picks `m_and_a` based on the surface signal of "money is moving".
+**Lesson**: Treat tags as a **coarse filter** for Phase 4 Sonnet to pick the article subset. Actual deal classification and signal interpretation come from Sonnet reading the full body. Instead of tuning few-shot prompts to lift tag quality, the real quality knob is the tier policy: any of the high-value 7 tags routes the article to Sonnet at full body. (Principle: local model classification favors recall; precision is Sonnet's job.)
 
-## [2026-04-20] Exaone 번역 출력에 `<article>` 프롬프트 경계 태그가 에코됨
-**시도**: `src/prompts/{en,ko}/translate.txt` 가 기사 본문을 `<article>...</article>` 로 감싸 prompt injection 경계를 만든 상태에서 한→영 번역 실행.
-**결과**: 일부 출력의 첫 줄에 `<article>` 태그가 그대로 포함됨. 모델이 입력 경계 마커를 "정식 출력 형식의 일부" 로 학습·복제하는 케이스. 번역 품질 자체는 정상.
-**배운 점**: 프롬프트 경계 태그는 **보안상 필수** (injection 방어)지만 소형 LLM 은 이를 에코할 수 있으므로 **출력 후처리에서 일괄 strip** 해야 함. `translate.py` 에 `<article>/</article>` strip 한 줄 추가 예정 (Phase 3 전 백로그). 일반화하면: 프롬프트 경계는 사용하되, 모델 출력이 그 마커를 포함할 수 있다고 가정하고 후처리 레이어에서 제거.
+## [2026-04-20] Exaone translation echoed `<article>` prompt-boundary tags
+**Tried**: With `src/prompts/{en,ko}/translate.txt` wrapping article body in `<article>...</article>` for prompt-injection defense, ran Korean→English translation.
+**Result**: Some outputs included `<article>` literally on the first line. The model learned the boundary marker as part of "valid output format". Translation quality itself was fine.
+**Lesson**: Prompt boundary tags are **security-critical** (injection defense) but small LLMs may echo them — **strip them in post-processing**. Will add `<article>/</article>` strip line to `translate.py` (backlog before Phase 3). Generalization: keep prompt boundaries, but assume model output may include the marker, and strip them in a post-processing layer.
 
-## [2026-04-20] 큰 Phase 는 work stream 4분할 + 플랜 파일 체크박스로 관리
-**시도**: Phase 3 RAG (LocalFile + Notion 커넥터, ChromaDB, 증분 인덱싱, retrieve API) 전체를 단일 세션으로 진행하려 했음.
-**결과**: 초기 플랜이 구조는 맞지만 운영 디테일(원자성·해시 안정화·Notion title 규칙·PDF 페이지 경계 등) 7개 부족 지적받아 반려. 동시에 한 세션에 전체 구현 시 후반부로 갈수록 컨텍스트 압박 + 초기 결정 파편화 리스크가 큰 사이즈임을 체감.
-**배운 점**: Phase 를 레이어 기준 **3~5개 work stream** 으로 쪼개고 각 스트림마다 **TO-BE / DONE 체크박스**를 플랜 파일(`~/.claude/plans/*.md`) 에 유지. 스트림 경계를 `/compact` 지점과 정렬 (보통 2번 정도). 세션이 단절돼도 다음 세션은 `status.md` 의 "진행 중" + 플랜 파일 체크박스만 읽고 정확히 재개 가능. Phase 3 를 스키마·정규화·청킹 / 저장소·검색 / 커넥터 / 인덱서·CLI 4축으로 쪼개 적용. 향후 Phase 4, 5, 7 도 동일 패턴 예상.
+## [2026-04-20] Big phases: 4 work streams + checkbox-based plan file
+**Tried**: Tried to do all of Phase 3 RAG (LocalFile + Notion connectors, ChromaDB, incremental indexing, retrieve API) in a single session.
+**Result**: Initial plan was structurally fine but rejected for missing 7 operational details (atomicity, hash stabilization, Notion title rules, PDF page boundaries, etc.). Also realized doing the full implementation in one session piles context pressure on the back half and risks early decisions fragmenting.
+**Lesson**: Split a phase into **3–5 work streams by layer**, each with a **TO-BE / DONE checklist** in a plan file (`~/.claude/plans/*.md`). Align stream boundaries with `/compact` points (usually ~2 of them). Even with session breaks, the next session resumes accurately by reading "in progress" in `status.md` + plan-file checkboxes. Phase 3 was split into schema-normalization-chunking / store-retrieval / connectors / indexer-CLI. Same pattern expected for Phases 4, 5, 7.
 
-## [2026-04-21] LangGraph `TypedDict(total=False)` + 선택 키 assert 순서
-**시도**: Phase 5 happy-path 테스트에서 `assert result["failed_stage"] is None or "failed_stage" not in result` 로 실패 없음 확인.
-**결과**: `KeyError: 'failed_stage'` — `or` 단락 평가로 첫 피연산자가 먼저 evaluate 되는데, 키 자체가 없으면 `result["failed_stage"]` 접근에서 터짐.
-**배운 점**: `total=False` TypedDict 에서 선택 키를 단언할 때는 **존재 검사 먼저**: `assert "failed_stage" not in result or result["failed_stage"] is None`. 패턴은 단순하지만 LangGraph 는 부분 state 머지를 기본으로 하기 때문에 모든 happy-path 테스트에 반복 적용됨.
+## [2026-04-21] LangGraph `TypedDict(total=False)` + optional-key assert order
+**Tried**: Phase 5 happy-path test had `assert result["failed_stage"] is None or "failed_stage" not in result`.
+**Result**: `KeyError: 'failed_stage'`. Short-circuit evaluation of `or` evaluates the first operand first, and missing-key access blows up.
+**Lesson**: For optional keys on `total=False` TypedDict, **check existence first**: `assert "failed_stage" not in result or result["failed_stage"] is None`. Pattern is simple but applies to every happy-path test, since LangGraph defaults to partial state merges.
 
-## [2026-04-21] `langgraph.__version__` 없음 — 버전 확인은 `pip show`
-**시도**: 설치된 LangGraph 버전을 확인하려고 `python -c "import langgraph; print(langgraph.__version__)"`.
-**결과**: `AttributeError`. LangGraph 패키지는 module-level `__version__` 을 노출하지 않음 (얇은 네임스페이스 래퍼).
-**배운 점**: Python 패키지 버전 확인은 `~/miniconda3/envs/bd-coldcall/python.exe -m pip show langgraph` 또는 `importlib.metadata.version("langgraph")` 로. `__version__` 관례는 패키지마다 제각각이라 신뢰 금지.
+## [2026-04-21] LangGraph has no `__version__` — use `pip show`
+**Tried**: `python -c "import langgraph; print(langgraph.__version__)"` to check the installed LangGraph version.
+**Result**: `AttributeError`. LangGraph doesn't expose a module-level `__version__` (thin namespace wrapper).
+**Lesson**: For Python package versions, use `~/miniconda3/envs/bd-coldcall/python.exe -m pip show langgraph` or `importlib.metadata.version("langgraph")`. The `__version__` convention varies by package — don't trust it.
 
-## [2026-04-21] LangGraph monkeypatch 는 pipeline.py 안에서 모듈 경로로 해석돼야 함
-**시도**: `src/graph/nodes.py` 에 `from src.search.brave import BraveSearch` 모듈-수준 import 를 놓고, `tests/test_pipeline.py` 에서 `monkeypatch.setattr(nodes, "BraveSearch", _FakeBrave)` 로 교체.
-**결과**: 노드가 `build_graph()` 로 compile 된 후 invoke 할 때 test double 이 아닌 원래 클래스가 호출됨. `pipeline.py` 가 `from src.graph.nodes import search_node` 로 심볼을 가져가면 참조가 고정되어 monkeypatch 가 뚫지 못함.
-**배운 점**: `pipeline.py` 에서는 개별 함수가 아니라 **모듈 자체를 import** (`from src.graph import nodes as _nodes`) 하고 `_nodes.search_node` 처럼 런타임 속성 조회. 이러면 테스트에서 `nodes.search_node` 속성을 바꾸면 그래프 실행 시점에도 새 참조가 보임. 일반화: monkeypatch 대상이 될 수 있는 의존성은 **from-import 대신 module-import + attribute access** 로.
+## [2026-04-21] LangGraph monkeypatches must resolve via the module path inside `pipeline.py`
+**Tried**: `src/graph/nodes.py` had `from src.search.brave import BraveSearch` at module level; `tests/test_pipeline.py` did `monkeypatch.setattr(nodes, "BraveSearch", _FakeBrave)`.
+**Result**: After `build_graph()` compiled the nodes, invoking the graph called the original class, not the test double. Because `pipeline.py` did `from src.graph.nodes import search_node`, the symbol reference was frozen and monkeypatch couldn't break through.
+**Lesson**: In `pipeline.py`, **import the module itself** (`from src.graph import nodes as _nodes`) and reach in with `_nodes.search_node` — runtime attribute lookup. Then test monkeypatches of `nodes.search_node` are visible at graph-execution time. Generalization: any dependency that may be monkeypatched should be **module-imported + attribute-accessed**, not from-imported.
 
-**2026-04-22 후속**: 이 교훈은 단순 스타일 취향이 아니라 테스트 신뢰성 근간이라는 판단 — 특히 graph/pipeline 계층은 monkeypatch 기반 테스트가 많아 심볼 바인딩 실수 시 **원본 의존성이 조용히 호출되며 false green 이 난다** (네트워크·API·LLM 호출이 테스트에서 몰래 나갈 수 있음). 재발성·중대성·발견 난이도 모두 높다는 합의로 CLAUDE.md 의 `## DO NOT` 섹션에 승격. 문구는 스코프 한정(patch 대상 + 부수효과 있는 외부 호출 + orchestration 계층) + "왜 금지인지 + 허용 패턴" 을 함께 적어 일반화. 상수·타입·예외 클래스 등 patch 대상이 아닌 심볼은 규칙 적용 대상 아님 — 모든 import 를 강제하면 코드가 지저분해져 현실성 떨어짐.
+**2026-04-22 follow-up**: Decided this isn't a style preference but a foundation for test reliability — graph/pipeline layers have heavy monkeypatch-based tests, and a binding mistake silently calls the real dependency, causing a **false green** (network/API/LLM calls leaking out of tests). Recurrence rate, severity, and detection difficulty are all high → promoted to CLAUDE.md `## DO NOT`. Wording is scoped (patch targets + side-effectful external calls + orchestration layers) and pairs "why" with "allowed pattern". Constants/types/exception classes are not patch targets and are exempt — forcing all imports to go via module would muddy the code for no practical gain.
 
-## [2026-04-21] Typer + Rich 의 `--help` 는 모듈 로드 시점에 한글 렌더링
-**시도**: `main.py` Typer 앱에서 커맨드 내부에 `sys.stdout.reconfigure(encoding="utf-8")` 를 호출하고 실행: `main.py --help`.
-**결과**: `UnicodeEncodeError: 'cp949' codec can't encode character '\u2014'` — docstring 의 em-dash 가 cp949 콘솔에 쏟아짐. Rich 의 help 렌더러가 사용자 커맨드 본문이 돌기 **전에** 렌더하기 때문에, 커맨드 안의 reconfigure 는 이미 늦음.
-**배운 점**: Typer 진입 스크립트는 **모듈 로드 시점**에 stdout/stderr 를 UTF-8 로 강제해야 함. `main.py` 최상단에 `for _stream in (sys.stdout, sys.stderr): _stream.reconfigure(encoding="utf-8")` 블록 배치. 일반 CLI (argparse 수동 파싱) 와 달리 선언적 프레임워크는 import 시점에 help 스트링을 포매팅한다는 점을 기억.
+## [2026-04-21] Typer + Rich `--help` renders Korean at module load
+**Tried**: Inside the Typer command body in `main.py`, called `sys.stdout.reconfigure(encoding="utf-8")` — then ran `main.py --help`.
+**Result**: `UnicodeEncodeError: 'cp949' codec can't encode character '—'` — em-dash from a docstring dumped to cp949 console. Rich's help renderer runs **before** the command body, so the in-body reconfigure is too late.
+**Lesson**: Typer entrypoints must force stdout/stderr to UTF-8 **at module load time**. Place this at the very top of `main.py`: `for _stream in (sys.stdout, sys.stderr): _stream.reconfigure(encoding="utf-8")`. Unlike manual argparse parsing, declarative frameworks format help strings at import time.
 
-## [2026-04-21] 단일 state 키를 여러 노드가 덮어쓰면 실패 post-mortem 정보가 사라짐
-**시도**: 초기 `AgentState.articles` 를 search_node → fetch_node → preprocess_node 가 차례로 덮어쓰는 단일 키로 구성. 각 노드는 이전 값을 읽어 풍부화한 새 리스트로 교체.
-**결과**: retrieve 에서 실패하면 state.articles 는 "preprocess 후" 상태라 OK 지만, fetch 에서 실패하면 articles 가 "search 원본" 인지 "fetch 중간" 인지 state 만 봐선 구분 불가. run_summary 에 `articles_after_preprocess.json` 으로 저장되지만 이름이 거짓말이 됨. 외부 어드바이저도 같은 지적.
-**배운 점**: 파이프라인의 **각 변환 스테이지는 자기 전용 출력 키** 를 가짐 — `searched_articles` / `fetched_articles` / `processed_articles` 3개로 분리. 다음 노드는 이전 스테이지 키를 **읽기 전용**으로 consume. persist 는 `latest_articles(state)` (processed > fetched > searched 폴백) 로 캐노니컬 출력을 만들고, 실패 경로에선 단계별 덤프도 같이. 원칙: "노드는 입력을 덮어쓰지 않는다, 자기 출력만 추가한다". LangGraph 뿐 아니라 어떤 DAG 파이프라인이든 후행 단계가 선행 단계 아티팩트를 관찰할 수 있어야 post-mortem 이 성립.
+## [2026-04-21] When multiple nodes overwrite a single state key, post-mortem info on failure is lost
+**Tried**: Initial `AgentState.articles` was a single key overwritten by search_node → fetch_node → preprocess_node in sequence. Each node read the prior value and replaced it with an enriched list.
+**Result**: If retrieve fails, state.articles is the "post-preprocess" version (OK), but if fetch fails, just looking at state can't tell whether articles is "search original" or "fetch midpoint". `run_summary`'s `articles_after_preprocess.json` becomes a misleading filename. External advisor flagged the same.
+**Lesson**: Each transformation stage in the pipeline gets its **own dedicated output key** — split into `searched_articles` / `fetched_articles` / `processed_articles`. Subsequent nodes consume prior keys **read-only**. Persistence builds a canonical output via `latest_articles(state)` (processed > fetched > searched fallback) and dumps stage-specific snapshots on the failure path. Principle: "nodes don't overwrite their input, they only add their own output". Applies to LangGraph and any DAG pipeline — without this, downstream stages can't observe upstream artifacts and post-mortem doesn't work.
 
-## [2026-04-22] FastAPI 라우트에서도 DO NOT 룰이 그대로 깨진다
-**시도**: Phase 7 `src/api/routes/runs.py` 에 `from src.api.runner import execute_run` 으로 심볼을 bind 해 BackgroundTasks 에 넘김. 테스트는 `monkeypatch.setattr("src.api.runner.execute_run", fake)` 로 가짜 러너를 주입해 Exaone·Sonnet 호출을 피하려 했음.
-**결과**: 첫 실행에서 테스트가 실제 Exaone 7.8B (4bit) 를 로드하고 Sonnet 까지 호출해 150+ 초 지연 + proposal_md 실측값 반환. routes 모듈이 자기 로컬 `execute_run` 이름을 이미 원본 함수에 바인딩했기 때문에 monkeypatch 가 `src.api.runner.execute_run` 속성만 바꿔도 라우트는 원본을 계속 부름 — **DO NOT 룰 2026-04-21 섹션과 정확히 같은 실수**. `src/api/routes/ingest.py::_manifest_path` 의 `from src.config.loader import get_settings` 도 동일한 이유로 테스트의 settings 오버라이드가 먹지 않아 실제 vectorstore 경로를 읽는 false-green 이 났음.
-**배운 점**: DO NOT 룰은 graph/pipeline 뿐 아니라 **FastAPI 라우트처럼 외부 호출을 트리거하는 모든 orchestration 계층** 에 동일하게 적용. `from src.api import runner as _runner` + `_runner.execute_run(...)`, `from src.config import loader as _config_loader` + `_config_loader.get_settings()` 패턴 일관 사용. 테스트 경로가 "구동" 직전에 반드시 거치는 얇은 어댑터 레이어는 모두 이 규칙 대상 — 단순 schema/const import 는 예외. 후속: 이미 CLAUDE.md 에 승격된 DO NOT 룰의 적용 범위가 충분히 넓다는 확인 (추가 승격 불필요).
+## [2026-04-22] DO NOT rule broke again in FastAPI routes
+**Tried**: Phase 7 `src/api/routes/runs.py` had `from src.api.runner import execute_run`, binding the symbol and passing it to BackgroundTasks. Tests injected a fake runner via `monkeypatch.setattr("src.api.runner.execute_run", fake)` to avoid Exaone/Sonnet calls.
+**Result**: First run actually loaded Exaone 7.8B (4-bit) and called Sonnet, taking 150+ seconds and returning a real `proposal_md`. The routes module had already bound the local `execute_run` name to the original function, so monkeypatching `src.api.runner.execute_run` did nothing — the route kept calling the original. **Same mistake as 2026-04-21 (graph/nodes), now in API routes.** `src/api/routes/ingest.py::_manifest_path`'s `from src.config.loader import get_settings` had the identical issue, so test settings overrides didn't apply and the real vectorstore path leaked through as a false green.
+**Lesson**: The DO NOT rule applies to **every orchestration layer that triggers external calls** — graph/pipeline plus FastAPI routes. Use `from src.api import runner as _runner` + `_runner.execute_run(...)`, `from src.config import loader as _config_loader` + `_config_loader.get_settings()` consistently. Any thin adapter layer the test path traverses just before "execution" falls under this rule — pure schema/const imports are exempt. Follow-up: confirmed CLAUDE.md's promoted DO NOT rule is broad enough (no further escalation needed).
 
-## [2026-04-22] SSE 에 코루틴-thread-safe 큐를 안 쓴 이유
-**시도**: Phase 7 백엔드가 BackgroundTasks(anyio worker thread) 에서 돌리는 `orchestrator.run_streaming()` 의 각 super-step 을 SSE(event loop) 로 전달할 방법이 필요. 초안에서는 `asyncio.Queue` 를 `RunRecord` 에 달고 worker 가 `asyncio.run_coroutine_threadsafe(queue.put, loop)` 로 푸시하는 구조를 고려.
-**결과**: 이 설계는 현재 MVP 에는 과도. `asyncio.Queue` 는 thread-safe 가 아니라 `put_nowait` 을 worker thread 에서 직접 호출하면 깨질 수 있고, `run_coroutine_threadsafe` 는 메인 루프를 caller 에서 알아야 해서 엉켜듬. SSE 세션별 구독자 관리·백프레셔·큐 메모리 바운드까지 고려하면 코드가 불필요하게 커짐.
-**배운 점**: 이벤트 수가 **작고 append-only** (7 stage + ~5 meta = ≤~15 이벤트/run) 일 때는 `RunRecord.events: list[RunEvent]` + `threading.Lock` + SSE 쪽 **150ms 폴링** 이 가장 단순하고 틀릴 여지가 적음. `last_seq` 커서로 증분만 yield, 종결 상태 감지 후 stream close. "이벤트가 드물고 끝이 있는 스트림" 에서는 queue 기반 pub/sub 대신 poll-log 패턴이 더 알맞음. Celery/RQ + Redis 큐로 넘어갈 때 (장기 과제) 이 구조를 자연스럽게 pub/sub 으로 교체 가능.
+## [2026-04-22] Why we didn't use a coroutine-thread-safe queue for SSE
+**Tried**: Phase 7 backend had to relay each super-step from `orchestrator.run_streaming()` (running in BackgroundTasks / anyio worker thread) to SSE (event loop). Initial sketch attached `asyncio.Queue` to `RunRecord` and pushed via `asyncio.run_coroutine_threadsafe(queue.put, loop)` from the worker.
+**Result**: Overkill for the MVP. `asyncio.Queue` is not thread-safe — calling `put_nowait` directly from a worker thread can break it; `run_coroutine_threadsafe` requires the caller to know the main loop, which entangles the design. Adding per-SSE subscriber bookkeeping, backpressure, and a bounded queue blows up the code.
+**Lesson**: When events are **few and append-only** (7 stages + ~5 metas = ≤~15 events/run), `RunRecord.events: list[RunEvent]` + `threading.Lock` + SSE-side **150ms polling** is simplest and least error-prone. Use `last_seq` cursor for incremental yield, detect terminal state, close the stream. For "rare events with a known terminal state", poll-log beats queue pub/sub. When we eventually move to Celery/RQ + Redis (long-term), this structure swaps cleanly into pub/sub.
 
-## [2026-04-22] SqliteSaver 는 `check_same_thread=False` 가 필수
-**시도**: Phase 7 `build_sqlite_checkpointer()` 초안에서 `sqlite3.connect(db_path)` 로 default 로 커넥션을 열고 `SqliteSaver(conn)` 을 lifespan 에 저장.
-**결과**: `/runs` POST 가 BackgroundTasks 로 dispatch 되면 anyio worker thread 가 checkpointer 를 쓰는데, 같은 커넥션을 event loop(다른 스레드) 도 참조 → `ProgrammingError: SQLite objects created in a thread can only be used in that same thread`.
-**배운 점**: FastAPI + BackgroundTasks + `SqliteSaver` 조합에서는 커넥션을 `sqlite3.connect(path, check_same_thread=False)` 로 열고 `SqliteSaver(conn)` 에 넘겨야 한다. 병행 write 보호는 langgraph-checkpoint-sqlite 내부 락이 담당. `close_checkpointer()` 헬퍼로 lifespan 종료 시 conn 명시 close. 장기적으로 SqliteSaver 의 context-manager 기반 `from_conn_string()` 관용 패턴과 충돌하므로, 추후 `async with` 기반 re-architecture 시 다시 검토 필요.
+## [2026-04-22] SqliteSaver requires `check_same_thread=False`
+**Tried**: First `build_sqlite_checkpointer()` opened the connection with default `sqlite3.connect(db_path)` and stored `SqliteSaver(conn)` in lifespan.
+**Result**: When `/runs` POST dispatched to BackgroundTasks, the anyio worker thread accessed the checkpointer while the event loop (different thread) also held a reference → `ProgrammingError: SQLite objects created in a thread can only be used in that same thread`.
+**Lesson**: For FastAPI + BackgroundTasks + `SqliteSaver`, open the connection with `sqlite3.connect(path, check_same_thread=False)` and pass it to `SqliteSaver(conn)`. Concurrent-write protection is handled internally by langgraph-checkpoint-sqlite locking. Use `close_checkpointer()` helper to explicitly close on lifespan shutdown. Long-term, this conflicts with `SqliteSaver`'s `from_conn_string()` context-manager idiom — revisit when re-architecting around `async with`.
 
-## [2026-04-22] Next.js 15 + React 19 GA 는 Next 15.0.x 와 peer 충돌
-**시도**: Phase 7 `web/package.json` 에 `next@15.0.3` + `react@19.0.0` 고정 조합 사용.
-**결과**: `npm install` 이 `peer react@"^18.2.0 || 19.0.0-rc-66855b96-20241106" from next@15.0.3` ERESOLVE 로 거절. Next 15.0.x 는 React 19 **RC 특정 해시** 만 인식하고 GA 19 를 받아들이지 못함.
-**배운 점**: React 19 GA 는 **Next.js 15.1+** 부터 지원. 새 프로젝트 시작 시 `next@^15.1.0` + `react@^19.0.0` 를 caret 으로 지정해 npm 이 자연히 호환 버전 선택하게 두는 게 깔끔. `--legacy-peer-deps` 우회는 표면적 해결이며 downstream 에서 subtle한 hydration bug 가 날 수 있어 지양.
+## [2026-04-22] Next.js 15 + React 19 GA conflicts with Next 15.0.x peer
+**Tried**: Phase 7 `web/package.json` pinned `next@15.0.3` + `react@19.0.0`.
+**Result**: `npm install` rejected with ERESOLVE: `peer react@"^18.2.0 || 19.0.0-rc-66855b96-20241106" from next@15.0.3`. Next 15.0.x only recognizes a specific React 19 RC hash, not GA 19.
+**Lesson**: React 19 GA needs **Next.js 15.1+**. New projects should pin `next@^15.1.0` + `react@^19.0.0` with caret so npm naturally picks compatible versions. Avoid `--legacy-peer-deps` workarounds — they paper over the issue and downstream hydration bugs can surface subtly.
 
-## [2026-04-21] Notion MCP `update_content` 의 `new_str` 크기 경계
-**시도**: `/patchnotes` 스킬로 v0.5.0 패치노트 엔트리를 Notion 페이지에 삽입. 엔트리 전체를 단일 `update_content` 요청의 `new_str` 에 포함.
-**결과**: 첫 시도에서 `~10KB+` 페이로드가 Cloudflare WAF 에 걸려 실패한 적이 있었음 (v0.3.0 배치 때). 이번엔 섹션당 3~5 bullet 로 깎아서 ~3KB 로 통과.
-**배운 점**: Notion MCP `update_content` 는 단일 요청 페이로드가 커지면 외부 WAF/reverse-proxy 에 막힐 수 있음. 패치노트 엔트리는 **섹션당 3~5 bullet** 를 soft limit 으로. 더 큰 업데이트가 필요하면 여러 번의 작은 `update_content` 로 분할하거나, 섹션 기준 분할. 재발 방지: 이미 메모리(`feedback_patchnotes_payload.md`)에 규칙화돼 있으나 lesson 으로도 남겨 다음 유지보수 세션이 읽을 수 있게.
+## [2026-04-21] Notion MCP `update_content` payload-size boundary
+**Tried**: Used `/patchnotes` skill to insert v0.5.0 patch note entry into Notion, with full entry in a single `update_content` request `new_str`.
+**Result**: First attempt for v0.3.0 batch failed at `~10KB+` payload, blocked by Cloudflare WAF. This time trimmed to 3–5 bullets per section (~3KB) and it went through.
+**Lesson**: Notion MCP `update_content` can be blocked by an external WAF/reverse-proxy when the single-request payload is large. Soft limit: **3–5 bullets per section** for patch note entries. For larger updates, split into multiple smaller `update_content` calls (or split by section). Prevention: already captured in memory (`feedback_patchnotes_payload.md`); duplicated here so future maintenance sessions catch it.
 
-## [2026-04-20] RAG 청킹은 문자 기준이 아니라 문장 단위 greedy + 문장 단위 overlap
-**시도**: 초안에서 `chunk_size=500`, `chunk_overlap=50` 을 단순 문자 슬라이딩 윈도우로 구현 (많은 RAG 튜토리얼의 기본 패턴).
-**결과**: 플랜 리뷰에서 "문장 중간이 잘리거나 문단 의미가 부자연스럽게 중복"될 수 있다는 지적. 특히 한글은 종결어미가 뒤에 오는 구조라 문자 중간 cut 시 의미 단위 파손이 더 큼. bge-m3 retrieval 품질이 chunker 에서 크게 갈린다는 관찰.
-**배운 점**: **문장을 1차 단위로 greedy 패킹**하고, 다음 청크의 **overlap 도 문장 단위 tail** 로 구성. 단일 문장이 `chunk_size` 를 넘길 때만 예외적으로 문자 단위 hard-split + 문자 overlap fallback. 문장 경계는 `[.!?。！？]\s+` + `\n\s*\n` (단락 boundary). 구현: `src/rag/chunker.py` `chunk_document()`. 회귀: `tests/test_chunker.py` 12건 (문장 오버랩, 긴 문장 fallback, 한글 단락 분리, chunk_overlap=0, 공용 필드 전파, id 유니크). 전처리 normalize (`normalize_content`) 도 이 단계에서 통일해 해시 안정화까지 같이 잡음.
+## [2026-04-20] RAG chunking is sentence-greedy with sentence-level overlap, not char-based
+**Tried**: First draft was the standard RAG-tutorial pattern — `chunk_size=500`, `chunk_overlap=50` with a plain char-sliding window.
+**Result**: Plan review flagged "sentences cut mid-string, paragraph meaning duplicated unnaturally". Korean is especially fragile because sentence-final endings come last — char-cuts in the middle damage meaning units more. bge-m3 retrieval quality is heavily decided by the chunker.
+**Lesson**: **Sentences are the primary unit, packed greedily**, with overlap also sentence-level (tail of next chunk). Only fall back to char-level hard-split + char-overlap when a single sentence exceeds `chunk_size`. Sentence boundary regex: `[.!?。！？]\s+` + `\n\s*\n` (paragraph boundary). Implementation: `src/rag/chunker.py::chunk_document()`. Regression: `tests/test_chunker.py` 12 cases (sentence overlap, long-sentence fallback, Korean paragraph split, chunk_overlap=0, shared-field propagation, id uniqueness). Normalization (`normalize_content`) is unified in this stage to also stabilize hashes.
 
-## [2026-04-28] DO NOT 룰 새 모듈 (`src/core/scoring.py`) 에서도 재발 (3번째)
-**시도**: Phase 9.1 `src/core/scoring.py` 신설 시 `from src.config.loader import load_tier_rules_config, load_weights_config` 로 함수 직접 import. 테스트 (`tests/test_scoring.py`) 가 `monkeypatch.setattr(_loader, "load_weights_config", ...)` 로 yaml 로딩 가짜화 시도.
-**결과**: 13건 중 4건 fail. scoring 모듈이 import 시점에 함수 참조 고정해서 monkeypatch 가 안 먹음 — 2026-04-21 (graph/nodes), 2026-04-22 (api/routes) 에 이미 본 함정의 3번째 재발. CLAUDE.md DO NOT 룰이 graph/pipeline/api/orchestration 계층 명시했지만, 새 core 모듈 작성 시 무심코 재발.
-**배운 점**: DO NOT 룰의 적용 영역은 "patch 대상 + 부수효과 있는 외부 호출 + orchestration 계층" 에서 실은 "**테스트가 monkeypatch 하는 모든 외부 의존성**" 으로 확장. core/ 같은 신규 모듈도 yaml 로딩·외부 호출·LLM 클라이언트 등을 import 할 때마다 무조건 모듈 경유 (`from src.config import loader as _loader` + `_loader.load_X()`). 새 모듈 작성 시 첫 import 단계에서 자문: "이 함수가 테스트에서 monkeypatch 될 가능성이 있나?" — 답이 "예" 거나 모르겠으면 모듈 경유. 의식적으로 하지 않으면 또 재발할 패턴이라 새 모듈 추가 시 이 lesson grep 후 진행.
+## [2026-04-28] DO NOT rule recurred in a new module (`src/core/scoring.py`) — third time
+**Tried**: When adding `src/core/scoring.py` for Phase 9.1, used direct function imports: `from src.config.loader import load_tier_rules_config, load_weights_config`. Tests (`tests/test_scoring.py`) tried `monkeypatch.setattr(_loader, "load_weights_config", ...)` to fake yaml loading.
+**Result**: 4 of 13 cases failed. The scoring module froze function references at import time, so monkeypatch didn't apply — same trap as 2026-04-21 (graph/nodes) and 2026-04-22 (api/routes), now the third recurrence. CLAUDE.md DO NOT explicitly listed graph/pipeline/api/orchestration, but I wrote new core code without thinking.
+**Lesson**: Extend the rule's scope from "patch targets + side-effectful external calls + orchestration layers" to **every external dependency tests monkeypatch**. New modules under `core/` etc. must always go module-via (`from src.config import loader as _loader` + `_loader.load_X()`) when importing yaml loaders, external calls, LLM clients, etc. Self-check at first-import: "Could this function be monkeypatched in tests?" If yes (or unsure) → module-via. Without this discipline it'll recur — grep this lesson when adding a new module.
 
-## [2026-04-28] Auto-normalize 한 weight 와 정수 score 곱이 threshold 정확 비교 시 float drift
-**시도**: Phase 9.1 scoring 엔진. `weights.yaml::products.databricks` override 합 1.10 → auto-normalize → 각 weight = 사용자값 / 1.10. `decide_tier(7.0, rules)` 검증.
-**결과**: scores=[7,7,7,7,7,7] 인 후보가 final_score = 7 × sum(normalized weights) = 7 × 1.0 = 7.0 으로 나와야 하는데 실측 6.999999999999999. tier_rules 의 A 임계값이 7.0 인데 `7.0 >= 7.0` 비교가 `False` 로 떨어져 B 로 강등 (smoke test 에서 발견).
-**배운 점**: float 곱·합산이 손실 없이 라운드 트립 안 되는 일반 케이스 (0.1 + 0.1 + 0.1 != 0.3 와 같은 부류). threshold 기반 결정 함수는 **항상 epsilon 허용** — `final_score >= threshold - 1e-6` 형태. 사용자가 yaml 에 `8.0` 같은 깔끔한 정수 threshold 를 쓸 거니까 코드도 그 의도 그대로 매치되게 만들어야지, "사용자가 7.0 이라 했으니 정확히 7.0 이상" 같은 strict 비교는 normalize·weighted-sum 경로에서 거의 항상 깨짐. 일반화: 정수 입력으로 시작했어도 중간에 division / sum 이 한 번이라도 들어가면 threshold 비교 시 epsilon 필요. 단, `==` 비교는 절대 X (epsilon 도 무용지물 패턴 — `>=`/`<=` 만 안전).
+## [2026-04-28] Auto-normalized weights × integer scores: float drift breaks exact threshold compare
+**Tried**: Phase 9.1 scoring engine. `weights.yaml::products.databricks` override summed to 1.10 → auto-normalize → each weight = user_value / 1.10. Verified `decide_tier(7.0, rules)`.
+**Result**: Candidate with scores=[7,7,7,7,7,7] should produce final_score = 7 × sum(normalized weights) = 7 × 1.0 = 7.0, but measured 6.999999999999999. tier_rules' A threshold was 7.0, so `7.0 >= 7.0` evaluated `False` and the candidate was demoted to B (caught in smoke test).
+**Lesson**: Float multiplication and summation lose round-trip precision (general case, like `0.1 + 0.1 + 0.1 != 0.3`). Threshold-based decision functions should **always allow epsilon** — `final_score >= threshold - 1e-6`. Users will write clean integer thresholds like `8.0` in yaml, so the code should match that intent — not "user wrote 7.0, must be exactly ≥ 7.0", which almost always breaks under normalize/weighted-sum paths. Generalization: if division/sum touches the value at any point, threshold compares need epsilon. But never `==` — even with epsilon, `==` is hopeless. Stick to `>=`/`<=`.
 
-## [2026-04-28] Phase 9 첫 산출의 theoretical-fit 편향 → scoring 분리로 fix
-**시도**: Phase 9 RAG-only target discovery MVP 를 Sonnet 1회 호출로 25 후보 (5 산업 × 5 회사) tier 직접 판정. prompt 에 "S = direct trigger / A = strong fit / B = adjacent / C = long-shot" 추상 정의.
-**결과**: 8 S / 10 A / 7 B / 0 C. JPMorgan / Goldman / Amazon / Walmart / NVIDIA 같은 Fortune-500 mega-cap 위주 + Snowflake (직접 경쟁사) A tier + 한국 기업 0개. "이론상 데이터 핏" 으로 판정했지만 실제 영업 어려운 회사 (AWS 본체·자체 플랫폼 lock-in) 가 상위 점거. C tier 부재로 Strategic Edge 인지 안 됨. 외부 어드바이저 피드백: "콜드콜은 데이터 규모가 아니라 landability (받아줄 조직·예산·대체 가능성) 가 결정. weight.yaml 분리 강추".
-**배운 점**: prompt 정교화로 fix 시도 전에 **결정 가능한 수치를 코드로 빼낼 수 있는지** 먼저 검토. LLM 의 역할을 "tier 직접 판단" → "6 차원 0-10 점수" 로 좁히고, final_score / tier 는 코드가 weighted sum + threshold rule 로 결정. 결과 (Phase 9.1 재실행): mega-cap S 사라짐, mid-cap (Stripe / Adyen / Tempus AI) S 진입, 한국 기업 7개 진입, Snowflake → B 강등. 같은 LLM 응답을 다른 weight 로 재계산하면 비용 0. 일반 원칙: **LLM hallucination 을 prompt 로 누르려 하지 말고, 결정 가능한 부분을 격리해라**. playbook.md #14 로 재사용 패턴 등록.
+## [2026-04-28] Phase 9 first-pass theoretical-fit bias → fixed by separating scoring from LLM
+**Tried**: Phase 9 RAG-only target discovery MVP — single Sonnet call, 25 candidates (5 industries × 5 companies), tier judged directly by the model. Prompt defined "S = direct trigger / A = strong fit / B = adjacent / C = long-shot" abstractly.
+**Result**: 8 S / 10 A / 7 B / 0 C. Mostly Fortune-500 mega-caps (JPMorgan / Goldman / Amazon / Walmart / NVIDIA) + Snowflake (a direct competitor) at A tier; zero Korean companies. The model judged "theoretical data fit" — but in practice these are hard to actually sell to (AWS proper, self-built platform lock-in). C tier absent → no Strategic Edge signal. External advisor: "cold-calling is decided by landability (orgs/budget/replaceability), not data scale. Strongly recommend separating weights.yaml."
+**Lesson**: Before "fix it with prompt tuning", check whether **decidable parts can be peeled off into code**. Narrowed LLM's role to "6-dim 0–10 scoring", and final_score / tier are computed by code (weighted sum + threshold rule). Phase 9.1 rerun: mega-caps dropped from S, mid-caps (Stripe / Adyen / Tempus AI) entered S, 7 Korean companies entered, Snowflake demoted to B. Recomputing the same LLM response under different weights costs $0. General principle: **don't try to suppress LLM hallucination with prompts — isolate the decidable parts**. Registered as `playbook.md#14`.
 
-## [2026-04-28] 공유 `_extract_json` 의 array-first 우선순위가 dict 호출자에서 inner list 만 잡음
-**시도**: Phase 9 `parse_discovery` 에서 Sonnet 의 `{"industry_meta": {...}, "candidates": [...]}` 응답을 파싱하려고 `proposal_schemas._extract_json` 재사용. prose 가 섞인 응답 ("Here you go: {...} Let me know.") 에 대한 회귀 테스트 추가.
-**결과**: `_extract_json` 이 4단 fallback 중 `_ARRAY_RE` (`\[.*\]`) 를 `_OBJECT_RE` (`\{.*\}`) 보다 **먼저** 시도하기 때문에, top-level 이 dict 인 응답에서도 `candidates` 의 inner list 만 매치되어 list 가 반환됨. parse_discovery 의 dict 검증에서 `expected JSON object ... got list` 로 실패. 기존 호출자 (`parse_proposal_points`) 는 top-level list 를 기대하니 문제없었지만, dict 호출자에선 의미가 정반대.
-**배운 점**: 4단 fallback util 의 array vs object **우선순위는 호출자 스키마에 종속** — 공유 util 을 수정하면 기존 list 호출자가 깨지므로, **dict 호출자는 자기만의 thin helper** 를 만든다. `src/core/discover_types.py::_extract_json_object` (raw → fenced → object 만 시도) 로 분기. 일반화: regex-greedy + try-parse-each 방식의 4단 fallback 은 구조가 같아 보이지만 첫 매치가 곧 결과라 호출자 schema 별로 다른 우선순위 helper 가 필요할 수 있다. 공유 util 의 docstring 에 "list 우선" 을 명시해 다음 사람이 같은 함정을 안 밟게.
+## [2026-04-28] Shared `_extract_json` array-first ordering grabs inner list when caller wants dict
+**Tried**: Phase 9 `parse_discovery` reused `proposal_schemas._extract_json` to parse Sonnet's `{"industry_meta": {...}, "candidates": [...]}` response. Added regression for prose-mixed responses ("Here you go: {...} Let me know.").
+**Result**: `_extract_json`'s 4-tier fallback tries `_ARRAY_RE` (`\[.*\]`) **before** `_OBJECT_RE` (`\{.*\}`). For top-level dict responses, the inner `candidates` list was matched first and returned, so parse_discovery's dict-validation failed with `expected JSON object ... got list`. Existing caller (`parse_proposal_points`) wanted top-level list, so it was unaffected — but the dict caller had inverted needs.
+**Lesson**: For a 4-tier fallback util, **array vs object priority depends on caller schema** — modifying the shared util breaks existing list callers, so **dict callers get their own thin helper**. Branched into `src/core/discover_types.py::_extract_json_object` (raw → fenced → object only). Generalization: regex-greedy + try-parse-each fallbacks share structure but the first match wins, so different callers may need differently-ordered helpers. Note "list-first" in the shared util's docstring so the next person doesn't fall in.
 
-## [2026-04-28] 새 LLM step 에 기존 `max_tokens` setting 재사용 → output truncate 로 양쪽 시도 다 실패
-**시도**: Phase 9 discover 가 `chat_cached(..., max_tokens=settings.llm.claude_max_tokens_synthesize)` 로 호출. synthesize 와 입력 패턴이 비슷해서 같은 `max_tokens=2000` setting 재사용한 것이 자연스러워 보였음.
-**결과**: 실제 1회 실행에서 두 번 다 `ValueError: discover_targets failed after 2 attempts: no JSON found in discovery output`. 디버그로 raw 응답 캡처해 보니 output_tokens=2511 / 2852 — synthesize 는 5 ProposalPoint (~1.5K out) 라 2000 cap 으로 충분했지만, discover 는 5 산업 + 25 후보 + 각 1~2문장 rationale 합산이 ~2.5K out 으로 일관되게 cap 초과. JSON 이 닫히지 않은 상태로 잘려 두 번째 retry 도 같은 사이즈로 실패.
-**배운 점**: 새 LLM step 추가 시 입력 패턴이 비슷해도 **output 분포는 별도 추정** 후 setting 키 신설. `claude_max_tokens_discover=4000` 추가 (synthesize 2000 / draft 4000 / discover 4000). 추정 공식 안내: `n_items × (avg rationale tokens + structural overhead) × 1.3 safety`. 25 × (~80 + 20) × 1.3 ≈ 3300 → 4000 round up. retry 가 truncate 된 응답을 다시 truncate 만 하므로 max_tokens 부족은 retry 로 못 구함 — sched 인자 자체가 문제일 때 retry 는 무력화.
+## [2026-04-28] New LLM step reused old `max_tokens` setting → output truncated, both retries failed
+**Tried**: Phase 9 discover called `chat_cached(..., max_tokens=settings.llm.claude_max_tokens_synthesize)`. Reusing `max_tokens=2000` felt natural since input pattern was similar to synthesize.
+**Result**: Both retries failed with `ValueError: discover_targets failed after 2 attempts: no JSON found in discovery output`. Capturing raw responses showed output_tokens=2511 / 2852 — synthesize emits 5 ProposalPoints (~1.5K out, 2000 cap was fine), but discover emits 5 industries + 25 candidates + 1–2 sentence rationales each, ~2.5K out, consistently exceeding the cap. JSON was cut mid-stream and the second retry hit the same size.
+**Lesson**: When adding a new LLM step, **estimate output distribution separately** even when input pattern is similar, and create a new setting key. Added `claude_max_tokens_discover=4000` (synthesize 2000 / draft 4000 / discover 4000). Estimation formula: `n_items × (avg rationale tokens + structural overhead) × 1.3 safety`. 25 × (~80 + 20) × 1.3 ≈ 3300 → round up to 4000. Retries can't recover from truncated responses — when `max_tokens` is the bug, retry is useless.
 
-## [2026-04-28] dict iteration 순서가 set-init 으로 비결정 → pytest 어설션 flake
-**시도**: `parse_discovery` 의 industry-distribution 검증에서 `industry_keys = set(industry_meta.keys())` + `counts: dict[str, int] = {k: 0 for k in industry_keys}`. 잘못된 분포 ('a':3, 'b':1) 에 대해 `pytest.raises(ValueError, match="industry 'a' has 3")` 로 어설션.
-**결과**: 같은 입력으로 첫 실행은 'a' 가 raise 되어 통과, 다음 실행은 'b' 가 먼저 검사되어 "industry 'b' has 1 candidates, expected 2" 가 raise 되어 어설션 실패. set 의 iteration 순서가 hash 기반 비결정이라 dict 의 순서 (set comprehension 거치면 set 의 순서 계승) 도 비결정.
-**배운 점**: dict 의 안정적 순서 (insertion order, Python 3.7+) 를 활용하려면 **dict 자체의 키를 직접 순회** (`for ind in industry_meta`) 해야 함. set 을 중간에 거치면 순서가 무효화됨. 이 패턴은 sorted-needed 가 아니라 단순히 "원본 입력 순서" 가 정답일 때 유효 — 정렬 필요한 경우엔 명시적 `sorted()` 가 더 안전. 일반화: 검증 / 에러 메시지 / 테스트 어설션이 dict 의 순서에 의존한다면, 그 dict 가 어디서 어떻게 만들어졌는지 거꾸로 추적해서 set 경유 여부 확인.
+## [2026-04-28] Set-init breaks dict iteration order → flaky pytest assertion
+**Tried**: `parse_discovery`'s industry-distribution check used `industry_keys = set(industry_meta.keys())` + `counts: dict[str, int] = {k: 0 for k in industry_keys}`. For invalid distributions ('a':3, 'b':1), asserted via `pytest.raises(ValueError, match="industry 'a' has 3")`.
+**Result**: First run raised on 'a' (passed); next run checked 'b' first and raised "industry 'b' has 1 candidates, expected 2" (assertion failed). `set` iteration order is hash-driven and nondeterministic, and dict order inherited from a set comprehension is too.
+**Lesson**: To leverage Python 3.7+ dict insertion-order guarantee, **iterate the dict directly** (`for ind in industry_meta`). Going through a set kills the order. This pattern only works when "input order" is the desired order — for explicit sorting use `sorted()`. Generalization: when validation/error messages/test assertions depend on dict order, trace back to find any set-pass-through that broke it.
 
-## [2026-04-28] Phase 8 multi-channel 39 기사 dedup 시 RTX 4070 16GB OOM
-**시도**: 채널 cap 합 = 40 (target 20 + related 15 + competitor 5) 으로 search_node 다중 채널화. preprocess 의 dedup 단계가 `embed_texts(texts)` 를 batch_size 미지정 default 로 호출 → 39 articles × 평균 ~3500 자 body 한 번에 임베딩.
-**결과**: 첫 풀 스모크 시 `torch.OutOfMemoryError: Tried to allocate 5.60 GiB. GPU 0 has a total capacity of 15.99 GiB ... 19.80 GiB is allocated by PyTorch`. Exaone 4bit (~6GB) 가 GPU 점유 중에 bge-m3 가 39 sequence batch 를 한 번에 올리려다 OOM. Phase 5 의 20-기사 baseline 에서는 안 보이던 회귀.
-**배운 점**: 채널이 늘어 raw input 이 2배가 되면 dedup embedding 의 GPU 압박이 비선형으로 폭증. 세 가지 안전 장치 동시 적용:
-1. `embed_texts(..., batch_size=8)` — 한 번에 올리는 sequence 수 cap. 16GB 카드에서 Exaone + bge-m3 공존 가능한 보수값.
-2. dedup 입력 텍스트 첫 3000 자 truncate — 임베딩 의미는 lede / 첫 단락에 거의 다 있고, 0.90 threshold 의 dedup 정확도에는 영향 미미.
-3. dedup 직전 `torch.cuda.empty_cache()` — Exaone 이 남긴 fragmented block 회수.
-plan 의 위험 분석에서 정확히 예측한 케이스 (cap 합 40 vs RTX 4070 16GB) — **사전 분석한 위험은 fixture/CI 로 회귀 잠그지 않으면 1회는 반드시 발생함**. 향후 채널 cap 늘릴 때 batch_size·truncate 도 같이 재계산. 구현: `src/rag/embeddings.py::embed_texts` / `dedup_articles`. 기존 `tests/test_dedup.py` 7건 무영향 (작은 배치라 cap 무관).
-
-
-## [2026-04-30] FastAPI lifespan 의 자동 마이그레이션이 테스트 중에 실제 사용자 data/ 를 건드렸다
-**시도**: Phase 10 P10-2a 에서 `migrate_flat_layout(vectorstore_root, company_docs_root)` 을 `app.py::lifespan` 에 best-effort 로 호출. 환경변수 토글 없이 바로 동작.
-**결과**: pytest 실행 중 `tests/test_api_db.py::test_lifespan_initializes_app_db` 등 `create_app()` 을 호출하는 테스트가 lifespan 까지 깨우면서, `PROJECT_ROOT / "data" / "vectorstore"` (절대 경로) 의 실제 평면 layout 을 `data/vectorstore/default/` 로 이동시켰다. 다행히 마이그레이션 함수가 idempotent + dest.exists() skip 이라 손실은 없었지만, 테스트가 사용자 데이터를 건드릴 수 있다는 점은 위험 신호.
-**배운 점**: FastAPI lifespan 의 자동 마이그레이션 같은 "환경을 mutating" 하는 부수효과는 (1) 환경변수 toggle 로 default off 하거나 (2) 테스트 fixture 가 PROJECT_ROOT 를 override 가능하도록 인자화하거나 (3) 명시적 CLI 명령으로만 트리거. 본 케이스는 1회성 마이그레이션이라 큰 후속 처리는 안 했지만, 향후 비슷한 mutation 코드가 lifespan 에 들어가면 `os.environ.get("APP_AUTO_MIGRATE", "0") == "1"` 같은 가드를 default 로 채택. 또 마이그레이션 함수 자체는 idempotent + best-effort + dest 보존 (overwrite 금지) 가 필수 — 이 세 가지 덕분에 사고가 손실로 이어지지 않았다.
+## [2026-04-28] Phase 8 multi-channel 39-article dedup OOM on RTX 4070 16GB
+**Tried**: Sum of channel caps = 40 (target 20 + related 15 + competitor 5) for multi-channel search_node. preprocess dedup called `embed_texts(texts)` with default batch_size → embedded 39 articles × ~3500 char body in one shot.
+**Result**: First full smoke run hit `torch.OutOfMemoryError: Tried to allocate 5.60 GiB. GPU 0 has a total capacity of 15.99 GiB ... 19.80 GiB is allocated by PyTorch`. Exaone 4-bit (~6GB) was holding the GPU and bge-m3 tried to push 39 sequences in a single batch. Phase 5 baseline (20 articles) didn't expose this — silent regression.
+**Lesson**: Doubling raw input via more channels causes nonlinear GPU pressure spike for dedup embedding. Three guards applied together:
+1. `embed_texts(..., batch_size=8)` — cap sequences per batch. Conservative for Exaone + bge-m3 coexistence on 16GB.
+2. Truncate dedup input texts to first 3000 chars — embedding meaning is mostly in lede/first paragraph; 0.90-threshold dedup accuracy is barely affected.
+3. `torch.cuda.empty_cache()` right before dedup — reclaim Exaone's fragmented blocks.
+The plan's risk analysis predicted this exact case (cap-sum 40 vs RTX 4070 16GB) — **predicted risks fire at least once unless locked behind a fixture/CI**. When increasing channel caps in the future, recompute batch_size and truncate too. Implementation: `src/rag/embeddings.py::embed_texts` / `dedup_articles`. Existing `tests/test_dedup.py` 7 cases unaffected (small batches, cap-irrelevant).
 
 
-## [2026-05-02] CORS allow_methods 에 DELETE/PATCH/PUT 누락 → 브라우저에서 잠복 무력화
-**시도**: Phase 7 `src/api/app.py::create_app()` 의 CORSMiddleware 를 `allow_methods=["GET","POST","OPTIONS"]` 로 좁게 시작 (초기엔 GET/POST 만 쓰던 시절 잔재). 이후 P10-1 (targets PATCH/DELETE), P10-3 (rag DELETE/folders DELETE), P10-7 (settings PUT) 등이 추가됐지만 allow_methods 는 그대로.
-**결과**: pytest 의 `TestClient` 는 CORS preflight 를 거치지 않고 직접 호출하므로 466개 테스트 전부 green. 그러나 Phase 10 RAG 탭에서 사용자가 휴지통 클릭 → 브라우저가 DELETE 보내기 전 OPTIONS preflight 를 던짐 → CORS 가 `400 Disallowed CORS method` 로 거부 → 브라우저가 정작 DELETE 는 보내지도 못 하고 `TypeError: Failed to fetch`. **6개월 가까이 PATCH/DELETE/PUT 라우트 다수가 잠복으로 죽어 있었지만 GET/POST 만 쓰는 화면이 많아 들키지 않았다**.
-**배운 점**: FastAPI CORS 는 `allow_methods=["*"]` 또는 사용 중인 모든 verb (`GET/POST/PUT/PATCH/DELETE/OPTIONS`) 명시. 새 verb 라우트를 추가할 때 CORS 설정도 같이 점검. 회귀 방지로 OPTIONS preflight 를 1건이라도 테스트에 포함할 가치 있음 — `TestClient` 는 preflight 를 안 가지만 `httpx.Client` 로 헤더 명시 호출하면 검증 가능. 일반화: **테스트 환경 (TestClient/curl) 과 실제 브라우저 환경의 CORS 거동 차이** 가 가장 큰 false-green 원천 — preflight 가 필요한 verb (DELETE/PATCH/PUT/Custom-Header POST) 는 브라우저로 한 번씩 직접 눌러서 확인 (또는 `OPTIONS` curl 로 200 확인).
+## [2026-04-30] FastAPI lifespan auto-migration touched real user `data/` during tests
+**Tried**: Phase 10 P10-2a called `migrate_flat_layout(vectorstore_root, company_docs_root)` from `app.py::lifespan` as best-effort, with no env-var toggle.
+**Result**: During pytest, tests like `tests/test_api_db.py::test_lifespan_initializes_app_db` triggered `create_app()` and woke lifespan, which moved the user's actual flat layout at `PROJECT_ROOT / "data" / "vectorstore"` (absolute path) into `data/vectorstore/default/`. The migration was idempotent + dest.exists() skip, so nothing was lost — but **tests touching user data is a red flag**.
+**Lesson**: Side-effectful "environment mutation" code (FastAPI lifespan auto-migration) should be (1) gated behind an env-var toggle, default off, (2) accept overridable PROJECT_ROOT via a test fixture, or (3) fire only via an explicit CLI command. This case was a one-time migration so didn't need much follow-up, but for similar future mutations adopt `os.environ.get("APP_AUTO_MIGRATE", "0") == "1"` guards by default. Migration functions themselves must be idempotent + best-effort + dest-preserving (no overwrite) — those three properties prevented this from becoming a loss.
 
-## [2026-05-02] `ensure_namespace` 가 manifest seed 안 써서 새 namespace 가 listing 에서 사라짐
-**시도**: P10-2a `src/rag/namespace.py::ensure_namespace()` 가 `vectorstore_root/<ns>/` + `company_docs_root/<ns>/` 디렉터리만 mkdir. `list_namespaces()` 는 manifest.json 존재로 namespace 식별. POST `/rag/namespaces` 의 happy-path 만 단위 테스트로 검증.
-**결과**: 사용자 시나리오 — `POST /rag/namespaces "test-ns"` → 201 응답 + `_summarize` 가 빈 manifest 로 정상 요약 반환 → 직후 `GET /rag/namespaces` → 새 namespace **목록에서 사라짐**. 첫 Re-index 가 manifest 를 쓸 때까지 invisible. 사용자가 "방금 만들었는데 어디갔지?" 로 막힘.
-**배운 점**: 두 자료 (manifest 존재 vs 디렉터리 존재) 를 다른 함수가 다른 의도로 다룰 때, 한쪽을 만든 코드 경로가 다른 쪽 invariant 도 같이 만족시켜야 한다. `ensure_namespace` 가 빈 manifest (`{"version":1,"updated_at":null,"documents":{}}`) 를 atomic write (tmp + replace) 로 같이 쓰는 fix 적용. 일반화: **"이 자료가 X 의 source-of-truth" 같은 invariant 는 단위 테스트의 happy-path 로는 안 잡힌다** — 두 함수 사이의 경계를 넘는 통합 시나리오 (POST 직후 GET) 가 있어야 노출. 신규 entity 생성 코드를 짤 때 항상 자문: "이 entity 를 다른 함수가 어떻게 발견하는가? 그 발견 경로가 지금 만족되나?"
 
-## [2026-05-01] Windows uvicorn 컨텍스트에서 subprocess.Popen(["explorer", path]) 는 silent fail
-**시도**: P10-9 의 "현재 폴더를 OS 탐색기에서 열기" endpoint 1차 구현 — `subprocess.Popen(["explorer", abs_path])` (cross-platform 통일을 노린 첫 시도). 단위 테스트는 `subprocess.Popen` 을 monkeypatch 해서 통과.
-**결과**: 사용자가 실제 RAG 탭에서 🗂 Explorer 버튼을 눌렀을 때 endpoint 는 200·`opened=True` 응답을 돌려주지만 정작 탐색기 창이 안 뜸. uvicorn 이 콘솔 미부착 (백그라운드) 컨텍스트에서 explorer.exe 를 spawn 하면 stderr 가 유실되는 듯, 예외도 안 나옴. 사용자 입장에선 "버튼이 작동 안 함" 으로만 보임.
-**배운 점**: Windows 에서 OS-level 동작 (탐색기·기본앱 launch) 은 `os.startfile(path)` 가 canonical. `subprocess.Popen([...])` 는 콘솔이 attach 된 상황에서만 신뢰 가능. 그리고 OS 분기 코드는 단일 wrapper 함수 `_launch_file_manager(abs_path) -> bool` 로 분리 + endpoint 는 결과 boolean 만 응답에 surface — 테스트가 wrapper 자체를 monkeypatch (Popen 은 OS 별 분기 다 따라가야 해서 brittle). `playbook.md#16` 참조. 같은 원칙은 `os.startfile`, `webbrowser.open`, 알림 라이브러리 등 OS 의존 호출 모두에 적용.
+## [2026-05-02] CORS allow_methods missing DELETE/PATCH/PUT → silent browser failure for months
+**Tried**: Phase 7 `src/api/app.py::create_app()` set CORSMiddleware to `allow_methods=["GET","POST","OPTIONS"]` (legacy from when only GET/POST existed). Phase 10 added P10-1 (targets PATCH/DELETE), P10-3 (rag DELETE/folders DELETE), P10-7 (settings PUT) — but allow_methods stayed.
+**Result**: pytest's `TestClient` skips CORS preflight, so all 466 tests stayed green. But in the real browser, the user clicked the trash icon in the Phase 10 RAG tab → browser sent OPTIONS preflight → CORS rejected with `400 Disallowed CORS method` → browser never sent the DELETE → `TypeError: Failed to fetch`. **Many PATCH/DELETE/PUT routes had been silently dead for nearly 6 months, masked by GET/POST-only screens**.
+**Lesson**: FastAPI CORS should use `allow_methods=["*"]` or list every verb in use (`GET/POST/PUT/PATCH/DELETE/OPTIONS`). When adding a new verb route, check CORS settings too. For regression prevention, include at least one OPTIONS preflight in tests — `TestClient` skips it but `httpx.Client` with explicit headers can verify. Generalization: **the CORS behavior gap between test environment (TestClient/curl) and real browser** is the biggest false-green source — for verbs that need preflight (DELETE/PATCH/PUT/Custom-Header POST), click them in a real browser at least once (or `OPTIONS` curl returns 200).
 
-## [2026-05-04] uvicorn `--reload` 가 새 라우터 import 를 못 잡고, 죽은 reloader 의 자식 worker 가 :8000 점유
-**시도**: Cost Explorer 작업 중 `src/api/app.py` 에 `from src.api.routes import cost as cost_routes` + `app.include_router(cost_routes.router, ...)` 추가. uvicorn `--reload` 가 file watcher 로 자동 반영하리라 기대 → 코드 변경 후 `curl /cost/summary` 로 검증.
-**결과**: `404 Not Found`. `/openapi.json` 도 cost 라우트 누락. Direct python import 로는 routes 정상 등록 확인 → **uvicorn 워커가 stale**. 원인 추적: 같은 세션에서 첫 uvicorn 을 띄우고 (PID A reloader → PID B worker) 한참 후 두 번째 uvicorn 을 띄우자 (PID C reloader → PID D worker), PID A reloader 는 죽었지만 그 자식 PID B worker 가 orphan 으로 살아남아 :8000 을 그대로 점유. 새 PID C/D 는 spawn 됐지만 포트가 막혀서 listen 못 함 → curl 은 살아있는 PID B (= 옛날 코드, cost 라우트 없음) 로 가서 404. Windows 에서 `Get-NetTCPConnection -LocalPort 8000` 으로는 PID 가 reloader 로 보여 헷갈렸음.
-**배운 점**: 백그라운드로 띄워둔 uvicorn 을 "reload 가 알아서 잡겠지" 라고 가정하지 말 것. 라우터 추가·include_router 변경·schemas 추가 같이 **app object 의 시작 시점에만 평가되는 코드** 는 reload 가 못 잡는 경우가 잦다 (file watcher 가 변경된 모듈만 re-import 하지, app 객체 재구성을 강제 안 함). 워크플로:
-1. 라우터 추가 후 `curl /openapi.json | grep <new-path>` 로 등록 확인
-2. 없으면 **모든 python 프로세스 kill 후 재시작** (orphan worker 제거 포함). PowerShell `Get-WmiObject Win32_Process -Filter "Name='python.exe'" | Where { $_.CommandLine -match 'uvicorn' } | Stop-Process -Force` + 잔존 python 도 정리
-3. 재시작 후 `curl /openapi.json` 으로 새 라우트 확인 → 그 다음에 비즈니스 로직 검증
-일반화: **"--reload 가 잡는 변경" 과 "프로세스 재시작이 필요한 변경" 의 경계 인식**. include_router / lifespan / pydantic schema 정의·middleware add_middleware / cli typer add_command 는 후자.
+## [2026-05-02] `ensure_namespace` skipped manifest seed → new namespace disappeared from listing
+**Tried**: P10-2a `src/rag/namespace.py::ensure_namespace()` only mkdir'd `vectorstore_root/<ns>/` + `company_docs_root/<ns>/`. `list_namespaces()` identifies namespaces by manifest.json existence. POST `/rag/namespaces` happy-path was unit-tested.
+**Result**: User scenario — `POST /rag/namespaces "test-ns"` → 201 + `_summarize` returns valid empty-manifest summary → immediate `GET /rag/namespaces` → **new namespace missing from list**. Invisible until first Re-index writes the manifest. User stuck: "I just made it, where'd it go?"
+**Lesson**: When two artifacts (manifest existence vs directory existence) are treated by different functions for different intents, the code path that creates one must also satisfy the other's invariant. Fix: `ensure_namespace` writes empty manifest (`{"version":1,"updated_at":null,"documents":{}}`) atomically (tmp + replace) at the same time. Generalization: **"this artifact is the source-of-truth for X"-style invariants don't get caught by happy-path unit tests** — they surface only in cross-function integration scenarios (POST then GET). When writing entity-creation code, always ask: "How does another function discover this entity? Is that discovery path satisfied right now?"
 
-## [2026-05-04] retriever 싱글턴 캐시가 ingest 후 무효화 안 돼서 ChromaDB HNSW reader stale → "Nothing found on disk"
-**시도**: 사용자가 새 namespace `test260502` 만들고 → AI Summary 한 번 호출 (캐시 채움) → 파일 업로드 → Re-index → Discovery 실행. Discovery 가 `Error executing plan: Internal error: Error creating hnsw segment reader: Nothing found on disk` 로 실패. UI 에는 `seed 0 docs / 0 chunks` 표시.
-**결과**: 디스크 상태는 정상 — `data/vectorstore/test260502/manifest.json` 에 46 chunks, `chroma.sqlite3` 729KB, HNSW 세그먼트 4개 파일 정상. **별도 프로세스에서 fresh `chromadb.PersistentClient`** 로 같은 경로 query 했더니 46 chunks 정상 반환. 즉 인덱스 자체는 무결. 원인은 uvicorn 프로세스 안의 `src/rag/retriever.py:_STORES` 싱글턴 캐시. 라우트 `POST /rag/.../namespaces/.../summary` (routes/rag.py:1138) 가 빈 namespace 에서 `_retriever._store(ws_slug, ns)` 를 호출 → `VectorStore` 캐시 entry 가 ChromaDB 1.5.8 Rust 코어의 in-memory HNSW reader 와 함께 stale 상태로 박힘. 이후 별도 client 인 indexer 가 같은 sqlite 에 segment 를 써도 retriever 의 cached client 는 갱신 안 됨. `count()` 는 SQLite 직읽이라 fresh 하지만 실제 `_collection.query()` 는 옛 in-memory state 로 진입 → 에러. UI 의 "0 docs" 는 retrieve 가 `_read_seed_meta` 호출 전 (discover.py:316 vs 341) 에 실패해서 RunRecord 의 default 0 값이 그대로 표시된 부수 효과.
-**배운 점**: ChromaDB 1.x 의 `PersistentClient` 는 **인스턴스마다 독립 in-memory state** 를 유지하므로, 한 프로세스 안에서 같은 path 에 대한 client 가 둘 이상 생기면 캐시 일관성 깨짐 가능. 우리 retriever 의 싱글턴 캐시는 한 번 채워지면 reset 안 되는 패턴 (`reset_store_singleton` 이 테스트에서만 호출) 이라서 indexer 후 stale 화. **수정**: `src/api/runner.py:execute_ingest` 의 `code == 0` 분기에 `_retriever.reset_store_singleton()` 한 줄 추가 — over-invalidation 이지만 (다른 namespace 캐시까지 비움) 다음 retrieve 의 fresh client warmup 비용은 무시 가능. **일반화**: 한 프로세스 안에서 같은 path 에 multi-client 접근하는 외부 라이브러리 (Chroma/SQLite WAL/lmdb 등) 를 쓸 때, 한 client 가 write 하면 다른 client 들 invalidate 가 필수. 정밀 invalidation (per-key) 은 backlog 로.
+## [2026-05-01] Windows uvicorn context: `subprocess.Popen(["explorer", path])` silent fails
+**Tried**: P10-9 "open current folder in OS file manager" endpoint, first cut — `subprocess.Popen(["explorer", abs_path])` (aimed at cross-platform). Unit test monkeypatched `subprocess.Popen` and passed.
+**Result**: When user clicked the 🗂 Explorer button in the RAG tab, the endpoint returned 200 + `opened=True` but no Explorer window opened. uvicorn spawning `explorer.exe` from a console-detached (background) context seems to swallow stderr, no exception raised. From user's view: "the button is broken".
+**Lesson**: On Windows, OS-level operations (file manager, default-app launch) should use `os.startfile(path)` — that's canonical. `subprocess.Popen([...])` is only reliable in console-attached contexts. OS-branch code goes into a single wrapper `_launch_file_manager(abs_path) -> bool` and the endpoint exposes only the result boolean — tests monkeypatch the wrapper itself (Popen is brittle because each OS branch follows its own logic). See `playbook.md#16`. Same principle applies to `os.startfile`, `webbrowser.open`, notification libraries, etc.
 
-## [2026-05-04] 통합 테스트가 격리 fixture 없이 실제 `config/pricing.yaml` 을 클로버
-**시도**: `tests/test_api_cost.py` 첫 버전이 `_reset_env` fixture 만 두고 `client.put("/settings/pricing", json={"raw_yaml": ...})` 호출. 회귀 그린 (`6 passed`). 직후 `config/pricing.yaml` 을 열어보니 테스트 input 값 (`input_per_mtok: 5.0` 등) 으로 **실제 운영 yaml 가 덮어쓰여 있음**. cost_budget.yaml 도 동일.
-**결과**: 다행히 사용자가 즉시 발견 → 기본값 (Sonnet $3/$15/$0.30/$3.75) 으로 수동 복원. 만약 못 봤으면 그 commit 에 잘못된 단가가 들어가서 모든 사용자의 Cost Explorer 가 5x 단가로 표시될 뻔. 원인: 같은 디렉토리에 있는 `tests/test_api_settings.py::isolated_config` 가 `monkeypatch.setattr(_loader, "CONFIG_DIR", cfg)` 로 tmp 디렉토리 격리하는 패턴이 이미 존재했으나, 새 test 작성 시 그 패턴을 답습하지 않고 prod CONFIG_DIR 그대로 사용.
-**배운 점**: `PUT /settings/{kind}` 같이 **파일시스템 mutation 하는 endpoint 의 통합 테스트** 는 반드시 prod config dir 격리 fixture 사용. 새 test 파일 만들 때 같은 도메인 (`test_api_*`) 의 기존 fixture 패턴을 먼저 검색하라. 본 케이스는 `isolated_config` fixture 를 그대로 차용해서 해결. 일반화: **테스트가 prod artifact (config·cache·DB) 를 mutate 가능하면, 기본값으로 격리 fixture autouse 화 검토** — fixture 안 쓰면 명시적으로 `# uses prod CONFIG_DIR — read-only 만` 주석 강제하는 정책도 가능. 더 안전하게: `_atomic_write_text` / `putSettings` 같은 mutating helper 가 read-only mode flag 를 가지면 테스트에서 `MUTATION_GUARD=read-only` 로 lock.
+## [2026-05-04] uvicorn `--reload` doesn't pick up new router imports, and a dead reloader's child worker held :8000
+**Tried**: While working on Cost Explorer, added `from src.api.routes import cost as cost_routes` + `app.include_router(cost_routes.router, ...)` to `src/api/app.py`. Expected uvicorn `--reload`'s file watcher to auto-pick it up → verified with `curl /cost/summary` after the change.
+**Result**: `404 Not Found`. `/openapi.json` also missing the cost route. Direct python import confirmed the route was registered properly → **uvicorn worker was stale**. Tracing: launched first uvicorn earlier in the session (PID A reloader → PID B worker), then later launched a second uvicorn (PID C reloader → PID D worker) — PID A reloader died but its child PID B worker survived as orphan, holding :8000. New PID C/D spawned but the port was taken → couldn't listen → curl hit the still-alive PID B (old code, no cost route) and got 404. Windows `Get-NetTCPConnection -LocalPort 8000` showed PID as the reloader, which was misleading.
+**Lesson**: Don't assume reload "just handles it" for backgrounded uvicorn. Adding routers, modifying `include_router`, adding schemas — anything **evaluated only at app-object construction time** — often isn't picked up by reload (the file watcher re-imports changed modules but doesn't force app-object reconstruction). Workflow:
+1. After adding a router, confirm registration with `curl /openapi.json | grep <new-path>`
+2. If missing, **kill all python processes and restart** (including orphan workers). PowerShell: `Get-WmiObject Win32_Process -Filter "Name='python.exe'" | Where { $_.CommandLine -match 'uvicorn' } | Stop-Process -Force` + clean up leftover python
+3. After restart, `curl /openapi.json` to confirm the new route → then validate business logic
+Generalization: **know the boundary between "things --reload catches" and "things needing process restart"**. include_router / lifespan / pydantic schema definitions / middleware add_middleware / cli typer add_command all fall into the latter.
+
+## [2026-05-04] retriever singleton cache wasn't invalidated after ingest → ChromaDB HNSW reader stale → "Nothing found on disk"
+**Tried**: User created namespace `test260502` → called AI Summary once (filling cache) → uploaded files → Re-index → ran Discovery. Discovery failed with `Error executing plan: Internal error: Error creating hnsw segment reader: Nothing found on disk`. UI showed `seed 0 docs / 0 chunks`.
+**Result**: Disk state was healthy — `data/vectorstore/test260502/manifest.json` had 46 chunks, `chroma.sqlite3` 729KB, 4 HNSW segment files all valid. **A separate-process fresh `chromadb.PersistentClient`** querying the same path returned 46 chunks fine — index itself was intact. Cause was the `src/rag/retriever.py:_STORES` singleton inside the uvicorn process. Route `POST /rag/.../namespaces/.../summary` (routes/rag.py:1138) on an empty namespace called `_retriever._store(ws_slug, ns)` → `VectorStore` cache entry pinned a stale ChromaDB 1.5.8 Rust-core in-memory HNSW reader. Even though a separate indexer client wrote new segments to the same sqlite, the cached retriever client never refreshed. `count()` reads SQLite directly so it was fresh, but `_collection.query()` walks the old in-memory state → error. UI's "0 docs" was a side effect — retrieve failed before `_read_seed_meta` (discover.py:316 vs 341), so RunRecord's default 0 stayed.
+**Lesson**: ChromaDB 1.x `PersistentClient` keeps **per-instance independent in-memory state**, so two clients pointing at the same path within one process can desync. Our retriever singleton, once filled, never resets (`reset_store_singleton` was test-only) — staled after the indexer ran. **Fix**: Added a single line `_retriever.reset_store_singleton()` to the `code == 0` branch of `src/api/runner.py:execute_ingest`. Over-invalidates (clears caches for other namespaces too), but the next retrieve's fresh-client warmup cost is negligible. **Generalization**: when external libraries (Chroma/SQLite WAL/lmdb etc.) allow multi-client access to the same path within one process, a writer client must invalidate the others. Per-key precise invalidation is in backlog.
+
+## [2026-05-04] Integration test clobbered real `config/pricing.yaml` without an isolation fixture
+**Tried**: First version of `tests/test_api_cost.py` had only a `_reset_env` fixture, then called `client.put("/settings/pricing", json={"raw_yaml": ...})`. Regression green (`6 passed`). Opening `config/pricing.yaml` after, found the **real production yaml overwritten with test inputs** (`input_per_mtok: 5.0` etc.). `cost_budget.yaml` was the same.
+**Result**: Caught immediately by user → manually restored to defaults (Sonnet $3/$15/$0.30/$3.75). Had this slipped, that commit would have shipped wrong unit prices to all users, breaking Cost Explorer with 5x rates. Cause: the `tests/test_api_settings.py::isolated_config` fixture in the same directory already had `monkeypatch.setattr(_loader, "CONFIG_DIR", cfg)` for tmp-directory isolation — but the new test was written without applying that pattern, hitting prod CONFIG_DIR directly.
+**Lesson**: For integration tests of **filesystem-mutating endpoints** like `PUT /settings/{kind}`, isolation fixtures around prod config dir are mandatory. When creating a new test file, search the same domain (`test_api_*`) for existing fixture patterns first. This case was solved by reusing the `isolated_config` fixture as-is. Generalization: **if a test can mutate prod artifacts (config/cache/DB), make an isolation fixture autouse by default** — without it, force an explicit `# uses prod CONFIG_DIR — read-only only` comment policy. Even safer: give mutating helpers like `_atomic_write_text` / `putSettings` a read-only mode flag, and tests can lock with `MUTATION_GUARD=read-only`.

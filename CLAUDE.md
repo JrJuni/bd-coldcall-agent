@@ -128,4 +128,4 @@ Before a significant commit, update whichever of these are affected. `README.md`
 
 ## Notion integration
 
-The project has a dedicated Notion workspace with a root page, `프로젝트 개요`, and `패치노트` sub-pages (see `reference_notion.md` in memory for IDs). Patch notes follow the same convention as the Groupstages project: version toggle header, date, witticism line, callout overview, then sectioned changes with colored tags. Use the `/patchnotes` skill to append new entries — don't hand-edit.
+The project has a dedicated Notion workspace with a root page, `프로젝트 개요` (Project Overview), and `패치노트` (Patch Notes) sub-pages (see `reference_notion.md` in memory for IDs). Patch notes follow the same convention as the Groupstages project: version toggle header, date, witticism line, callout overview, then sectioned changes with colored tags. Use the `/patchnotes` skill to append new entries — don't hand-edit.
