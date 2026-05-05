@@ -224,3 +224,27 @@ Generalization: **know the boundary between "things --reload catches" and "thing
 **Tried**: First version of `tests/test_api_cost.py` had only a `_reset_env` fixture, then called `client.put("/settings/pricing", json={"raw_yaml": ...})`. Regression green (`6 passed`). Opening `config/pricing.yaml` after, found the **real production yaml overwritten with test inputs** (`input_per_mtok: 5.0` etc.). `cost_budget.yaml` was the same.
 **Result**: Caught immediately by user → manually restored to defaults (Sonnet $3/$15/$0.30/$3.75). Had this slipped, that commit would have shipped wrong unit prices to all users, breaking Cost Explorer with 5x rates. Cause: the `tests/test_api_settings.py::isolated_config` fixture in the same directory already had `monkeypatch.setattr(_loader, "CONFIG_DIR", cfg)` for tmp-directory isolation — but the new test was written without applying that pattern, hitting prod CONFIG_DIR directly.
 **Lesson**: For integration tests of **filesystem-mutating endpoints** like `PUT /settings/{kind}`, isolation fixtures around prod config dir are mandatory. When creating a new test file, search the same domain (`test_api_*`) for existing fixture patterns first. This case was solved by reusing the `isolated_config` fixture as-is. Generalization: **if a test can mutate prod artifacts (config/cache/DB), make an isolation fixture autouse by default** — without it, force an explicit `# uses prod CONFIG_DIR — read-only only` comment policy. Even safer: give mutating helpers like `_atomic_write_text` / `putSettings` a read-only mode flag, and tests can lock with `MUTATION_GUARD=read-only`.
+
+## [2026-05-05] B4b shipped a working UI but the vocabulary and editing surface were wrong — caught only by a live click-through
+**Tried**: Phase 12 B4b shipped yaml-driven scoring dimensions end-to-end: backend `/discovery/dimensions` endpoint, Settings tab `WeightsEditor` (form + YAML escape), and a results-page `WeightSliders` for $0 recompute. All tests green, type-check clean. Sub-agent surveys + the plan agreed on the structure ahead of time.
+**Result**: User opened the live UI right after B4b merged and immediately flagged two mental-model issues that **no code review or test could have surfaced**: (1) the "Product" label connoted "what the user sells", but the domain meaning was "named scoring weight preset" — `databricks` profile = "weights for hunting Databricks-shaped buyers", not "we sell Databricks". (2) Adjusting weights *after* seeing results felt off — first-time users couldn't locate where the run-time decision happens. Recompute being $0 + 100ms didn't change the confusion. Required Phase 12 follow-up (B5a/b/c) — a full-stack `product → profile` rename + relocating the slider surface into `DiscoveryRunForm`.
+**Lesson**: Type-check + unit tests + plan review **cannot catch domain-vocabulary mismatches or workflow-shape mistakes**. Both are only visible when a fresh-eyed user clicks through the actual UI in the browser. Two follow-on rules: (1) After any "ship a new editor or selector" batch, schedule a **5-minute live click-through with the user** before the next batch. The cost of catching this at B4b versus a downstream phase is the difference between two atomic-pair commits and a database migration. (2) When picking a UI label, ask "would a fresh user assume this means X or Y?" — in this project, `Product` had two valid readings; the chosen one differed from the domain reading. Lean toward labels that *can only* mean the domain thing (`Profile / 스코어링 프로파일` here) even when they're slightly longer.
+
+## Blind Review 판정 누적
+
+`/blind-ai-review` 스킬의 Step 8 판정 로그가 여기에 append. 외부 AI 가 자주 빠지는 패턴 + 우리 프로젝트가 자주 거부하는 권고 type 의 시계열 누적.
+
+### 판정 — Phase 12 B5 plan blind review (2026-05-05)
+
+| # | 카테고리 | 점수 | 판정 | 사유 |
+|---|---|---|---|---|
+| 1 | architecture | ~80% | accepted | B5a "단독 머지 가능" → atomic-pair 명시로 수정. plan 자체 정합성 흠집 |
+| 2 | corner-case | ~90% | accepted | `weights_override` partial 정규화 위험 → complete-snapshot or null + 422 validator (`DiscoveryRunCreate._validate_weights_override`) |
+| 3 | corner-case | ~85% | accepted | applied weights snapshot 저장 누락 → `discovery_runs.weights_snapshot_json` 컬럼 신설 + `runner.execute_discovery_run` 끝에 `update_weights_snapshot` |
+| 4 | architecture | ~80% | accepted | frontend effective_weights drift → 서버 derived `GET /discovery/profiles` 응답에 `effective_weights` 노출, 프론트는 read-only 사용 |
+| 5 | corner-case | ~85% | accepted | Pydantic `extra="forbid"` 누락 → `DiscoveryRunCreate` / `DiscoveryRecomputeRequest` 모두 명시 + 옛 `product` 키 회귀 테스트 3건 |
+| 6 | architecture | ~75% | accepted | discover page dimensions ownership 모순 → page-level fetch 단일 소유 + `DiscoveryRunForm` / `CandidateTable` 에 prop 전파 |
+
+**메타**: 평균 ~83%. Factual 차원 우수 (plan 텍스트 내 정합성·corner case 모두 코드 grep 으로 확인됨). 모두 Keep — 6/6 흡수, 0 drop. 외부 AI 가 코드 미열람 상태였음에도 plan 내부 모순 + Pydantic·SQLite 운영 corner case 를 잡아냈음 (상위권 calibration).
+
+**다음 round 권고**: 같은 외부 AI 에게 다음 plan 도 plan-only 로 보내 calibration 유지. 코드 보여주기는 여전히 비추 (코드 보면 "구현 디테일" 비중이 늘고 corner case 비중이 줄어들 가능성 — 이 round 의 강점 차원이 약화될 수 있음).

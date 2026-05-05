@@ -34,6 +34,7 @@ The single source of truth for **patterns judged reusable** after solving a hard
 | `display-toggle` `optional-cleanup` `non-destructive-default` `recover-by-readd` | [19. Display-only registration + opt-in cleanup](#19-display-only-registration--opt-in-cleanup) | Register/remove only touches DB rows; cleanup of side artifacts is an explicit option. Recovery from user mistakes = re-add by same name |
 | `yaml-edit` `single-key-swap` `comment-preserve` `regex-line-replace` | [20. Single-line regex replace for one-key yaml edits](#20-single-line-regex-replace-for-one-key-yaml-edits) | PyYAML round-trip loses comments / indent / key order. When only one line needs changing, regex is safer |
 | `non-dev-ux` `form-with-escape` `progressive-disclosure` `config-editor` | [21. Friendly form + YAML escape toggle for both personas](#21-friendly-form--yaml-escape-toggle-for-both-personas) | Default to input form; "Edit YAML" toggle exposes raw textarea fallback. Same PUT path either way |
+| `breaking-rename` `clean-break` `atomic-pair` `extra-forbid` `monorepo` | [22. Cross-stack rename = atomic commit pair, no compat layer](#22-cross-stack-rename--atomic-commit-pair-no-compat-layer) | Backend rename with `extra="forbid"` and matching frontend rename ship as two commits that must push together. Cheaper than a temporary alias for a single-user dev tool |
 
 When entries grow, re-sort by tag alphabetical order. Remove only when a pattern is invalidated (and record why).
 
@@ -482,3 +483,36 @@ UI flow:
 **Why it works**: (1) **Single source of truth = the yaml file** — the form is just a view atop the yaml; saves always converge to yaml. (2) **One validation path** — yaml syntax + pydantic schema both gated in the PUT handler, so form / YAML routes share the same safety net. (3) **No dead-end for power users** — fields the form lacks (e.g. add a new model, search rates) can be added immediately via YAML escape. (4) **No entry barrier for non-devs** — first screen is an input form; no need to learn yaml schema. (5) **Mode switches preserve dirty state** — form→yaml serialization / yaml→form via round-trip parse + setState. No changes lost.
 
 **Reusable in**: Web UIs for any human-edited config. First applied in Cost Explorer's `PricingBudgetEditor` (model rates + monthly budget). Porting candidates: existing 7 Settings tabs (weights / tier_rules / competitors / intent_tiers / sector_leaders / targets / settings) — currently yaml-only, hard for non-devs. **Core principle**: "default to the simpler persona, give the complex persona an escape hatch". Same pattern as Slack's simple/advanced workflow editor, GitHub Actions' visual editor + raw yaml, Notion's database form + raw json view.
+
+---
+
+## 22. Cross-stack rename = atomic commit pair, no compat layer
+
+**Tags**: `breaking-rename` `clean-break` `atomic-pair` `extra-forbid` `monorepo`
+
+**Problem**: A vocabulary mistake reaches across yaml + Pydantic + SQLite + CLI + TypeScript + UI labels. The plan-level instinct is one of: (a) ship a temporary alias layer (accept both old and new names, deprecate later), (b) chain three "tiny" commits (yaml rename → field rename → frontend rename) so each is reviewable in isolation, or (c) one mega-commit that touches 30 files at once. (a) leaks dead code into the codebase forever; (b) leaves the system broken between commits if `extra="forbid"` is set; (c) is hard to bisect.
+
+**Solution (Phase 12 follow-up)**: **Two atomic-pair commits**. The first is the full backend rename — yaml key, Pydantic field, DB column (forward-only `ALTER TABLE RENAME COLUMN`), CLI flag, route URL, request/response schemas with `extra="forbid"`, all tests updated, all in one commit. The second is the matching frontend rename — TS types, API helpers, component file renames, label copy, all in one commit. Both commits sit on the same branch, and the **push** happens only after both land locally. Between the two commits, the working tree is intentionally broken (the frontend sends the old field; the backend rejects it with 422) — but no remote sees this state.
+
+```
+# Backend commit (everything that breaks the wire if pushed alone)
+git add config/*.yaml src/ tests/
+git commit -m "refactor(discovery): rename product → profile + weights snapshot (backend)"
+
+# Frontend commit (matches the new wire format exactly)
+git add web/
+git commit -m "feat(discovery): run-only weights UX + profile rename (frontend)"
+
+# Push only after both — never push the backend alone
+git push
+```
+
+**Why it works**:
+- **No dead code**: `extra="forbid"` forces silent acceptance to fail loudly. The temptation to "accept both names just for now" disappears because the cost of cleanup later (audit every caller, deprecate, remove, re-test) outweighs the cost of one branch sitting half-finished for an hour.
+- **Bisect-friendly**: Each commit is logically complete (one stack, one rename). `git bisect` can land on either commit and explain a regression in terms of one stack's vocabulary, not three interleaved layers.
+- **Test discipline**: The backend commit's test suite must already include the frontend's expected payload format (use the new name everywhere). If you can't write the tests without the frontend, you've found a test that was actually integration, not unit.
+- **Forward-only DB migration is cheap on a single-user tool**: `ALTER TABLE RENAME COLUMN` (SQLite 3.25+) plus `ADD COLUMN` for new persisted state (here `weights_snapshot_json`). No down-migration. If a user is running the tool, they ship the rename and reopen the app — done.
+
+**Anti-pattern this replaces**: A "compat alias" layer where `DiscoveryRunCreate.product` becomes a `Field(alias="profile")` accepted in both forms. Looks polite, but the silent-drop failure mode (a future caller sends `{product: "x", profile: "y"}` and you don't know which wins) is exactly what we lost by removing `extra="forbid"`. For a multi-tenant SaaS with external API consumers, the alias layer earns its keep. For a single-user dev tool with one frontend in the same repo, atomic-pair beats it.
+
+**Reusable in**: Any monorepo where one team owns both ends of the wire. Library/SDK boundaries (where consumers can't be migrated atomically) still need the alias path. The deciding question: *can I migrate every caller in one commit?* If yes, prefer atomic-pair + `extra="forbid"` — the loud-failure mode is a feature, not a bug. First applied at Phase 12 follow-up (`product → profile` rename across yaml/Pydantic/DB/CLI/TS/UI).

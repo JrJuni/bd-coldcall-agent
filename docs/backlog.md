@@ -11,19 +11,15 @@
 
 ## P1 — Phase 9 직후 우선 착수 후보
 
-### 23. Discovery dimension snapshot 정책 (B5 전 결정 필요)
+### 23. Discovery dimension snapshot 정책 ⚠️ 부분 흡수
 
-- **상태 (2026-05-05)**: B4a 직후 외부 AI 리뷰 (`/blind-ai-review`) 에서 발견된 corner case. 정책 결정 필요.
-- **문제**: Phase 12 B4a 가 `weights.yaml::dimensions` 를 yaml-driven 으로 만들면서, **과거 run 의 candidate.scores** 가 옛 dimension key 셋을 들고 있음. 사용자가 신규 dim 추가 시:
-  - `Candidate._validate_scores` 가 새 dim 키 누락으로 ValueError → recompute 의 `try/except` 가 candidate 단위 skip + warning log (`src/api/runner.py:317-321`). 크래시는 X — **silent partial recompute** 가 결과.
-  - 신규 dim 만 영향 받는 후보가 아니라 **모든 후보가 skip** 됨 (전체 run 이 옛 dim 셋이라). 결과: tier_distribution 이 빈 채 200 응답.
-- **정책 옵션**:
-  1. **run artifact 에 dimension snapshot 저장** (가장 안전). DiscoveryRecord 에 `dimensions_used: list[Dimension]` JSON 필드 추가, recompute 가 snapshot 사용 (현재 yaml 무시). → 구버전 run 도 자기 시점의 dim 으로 안전 재계산.
-  2. **현재 yaml 기준 + missing → 5 채움**. 결정 단순, 구버전 호환, 다만 점수 의미 왜곡 위험.
-  3. **dimension schema version 도입** + run 에 version 저장 + 버전 mismatch 경고 표시.
-  4. **구버전 recompute 거부** — 가장 단순, UI 가 "이 run 은 옛 dimension 으로 만들어짐" 안내 후 read-only.
-- **추천**: 1번 (snapshot). 기존 `discovery_runs` 테이블에 `dimensions_json` 컬럼 추가 + `execute_discovery_run` 이 시작 시점에 `_scoring.load_dimensions()` 결과 직렬화. recompute 는 snapshot 우선, 없으면 현재 yaml fallback.
-- **의존성**: B5 (drag-and-drop tier 이동) 가 recompute 로직과 같은 candidate update 경로 사용. **B5 시작 전 정책 잠금 권장**.
+- **상태 (2026-05-05)**: Phase 12 B5a 의 `discovery_runs.weights_snapshot_json` 컬럼이 *가중치* snapshot 은 해결. 하지만 **dimensions 자체** (어떤 key 셋이었는지) 의 snapshot 은 아직 없음 — 가중치 dict 의 key 가 곧 그 시점 dim 셋이었음을 inferred 가능하지만 추론이 아닌 명시적 저장이 더 안전.
+- **잔여 부분**: 사용자가 dim 추가/삭제 후 *과거 run* 의 recompute 호출 시:
+  - 가중치 snapshot 의 key 가 신규 yaml dim 과 어긋남 → `Candidate._validate_scores` 에서 ValueError → candidate 단위 skip
+  - 현재 동작: silent partial recompute (warning log + tier_distribution 빈 채 200)
+  - 더 명확한 동작: snapshot dim 셋과 현재 yaml 셋 비교해서 mismatch 면 422 + UI 가 "이 run 은 dim X/Y/Z 로 생성됨, 현재 yaml 과 호환 안 됨" 명시
+- **남은 결정**: snapshot 의 명시적 dimensions list 컬럼을 추가할지 (4번째 옵션: dimensions_used JSON 필드 별도) vs `weights_snapshot_json.keys()` 를 dimensions 로 간주 (현재 inference). 현 구조로도 운영상 큰 문제는 없으므로 LOW. 우선순위 P3.
+- **의존성**: 없음. 사용자가 dim 추가/삭제 빈도가 낮은 한 발생 빈도 낮음.
 - **범위 밖**: dimension migration 스크립트 (옛 run 강제로 새 dim 으로 변환) — 일반 사용자 운영 부담 큼, 우선은 read-only / re-discover 권장.
 
 ### 1. 제안서 톤 조정 + 민감 가드
@@ -293,3 +289,15 @@ Exaone 요약·분류 품질 한계 시 Qwen / Gemma / Llama 계열 벤치마크
 - **차단 시 fallback 정책**: 라이브러리 부서지면 `provider="anthropic"` 환경변수 단발 swap 으로 즉시 복구. 개발 일정에 의존성 두지 말 것.
 - **의존성**: 없음. 하지만 P10-7 Settings 탭에 UI 자리 마련 후 본격 구현이 자연스러움. **우선순위 P5 (실험)** — 즉시 main 통합 X, 별도 branch / 옵션 토글로만 도입.
 - **범위 밖**: OpenAI 공식 API 키 사용 (이건 P3-14 모델 스왑 실험 분기 — 별도 항목)
+
+### 25. What-if compare — 다중 profile 결과 동시 비교
+
+- **상태 (2026-05-05)**: Phase 12 B5c 의 Run-only UX 채택의 trade-off 보완 후보. 우선순위 P3.
+- **왜**: B5c 가 결과 페이지에서 슬라이더 재계산 surface 를 제거 → "이 run 을 다른 가중치로 다시 보고 싶다" 시 새 run 실행해야 함 ($0 + 100ms 지만 동선이 한 번 더). 사용자가 *비교* (예: default vs databricks vs salesforce) 를 자주 한다면 별도 surface 가 가치.
+- **스케치**:
+  - **Compare 화면** — `/discover/compare?runs=A,B,C` 류. 같은 후보 셋의 final_score / tier 가 profile (또는 weights) 별로 어떻게 갈리는지 side-by-side 테이블. tier 가 다르게 떨어지는 후보 highlight ("S vs A 로 갈림")
+  - **Backend** — 기존 `POST /discovery/runs/{id}/recompute` (UI caller 0 이지만 endpoint 살아있음) 활용. 한 run 의 candidates 를 N 개 weights 에 대해 N 번 recompute → 각 결과 dict + diff 계산 → 단일 응답
+  - **Frontend** — multi-profile 멀티셀렉트 + "Compare 결과 비교" 버튼. 결과는 가로 스크롤 가능한 wide-table (column = profile, row = candidate)
+- **재사용**: `recomputeDiscovery` API helper 가 B5c 에서 frontend 에서 삭제됐는데 이 화면이 다시 부활시킴. 백엔드 endpoint 는 의도적으로 살려둠
+- **의존성**: 없음. 단, 사용자 사용 패턴 데이터 확보 (실제로 자주 비교하는지) 후 우선순위 재평가
+- **범위 밖**: weights 슬라이더 ad-hoc 비교 (저장된 profile 이 아니라 슬라이더 N개 그룹) — UI 복잡도 큼, MVP 는 profile 별 비교만

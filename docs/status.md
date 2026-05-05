@@ -564,6 +564,46 @@
   - **메모리**: `feedback_form_with_yaml_escape.md` 신규 — config 편집은 친화 폼이 디폴트, "YAML 편집" 버튼으로 raw textarea fallback. PricingBudgetEditor 가 첫 구현
   - **다음**: 활성 모델 스왑 후 first-run 으로 cost summary 정확도 확인 / per_unit 의 모델별 분리 (현재는 모델 혼합 평균) / 기존 Settings 7개 탭 친화 폼 retrofit (별도 작업)
 
+- **Phase 12 ✅ — Discovery scoring: yaml-driven dimensions + Profile rename + Run-only 가중치 UX (2026-05-04 ~ 05)**
+  - **배경 (3-line)**: Phase 9.1 의 6 dimension 이 코드 상수 (`WEIGHT_DIMENSIONS`) → 운영팀이 차원을 추가/수정하려면 코드 수정 필요. 또 가중치 프리셋 식별자 `product` 가 도메인 의미 ("buyer 가중치 프로파일") 와 어긋나 신규 사용자에게 혼동. B4b 직후 사용자 라이브 클릭에서 "결과 페이지에서 가중치 슬라이더로 재계산" 동선이 mental model 과 어긋난다는 피드백 추가. → Phase 12 = (B4) yaml-driven dimensions + (B5) Profile 어휘 통일 + Run-only 가중치 UX
+  - **B4a ✅ — yaml-driven dimensions backend (commit `6734302`)**
+    - `config/weights.yaml::dimensions` 가 SSOT. 항목별 `key` / `label` / `description` / `default_weight`. `WEIGHT_DIMENSIONS` 상수 제거 → `_scoring.load_dimensions()`. `load_weights()` / `Candidate._validate_scores` / `decide_tier` 등 모든 호출처가 yaml 결과 사용
+    - `GET /discovery/dimensions` 엔드포인트 — 프론트가 dim 목록·라벨 메타 단일 소스로 사용
+    - 회귀: 정상 yaml 로드 / dim 키 누락 / 음수 weight / 합 0 / 중복 키 등 422 회귀 5건 + dim 추가/제거 시 fixture 재계산 일관성 검증 1건
+  - **B4a 후속 ✅ — discovery `/dimensions` yaml-error surfacing (commit `df8e17e`)**
+    - yaml 손상 / 파일 없음 시 `load_dimensions()` ValueError 를 endpoint 가 200 + `dimensions: []` + `config_warning: "<msg>"` 로 응답 (fail-soft). 프론트는 banner 로 표시 → 사용자가 즉시 인지하고 Settings 탭으로 fix 가능
+    - dim 비등가 (현재 yaml dim 셋 ≠ 과거 run dim 셋) 시 `Candidate._validate_scores` 가 ValueError → recompute 의 try/except 가 candidate 단위 skip + warning. 백로그 23 (snapshot 정책) 으로 분기
+  - **B4b ✅ — frontend dynamic dimensions UI + Settings WeightsEditor (commit `ba4184c` 일부)**
+    - `getDiscoveryDimensions()` API helper + `DiscoveryDimension` / `DiscoveryDimensionsResponse` types
+    - Settings 탭 `WeightsEditor` 신규 (form + YAML escape) — `default` weight 4-input + per-profile override 추가/삭제 + raw YAML textarea fallback. 폼+escape 패턴 (playbook #21) 의 두 번째 적용
+    - `WeightSliders` (결과 페이지 컴포넌트) 와 `CandidateTable` 이 `dimensions` prop 받아 yaml 라벨로 렌더 (canonical order)
+  - **B5a ✅ — backend full-stack `product → profile` rename + weights snapshot (commit `d4bb5fd`)**
+    - `config/weights.yaml`: `products:` → `profiles:` (legacy `_absorb_legacy_products_key` validator 가 옛 yaml 호환). `src/config/schemas.py`: `ProductProfile` → `Profile`, `WeightsConfig.products` → `.profiles`. `src/core/scoring.py::load_weights(profile=...)`
+    - `src/api/db.py::_migrate_discovery_runs`: SQLite 3.25+ `ALTER TABLE RENAME COLUMN product TO profile` (idempotent) + `ADD COLUMN weights_snapshot_json TEXT` (idempotent). 과거 row 의 snapshot 은 NULL — UI 가 "snapshot 없음 — 옛 형식 run" 안내
+    - `src/api/store.py::DiscoveryStore`: `create_run(profile=...)` / `update_weights_snapshot(run_id, weights)` (JSON 직렬화 후 UPDATE) / `_run_row_to_dict` 가 `weights_applied` 키로 노출
+    - `src/api/runner.py::execute_discovery_run(*, profile, weights_override=None)` — final scoring 끝나고 `result.weights_applied` 를 snapshot 으로 영속화. recompute 도 동일
+    - `src/api/schemas.py`: `DiscoveryRunCreate` / `DiscoveryRecomputeRequest` 둘 다 `model_config = ConfigDict(extra="forbid")` + `_validate_weights_override` (complete-snapshot or null, 음수 X, 양의 합) model_validator. 옛 `product` 필드 → 422
+    - `src/api/routes/discovery.py::GET /discovery/profiles` — entry 가 `effective_weights: dict[str, float]` 포함 (서버 derived `_scoring.load_weights(key)`). 프론트 머지 로직 drift 방지 (외부 review #4 흡수)
+    - `src/core/discover.py::discover_targets(*, profile, weights_override=None)` + `DiscoveryResult.weights_applied: dict[str, float]` 필드. `_normalize_weights` 한 번 더 idempotent 정규화
+    - `main.py discover` Typer 의 `--product` → `--profile`
+    - 신규 회귀 테스트 8건 (`tests/test_api_discovery.py`): 옛 `product` 필드 422, 미지 extra 키 422, partial override 422, 미지 dim 422, 음수 weight 422, recompute partial 422, run snapshot 영속화, 옛 run `weights_applied=null`. 마이그레이션 회귀 2건 (`tests/test_api_db.py`): RENAME COLUMN + ADD COLUMN 정상 / 멱등성
+  - **B5b/c ✅ — frontend rename + Run-only 가중치 UX (commit `ba4184c`)**
+    - `web/src/lib/types.ts`: `DiscoveryProduct` → `DiscoveryProfile` (+ `effective_weights` 필드), `DiscoveryProfilesResponse` (+ `config_warning`), `DiscoveryRunCreateInput.profile` + `weights_override`, `DiscoveryRunSummary.weights_applied`, `DashboardRecentDiscovery.profile`, `WeightsProfile` (yaml-doc, `ProductProfile` 충돌 해소)
+    - `web/src/components/ProfileSelect.tsx` (renamed) — `onChange` 가 선택된 profile 객체도 부모로 emit (RunWeightsEditor seeding 용)
+    - `web/src/components/RunWeightsEditor.tsx` (신규) — `DiscoveryRunForm` 안의 collapsible. 슬라이더 seed = `selectedProfile.effective_weights`. 슬라이더 변경 시 EPS=1e-6 idempotent compare 후 (a) effective 와 일치 → `null` 송신, (b) 불일치 → 모든 dim key 포함한 complete snapshot 송신. "● 수정됨" 뱃지 + "기본값으로" 리셋
+    - `web/src/components/DiscoveryRunForm.tsx`: `weightsOverride` state + `<RunWeightsEditor>` 마운트. profile 전환 시 `weightsOverride = null` 자동 reset. payload 에 `weights_override` 포함
+    - `web/src/components/settings/WeightsEditor.tsx`: "Per-product overrides" → "Per-profile overrides", `setProductWeight` → `setProfileWeight` 등 일괄. `docToYaml` 이 `profiles:` 출력
+    - `web/src/app/discover/page.tsx`: `WeightSliders` import / `recomputeDiscovery` import / `onRecompute` 핸들러 / `recomputing` state 모두 제거. 헤더 카피 "Profile 별 가중치를 첫 실행 시 결정. 결과는 frozen — 다른 가중치로 보고 싶으면 새 run 을 실행하세요." `WeightsAppliedRow` 신규 (snapshot read-only echo, NULL 이면 "snapshot 없음" 안내)
+    - `web/src/components/WeightSliders.tsx` 삭제 (사용처 0)
+  - **운영 검증**:
+    - 풀 스위트: 510 + 신규 ~10 (B4 + B5) green
+    - TS: `npx tsc --noEmit` exit=0
+    - DB 마이그레이션 라이브: 기존 `app.db` 에서 uvicorn 재시작 → `discovery_runs.profile` + `weights_snapshot_json` 두 컬럼 모두 자동 backfill
+  - **외부 AI 리뷰**: B5 plan-only blind review 6 항목 모두 흡수 (atomic-pair / weights_override partial / snapshot persist / effective_weights server-derived / extra="forbid" / dimensions ownership). 평균 ~83%, 6/6 accepted. 판정 로그는 `lesson-learned.md::Blind Review 판정 누적`
+  - **commits**: `6734302` (B4a 백엔드) → `df8e17e` (B4a yaml-error surfacing) → `dbe2cfe` (P9 region tags + multi seed keywords, 사이) → ... → `d4bb5fd` (B5a 백엔드 atomic-pair 1) → `ba4184c` (B5b/c 프론트엔드 atomic-pair 2). 두 atomic-pair commit 은 항상 동시에 push (playbook #22)
+  - **B5d 진행 중**: docs (architecture/lesson/playbook/status/backlog) + 메모리 갱신 + `/patchnotes` v0.13.1 + 라이브 smoke 1회. 본 항목 close 되면 v0.13.1 발행
+  - **다음**: backlog 1 (제안서 톤 조정), backlog 22 (Phase 11 잔여), backlog 25 (What-if compare — Run-only 채택의 trade-off 보완)
+
 ---
 
 ## 다음 MVP 범위 (Phase 10 이후)

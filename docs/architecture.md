@@ -208,7 +208,7 @@ GET  /ingest/tasks/{task_id}   → status
 
 **Phase 10 extension (in progress) — `data/app.db` separation:**
 - `src/api/db.py` persists 8-tab UI state in a SQLite file **separate** from langgraph `SqliteSaver` (which is checkpoint-only). Reason: SqliteSaver assumes sole ownership of its schema, so mixing app tables in could conflict on upgrades
-- 5 tables: `discovery_runs` / `discovery_candidates` (FK CASCADE) / `targets` (FK SET NULL) / `interactions` (FK SET NULL) / `news_runs`
+- 5 tables: `discovery_runs` (carries `profile` + `weights_snapshot_json` per Phase 12 follow-up) / `discovery_candidates` (FK CASCADE) / `targets` (FK SET NULL) / `interactions` (FK SET NULL) / `news_runs`
 - `init_db()` is idempotent via `CREATE TABLE IF NOT EXISTS` + `executescript` — safe to call from lifespan on each boot
 - `connect()` context manager: `row_factory=Row`, `PRAGMA foreign_keys=ON`, commit on normal exit / rollback on exception / always close
 - env: `API_APP_DB` (default `data/app.db`)
@@ -231,13 +231,16 @@ The frontend reads only `NEXT_PUBLIC_API_BASE_URL` and holds no state of its own
 
 ### 9. Target Discovery (`src/core/discover.py` — Phase 9 + 9.1, RAG-only sibling flow)
 
-A separate entry point that reverse-infers "who would buy our product" using RAG only, without a known target company. Skips the 6-stage pipeline (search/fetch/preprocess/...) — uses retrieve only → 1 Sonnet call → outputs flat yaml + grouped md pair.
+A separate entry point that reverse-infers "who would buy from us" using RAG only, without a known target company. Skips the 6-stage pipeline (search/fetch/preprocess/...) — uses retrieve only → 1 Sonnet call → outputs flat yaml + grouped md pair.
 
-**Phase 9.1 core change**: narrowed the LLM's role from "tier judgment" to "0–10 scoring across 6 dimensions"; `final_score` and `tier` are now decided deterministically by code via `config/weights.yaml` + `config/tier_rules.yaml`. To counter mega-cap bias, added `config/sector_leaders.yaml` seed + region flag.
+**Phase 9.1 core change**: narrowed the LLM's role from "tier judgment" to "0–10 scoring across N dimensions"; `final_score` and `tier` are now decided deterministically by code via `config/weights.yaml` + `config/tier_rules.yaml`. To counter mega-cap bias, added `config/sector_leaders.yaml` seed + region flag.
+
+**Phase 12 follow-up**: dimensions are now yaml-driven (not hardcoded), the "named weight preset" vocabulary moved from `product` to `profile` end-to-end (yaml / pydantic / DB column / CLI flag / API field / TS types), and weights are committed at run-submit time rather than tuned post-run.
 
 ```
 [Input: lang, n_industries=5, n_per_industry=5, seed_summary?,
-        product="databricks", region="any", include_sector_leaders=True]
+        profile="databricks", weights_override=None,
+        region="any", include_sector_leaders=True]
         │
         ▼
   ┌──────────────────────────┐
@@ -248,42 +251,43 @@ A separate entry point that reverse-infers "who would buy our product" using RAG
         ▼
   cached_context = <knowledge_base>     (Sonnet ephemeral cache)
   volatile_context =
-    <product_summary>...                (optional, seed_summary)
+    <product_summary>...                (optional, seed_summary — buyer-facing pitch)
     <region_constraint>{region}          (when region != "any")
     <sector_leader_seeds region="...">   (when include_sector_leaders)
         │
         ▼
   ┌──────────────────────────┐
-  │  chat_cached (Sonnet 4.6)         │  output: scores{6 dim 0-10}+rationale
+  │  chat_cached (Sonnet 4.6)         │  output: scores{N dim 0-10}+rationale
   │   + 1 retry (temp +0.1)           │  parse_discovery silently drops LLM's tier output
   └──────────────────────────┘
         │
         ▼
   ┌──────────────────────────┐
-  │  scoring (code, $0)               │  weights = load_weights(product) + auto-normalize
-  │  for c in candidates:             │  rules = load_tier_rules() (S/A/B/C threshold)
-  │    c.final_score = weighted sum   │  c.tier = decide_tier(...) (epsilon 1e-6)
-  │    c.tier = first-match           │
+  │  scoring (code, $0)               │  weights = weights_override OR load_weights(profile)
+  │  for c in candidates:             │  rules   = load_tier_rules() (S/A/B/C threshold)
+  │    c.final_score = weighted sum   │  c.tier  = decide_tier(...) (epsilon 1e-6)
+  │  store.update_weights_snapshot()  │  → discovery_runs.weights_snapshot_json
   └──────────────────────────┘
-        │  DiscoveryResult (scores + final_score + tier all populated)
+        │  DiscoveryResult (scores + final_score + tier + weights_applied)
         ▼
   outputs/discovery_{YYYYMMDD}/
-    ├ candidates.yaml   (flat: name/industry/scores{6}/final_score/tier/rationale)
+    ├ candidates.yaml   (flat: name/industry/scores{N}/final_score/tier/rationale)
     └ report.md         (S/A/B by industry + ⚠️ Strategic Edge [C] separate section)
 ```
 
 **Schema (`discover_types.py`):**
-- `Candidate` (pydantic) — `name`/`industry`/`scores: dict[str,int]` (6 dim 0–10)/`rationale`/`final_score: float`/`tier: Tier`. LLM emits only the first 4; the latter 2 are populated by code
+- `Candidate` (pydantic) — `name`/`industry`/`scores: dict[str,int]` (N dim 0–10, validated against current yaml dimensions)/`rationale`/`final_score: float`/`tier: Tier`. LLM emits only the first 4; the latter 2 are populated by code
+- `DiscoveryResult.weights_applied: dict[str, float]` — normalized weight vector that produced the final scores. Persisted (per-run) to `discovery_runs.weights_snapshot_json` so past runs are reproducible/auditable even if yaml is later edited
 - `parse_discovery` silently drops the LLM's `tier` / `final_score` outputs (preserves code-side authority)
 - `_extract_json_object` (raw → fenced → object only) — dict-caller priority
 
-**Scoring (`scoring.py` — added in Phase 9.1):**
-- `WEIGHT_DIMENSIONS` 6 (pain_severity / data_complexity / governance_need / ai_maturity / buying_trigger / displacement_ease)
-- `load_weights(product=None)` — load yaml → merge default + product override → validate completeness → auto-normalize + warn when sum ≠ 1.0
+**Scoring (`scoring.py` — added in Phase 9.1, yaml-driven in Phase 12):**
+- `load_dimensions()` — read `weights.yaml::dimensions` list (each entry: `key`/`label`/`description`/`default_weight`). No hardcoded `WEIGHT_DIMENSIONS` constant — adding/renaming a dim is a yaml edit, no code change
+- `load_weights(profile=None)` — load yaml → merge `default` + `profiles.<key>.weights` override → validate completeness against `load_dimensions()` → auto-normalize + warn when sum ≠ 1.0
 - `load_tier_rules()` — descending sort + 4 tiers (S/A/B/C) enforced
 - `calc_final_score(scores, weights)` — weighted sum
 - `decide_tier(final_score, rules)` — first-match descending. epsilon 1e-6 absorbs normalize float drift (e.g. `7×normalized ≈ 6.9999...` still hits A)
-- Value of code-side decision: **recomputing the same LLM response under different weights = $0 extra cost**. Other products (Snowflake/Salesforce etc.) reuse via `products.<name>` override in weights.yaml
+- Value of code-side decision: **recomputing the same LLM response under different weights = $0 extra cost**. Other profiles (snowflake / salesforce / ...) reuse via `profiles.<key>.weights` override in weights.yaml. The legacy `products:` key in older yamls is absorbed by `_absorb_legacy_products_key` validator (one-shot compat — yaml saved through the API rewrites to `profiles:`)
 
 **Sector leaders seed (`config/sector_leaders.yaml` — added in Phase 9.1):**
 - Flat list: `name` / `industry_hint` / `region` (ko/us/eu/global) / `notes?`
@@ -292,12 +296,19 @@ A separate entry point that reverse-infers "who would buy our product" using RAG
 - Gitignored ops yaml (same pattern as `competitors.yaml` / `intent_tiers.yaml`). `scripts/draft_sector_leaders.py` produces a Sonnet 1-shot draft
 
 **Core function (`discover.py`):**
-- `discover_targets(*, lang, n_industries=5, n_per_industry=5, seed_summary=None, seed_query=..., product="databricks", region="any", include_sector_leaders=True, output_root=None, top_k=20, client=None, write_artifacts=True) -> DiscoveryResult`
-- max_tokens is `claude_max_tokens_discover=6000` (Phase 9.1 raised 4000 → 6000; scores 6 dim + sector_leaders push output tokens up)
+- `discover_targets(*, lang, n_industries=5, n_per_industry=5, seed_summary=None, seed_query=..., profile="default", weights_override=None, region="any", include_sector_leaders=True, output_root=None, top_k=20, client=None, write_artifacts=True) -> DiscoveryResult`
+- `weights_override`: complete `{dim_key: float}` snapshot or `None`. When `None`, `load_weights(profile)` lookup. When non-null, must contain every active dimension key (Pydantic validator on the API side rejects partial dicts at request time so the core function only ever sees clean input)
+- max_tokens is `claude_max_tokens_discover=6000` (Phase 9.1 raised 4000 → 6000; N-dim scores + sector_leaders push output tokens up)
 - Prompt enforces "rationale = 1 sentence ~25 words" — scores carry per-dim judgment, so rationale is just the headline
 
+**Run-form-owns-weights UX (Phase 12 follow-up)**:
+- The web `/discover` page mounts `RunWeightsEditor` *inside* the `DiscoveryRunForm` (collapsible "▾ 가중치 미리보기 / 편집" section under the Profile dropdown). Sliders seed from `selectedProfile.effective_weights` (server-derived: backend `load_weights(profile)`, exposed via `GET /discovery/profiles`).
+- **Idempotent compare**: when slider values match `effective_weights` within 1e-6, the form sends `weights_override: null` → backend uses `load_weights(profile)` lookup (yaml SSOT). Any drift triggers a complete-snapshot send (every dimension key) — half-snapshots are 422'd by `DiscoveryRunCreate._validate_weights_override`.
+- The post-run results page is read-only: `WeightsAppliedRow` echoes `detail.weights_applied` (from the persisted snapshot). The pre-Phase-12 results-page `WeightSliders` component was deleted — recompute is reachable only via a fresh run.
+- The backend `/discovery/runs/{id}/recompute` endpoint is preserved (no UI caller, but tests + future "What-if compare" backlog item depend on it). Its `weights` payload follows the same complete-snapshot contract.
+
 **Thin adapters:**
-- `main.py discover` — `--lang/--n-industries/--n-per-industry/--seed-summary/--seed-query/--product/--region/--sector-leaders|--no-sector-leaders/--top-k/--output-root/--verbose`
+- `main.py discover` — `--lang/--n-industries/--n-per-industry/--seed-summary/--seed-query/--profile/--region/--sector-leaders|--no-sector-leaders/--top-k/--output-root/--verbose`
 - `scripts/discover_targets.py` is identical (argparse)
 
 **Output pair:**
