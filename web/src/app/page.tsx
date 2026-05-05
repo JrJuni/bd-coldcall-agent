@@ -216,7 +216,7 @@ function ProposalsBox({
       {discovery && (
         <div className="mt-3 rounded border border-slate-100 bg-slate-50 px-3 py-2">
           <p className="text-xs text-slate-500">
-            Discovery latest · {discovery.namespace} · {discovery.product}
+            Discovery latest · {discovery.namespace} · {discovery.profile}
           </p>
           <div className="mt-1 flex flex-wrap gap-1.5 text-xs">
             {(["S", "A", "B", "C"] as Tier[]).map((t) => (

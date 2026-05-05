@@ -5,9 +5,12 @@ import { useEffect, useState } from "react";
 
 import { createDiscoveryRun, listRagNamespaces } from "@/lib/api";
 import KeywordChipInput from "@/components/KeywordChipInput";
-import ProductSelect from "@/components/ProductSelect";
+import ProfileSelect from "@/components/ProfileSelect";
 import RegionMultiSelect from "@/components/RegionMultiSelect";
+import RunWeightsEditor from "@/components/RunWeightsEditor";
 import type {
+  DiscoveryDimension,
+  DiscoveryProfile,
   DiscoveryRunCreateInput,
   DiscoveryRunSummary,
   RagNamespaceSummary,
@@ -16,15 +19,28 @@ import type {
 type Props = {
   onRunCreated: (run: DiscoveryRunSummary) => void;
   disabled?: boolean;
+  // Phase 12 follow-up (B5) — dimension metadata fetched at the page
+  // level (single source). Used only by the embedded RunWeightsEditor.
+  dimensions?: DiscoveryDimension[];
 };
 
 const COST_LABEL = "~$0.04 · ~30s · Sonnet 1 call";
 
-export default function DiscoveryRunForm({ onRunCreated, disabled }: Props) {
+export default function DiscoveryRunForm({
+  onRunCreated,
+  disabled,
+  dimensions = [],
+}: Props) {
   const [namespaces, setNamespaces] = useState<RagNamespaceSummary[]>([]);
   const [namespace, setNamespace] = useState<string>("default");
   const [regions, setRegions] = useState<string[]>([]);
-  const [product, setProduct] = useState<string>("default");
+  const [profile, setProfile] = useState<string>("default");
+  const [selectedProfile, setSelectedProfile] = useState<
+    DiscoveryProfile | undefined
+  >();
+  const [weightsOverride, setWeightsOverride] = useState<
+    Record<string, number> | null
+  >(null);
   const [seedSummary, setSeedSummary] = useState<string>("");
   const [seedQueries, setSeedQueries] = useState<string[]>([]);
   const [showAdvanced, setShowAdvanced] = useState<boolean>(false);
@@ -70,7 +86,7 @@ export default function DiscoveryRunForm({ onRunCreated, disabled }: Props) {
       const body: DiscoveryRunCreateInput = {
         namespace,
         regions,
-        product: product.trim() || "default",
+        profile: profile.trim() || "default",
         seed_summary: seedSummary.trim() || null,
         seed_queries: seedQueries,
         top_k: topK ? parseInt(topK, 10) : null,
@@ -78,6 +94,9 @@ export default function DiscoveryRunForm({ onRunCreated, disabled }: Props) {
         n_per_industry: parseInt(nPerIndustry, 10) || 5,
         lang,
         include_sector_leaders: includeSectorLeaders,
+        // Phase 12 follow-up (B5) — null when sliders match the profile's
+        // effective_weights (RunWeightsEditor enforces idempotent compare).
+        weights_override: weightsOverride,
       };
       const run = await createDiscoveryRun(body);
       onRunCreated(run);
@@ -146,18 +165,28 @@ export default function DiscoveryRunForm({ onRunCreated, disabled }: Props) {
 
         <div className="block md:col-span-2">
           <span className="text-sm font-medium text-slate-700">
-            Product
+            Profile
             <span className="ml-2 text-xs font-normal text-slate-500">
-              (weights.yaml::products.&lt;key&gt; — 가중치 편향 선택)
+              (스코어링 프로파일 — 셀링 관점에 따른 가중치 프리셋)
             </span>
           </span>
           <div className="mt-1">
-            <ProductSelect
-              value={product}
-              onChange={setProduct}
+            <ProfileSelect
+              value={profile}
+              onChange={(next, p) => {
+                setProfile(next);
+                setSelectedProfile(p);
+                setWeightsOverride(null); // re-seed editor on profile change
+              }}
               disabled={busy || disabled}
             />
           </div>
+          <RunWeightsEditor
+            dimensions={dimensions}
+            profile={selectedProfile}
+            onChange={setWeightsOverride}
+            disabled={busy || disabled}
+          />
         </div>
 
         <label className="block md:col-span-2">

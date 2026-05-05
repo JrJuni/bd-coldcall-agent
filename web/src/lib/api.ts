@@ -2,8 +2,6 @@ import type {
   DiscoveryCandidate,
   DiscoveryCandidateUpdateInput,
   DiscoveryPromoteResponse,
-  DiscoveryRecomputeInput,
-  DiscoveryRecomputeResponse,
   DiscoveryRunCreateInput,
   DiscoveryRunDetail,
   DiscoveryRunListResponse,
@@ -33,7 +31,8 @@ import type {
   RagSummaryRequestInput,
   RagSummaryResponse,
   RagTreeResponse,
-  DiscoveryProductsResponse,
+  DiscoveryDimensionsResponse,
+  DiscoveryProfilesResponse,
   RegionsConfig,
   RunCreateResponse,
   SecretsView,
@@ -669,11 +668,19 @@ export async function getDiscoveryRegions(): Promise<RegionsConfig> {
   return r.json();
 }
 
-export async function getDiscoveryProducts(): Promise<DiscoveryProductsResponse> {
-  const r = await fetch(`${API_BASE}/discovery/products`, {
+export async function getDiscoveryProfiles(): Promise<DiscoveryProfilesResponse> {
+  const r = await fetch(`${API_BASE}/discovery/profiles`, {
     cache: "no-store",
   });
-  if (!r.ok) throw new Error(`GET /discovery/products ${r.status}`);
+  if (!r.ok) throw new Error(`GET /discovery/profiles ${r.status}`);
+  return r.json();
+}
+
+export async function getDiscoveryDimensions(): Promise<DiscoveryDimensionsResponse> {
+  const r = await fetch(`${API_BASE}/discovery/dimensions`, {
+    cache: "no-store",
+  });
+  if (!r.ok) throw new Error(`GET /discovery/dimensions ${r.status}`);
   return r.json();
 }
 
@@ -744,24 +751,6 @@ export async function deleteDiscoveryCandidate(id: number): Promise<void> {
     throw new Error(`DELETE /discovery/candidates/${id} ${r.status}`);
 }
 
-export async function recomputeDiscovery(
-  runId: string,
-  body: DiscoveryRecomputeInput,
-): Promise<DiscoveryRecomputeResponse> {
-  const r = await fetch(
-    `${API_BASE}/discovery/runs/${encodeURIComponent(runId)}/recompute`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    },
-  );
-  if (!r.ok)
-    throw new Error(
-      `POST /discovery/runs/${runId}/recompute ${r.status}: ${await r.text()}`,
-    );
-  return r.json();
-}
 
 export async function promoteDiscoveryCandidate(
   id: number,

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 
+import WeightsEditor from "@/components/settings/WeightsEditor";
 import {
   getSecretsView,
   getSettings,
@@ -28,7 +29,8 @@ const KIND_LABELS: Record<ConfigKind, string> = {
 
 const KIND_HINTS: Record<ConfigKind, string> = {
   settings: "config/settings.yaml — committed defaults (LLM, search, RAG).",
-  weights: "config/weights.yaml — Phase 9.1 6-dim scoring weights.",
+  weights:
+    "config/weights.yaml — yaml-driven 차원 + default/per-product 가중치.",
   tier_rules: "config/tier_rules.yaml — final_score → tier 임계값.",
   competitors: "config/competitors.yaml — Competitor 채널 키워드.",
   intent_tiers: "config/intent_tiers.yaml — Related 채널 intent tier.",
@@ -160,7 +162,16 @@ export default function SettingsPage() {
         <SecretsPanel secrets={secrets} />
       )}
 
-      {!loading && active !== "secrets" && (
+      {!loading && active === "weights" && (
+        <WeightsEditor
+          initial={byKind["weights"] ?? null}
+          onSaved={(r) =>
+            setByKind((prev) => ({ ...prev, weights: r }))
+          }
+        />
+      )}
+
+      {!loading && active !== "secrets" && active !== "weights" && (
         <section className="space-y-3 rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>

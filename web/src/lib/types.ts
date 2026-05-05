@@ -394,7 +394,8 @@ export interface DashboardRecentRun {
 export interface DashboardRecentDiscovery {
   run_id: string;
   namespace: string;
-  product: string;
+  // Phase 12 follow-up (B5): renamed `product` → `profile`.
+  profile: string;
   status: string;
   candidate_count: number;
   tier_distribution: Record<string, number>;
@@ -535,16 +536,46 @@ export interface ActiveModelView {
 
 // ── Phase 10 P10-2b — Discovery ─────────────────────────────────────────
 
-export const WEIGHT_DIMENSIONS = [
-  "pain_severity",
-  "data_complexity",
-  "governance_need",
-  "ai_maturity",
-  "buying_trigger",
-  "displacement_ease",
-] as const;
+// Phase 12 — discovery dimensions are now yaml-driven. The frontend used
+// to ship a hardcoded six-dim union; the canonical list is fetched from
+// `GET /discovery/dimensions`. Each entry carries the seed weight from
+// `weights.yaml::default` so the slider state can render without a second
+// fetch. `config_warning` is non-null when the yaml is malformed (sliders
+// still render with 0.0 weights so the user can fix the file).
+export interface DiscoveryDimension {
+  key: string;
+  label: string;
+  description: string;
+  default_weight: number;
+}
 
-export type WeightDimension = (typeof WEIGHT_DIMENSIONS)[number];
+export interface DiscoveryDimensionsResponse {
+  dimensions: DiscoveryDimension[];
+  config_warning: string | null;
+}
+
+// Phase 12 — `weights.yaml` doc shape exposed through `GET /settings/weights`.
+// Used by the Settings → Discovery weights tab's form mode. Default + profile
+// weight maps are partial (missing keys inherit from default at runtime).
+//
+// Phase 12 follow-up (B5): renamed `ProductProfile` → `WeightsProfile` and
+// `WeightsDoc.products` → `.profiles` to clarify the domain (these are
+// scoring profiles / selling angles, not product offerings).
+export interface WeightsProfile {
+  description?: string | null;
+  weights?: Record<string, number> | null;
+}
+
+export interface WeightsDoc {
+  version?: number | null;
+  dimensions?: Array<{
+    key: string;
+    label?: string | null;
+    description?: string | null;
+  }> | null;
+  default?: Record<string, number> | null;
+  profiles?: Record<string, WeightsProfile> | null;
+}
 
 // Phase 12 — region master fetched from `GET /discovery/regions`. The
 // frontend used to ship a hard-coded 5-value enum; the new shape is a
@@ -565,18 +596,22 @@ export interface RegionsConfig {
   groups: RegionGroup[];
 }
 
-// Phase 12 — product master fetched from `GET /discovery/products`. The
-// frontend used to ship a free-text input; the new shape is a yaml-driven
-// dropdown so `weights.yaml::products.<key>` shows up with its description.
-export interface DiscoveryProduct {
+// Phase 12 follow-up (B5): renamed `DiscoveryProduct` → `DiscoveryProfile`
+// and the endpoint `/discovery/products` → `/discovery/profiles`. The
+// response now also carries `effective_weights` (server-derived merge of
+// default + override, normalized) so the frontend can seed slider state
+// without duplicating the merge logic — single source of truth.
+export interface DiscoveryProfile {
   key: string;
   label: string;
   description: string;
   is_default: boolean;
+  effective_weights: Record<string, number>;
 }
 
-export interface DiscoveryProductsResponse {
-  products: DiscoveryProduct[];
+export interface DiscoveryProfilesResponse {
+  profiles: DiscoveryProfile[];
+  config_warning: string | null;
 }
 
 export type DiscoveryStatus = "queued" | "running" | "completed" | "failed";
@@ -590,7 +625,8 @@ export interface DiscoveryRunCreateInput {
   // Phase 12 — list of ISO alpha-2 country codes (or "global"); empty list
   // = no region filter.
   regions: string[];
-  product: string;
+  // Phase 12 follow-up (B5): renamed `product` → `profile`.
+  profile: string;
   seed_summary?: string | null;
   // Phase 12 — list of RAG retrieve queries (chip input). Empty = backend
   // default. Replaces the pre-Phase-12 single `seed_query` string.
@@ -600,6 +636,11 @@ export interface DiscoveryRunCreateInput {
   n_per_industry?: number;
   lang?: "en" | "ko";
   include_sector_leaders?: boolean;
+  // Phase 12 follow-up (B5) — complete effective weight snapshot. null
+  // (or omitted) → server uses load_weights(profile). Non-null must
+  // contain every active dimension key (backend rejects partials with
+  // 422).
+  weights_override?: Record<string, number> | null;
 }
 
 export interface DiscoveryRunSummary {
@@ -607,7 +648,8 @@ export interface DiscoveryRunSummary {
   generated_at: string;
   status: DiscoveryStatus;
   namespace: string;
-  product: string;
+  // Phase 12 follow-up (B5): renamed `product` → `profile`.
+  profile: string;
   regions: string[];
   lang: string;
   seed_doc_count: number;
@@ -618,6 +660,9 @@ export interface DiscoveryRunSummary {
   failed_stage: string | null;
   error_message: string | null;
   usage: Record<string, number>;
+  // Phase 12 follow-up (B5) — normalized weight vector actually used at
+  // run time. null for pre-B5 runs (UI shows "snapshot 없음").
+  weights_applied: Record<string, number> | null;
   created_at: string;
   candidate_count: number;
   tier_distribution: Record<string, number>;
@@ -655,7 +700,8 @@ export interface DiscoveryCandidateUpdateInput {
 
 export interface DiscoveryRecomputeInput {
   weights?: Record<string, number>;
-  product?: string;
+  // Phase 12 follow-up (B5): renamed `product` → `profile`.
+  profile?: string;
 }
 
 export interface DiscoveryRecomputeResponse {

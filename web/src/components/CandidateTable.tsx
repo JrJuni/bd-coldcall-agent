@@ -8,24 +8,27 @@ import {
   patchDiscoveryCandidate,
   promoteDiscoveryCandidate,
 } from "@/lib/api";
-import type { DiscoveryCandidate, WeightDimension } from "@/lib/types";
-import { WEIGHT_DIMENSIONS } from "@/lib/types";
+import type { DiscoveryCandidate, DiscoveryDimension } from "@/lib/types";
 
 type Props = {
   candidates: DiscoveryCandidate[];
   onChanged: () => void;
+  // Phase 12 — yaml-driven dimensions. When supplied, the score editor
+  // renders inputs in canonical yaml order with dimension labels; when
+  // omitted (older callers), it falls back to the keys present on the
+  // candidate's own `scores` map.
+  dimensions?: DiscoveryDimension[];
 };
 
-const SHORT_LABEL: Record<WeightDimension, string> = {
-  pain_severity: "pain",
-  data_complexity: "data",
-  governance_need: "gov",
-  ai_maturity: "ai",
-  buying_trigger: "buy",
-  displacement_ease: "disp",
-};
+function shortKey(key: string): string {
+  return key.split("_")[0]?.slice(0, 4) || key.slice(0, 4);
+}
 
-export default function CandidateTable({ candidates, onChanged }: Props) {
+export default function CandidateTable({
+  candidates,
+  onChanged,
+  dimensions,
+}: Props) {
   const [editing, setEditing] = useState<number | null>(null);
   const [busy, setBusy] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
@@ -104,6 +107,7 @@ export default function CandidateTable({ candidates, onChanged }: Props) {
                 cand={c}
                 expanded={editing === c.id}
                 busy={busy}
+                dimensions={dimensions}
                 onToggle={() => setEditing(editing === c.id ? null : c.id)}
                 onSaveScores={(scores) => patch(c.id, { scores })}
                 onSaveRationale={(rationale) => patch(c.id, { rationale })}
@@ -122,13 +126,24 @@ function CandidateRow(props: {
   cand: DiscoveryCandidate;
   expanded: boolean;
   busy: boolean;
+  dimensions?: DiscoveryDimension[];
   onToggle: () => void;
   onSaveScores: (scores: Record<string, number>) => void;
   onSaveRationale: (rationale: string) => void;
   onPromote: () => void;
   onDelete: () => void;
 }) {
-  const { cand, expanded, busy, onToggle, onSaveScores, onSaveRationale, onPromote, onDelete } = props;
+  const {
+    cand,
+    expanded,
+    busy,
+    dimensions,
+    onToggle,
+    onSaveScores,
+    onSaveRationale,
+    onPromote,
+    onDelete,
+  } = props;
   const top = topSignals(cand.scores, 2);
 
   return (
@@ -151,7 +166,7 @@ function CandidateRow(props: {
         </td>
         <td className="px-3 py-2 text-slate-600">{cand.industry}</td>
         <td className="px-3 py-2 text-xs text-slate-500">
-          {top.map(([d, v]) => `${SHORT_LABEL[d as WeightDimension] ?? d}=${v}`).join(" · ")}
+          {top.map(([d, v]) => `${shortKey(d)}=${v}`).join(" · ")}
         </td>
         <td className="px-3 py-2 text-xs">
           <span
@@ -193,6 +208,7 @@ function CandidateRow(props: {
             <CandidateEditor
               cand={cand}
               busy={busy}
+              dimensions={dimensions}
               onSaveScores={onSaveScores}
               onSaveRationale={onSaveRationale}
             />
@@ -206,32 +222,46 @@ function CandidateRow(props: {
 function CandidateEditor({
   cand,
   busy,
+  dimensions,
   onSaveScores,
   onSaveRationale,
 }: {
   cand: DiscoveryCandidate;
   busy: boolean;
+  dimensions?: DiscoveryDimension[];
   onSaveScores: (scores: Record<string, number>) => void;
   onSaveRationale: (rationale: string) => void;
 }) {
+  // Canonical dimension order: prefer yaml-driven list, otherwise fall
+  // back to whatever keys this candidate already has (older runs may
+  // carry pre-yaml dimensions that no longer exist in the active list).
+  const dimKeys = dimensions?.length
+    ? dimensions.map((d) => d.key)
+    : Object.keys(cand.scores);
+  const labelFor = (key: string) =>
+    dimensions?.find((d) => d.key === key)?.label ?? key;
+
   const [scores, setScores] = useState<Record<string, number>>(() =>
-    Object.fromEntries(
-      WEIGHT_DIMENSIONS.map((d) => [d, cand.scores[d] ?? 0]),
-    ),
+    Object.fromEntries(dimKeys.map((k) => [k, cand.scores[k] ?? 0])),
   );
   const [rationale, setRationale] = useState<string>(cand.rationale ?? "");
 
   return (
     <div className="space-y-3">
       <div className="grid grid-cols-2 gap-x-6 gap-y-2 md:grid-cols-3">
-        {WEIGHT_DIMENSIONS.map((d) => (
+        {dimKeys.map((d) => (
           <label key={d} className="flex items-center gap-2 text-xs">
-            <span className="w-32 text-slate-600">{d}</span>
+            <span
+              className="w-32 truncate text-slate-600"
+              title={d}
+            >
+              {labelFor(d)}
+            </span>
             <input
               type="number"
               min={0}
               max={10}
-              value={scores[d]}
+              value={scores[d] ?? 0}
               onChange={(e) => {
                 const v = parseInt(e.target.value, 10);
                 setScores({ ...scores, [d]: isNaN(v) ? 0 : v });

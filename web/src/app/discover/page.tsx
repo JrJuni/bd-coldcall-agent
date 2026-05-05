@@ -5,18 +5,17 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import CandidateTable from "@/components/CandidateTable";
 import DiscoveryRunForm from "@/components/DiscoveryRunForm";
 import EmptyState from "@/components/EmptyState";
-import WeightSliders from "@/components/WeightSliders";
 import {
   deleteDiscoveryRun,
   discoveryEventsUrl,
+  getDiscoveryDimensions,
   getDiscoveryRun,
   listDiscoveryRuns,
-  recomputeDiscovery,
 } from "@/lib/api";
 import type {
+  DiscoveryDimension,
   DiscoveryRunDetail,
   DiscoveryRunSummary,
-  WeightDimension,
 } from "@/lib/types";
 
 export default function DiscoverPage() {
@@ -24,8 +23,9 @@ export default function DiscoverPage() {
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [activeRun, setActiveRun] = useState<DiscoveryRunDetail | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
-  const [recomputing, setRecomputing] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [dimensions, setDimensions] = useState<DiscoveryDimension[]>([]);
+  const [dimWarning, setDimWarning] = useState<string | null>(null);
   const sseRef = useRef<EventSource | null>(null);
 
   const refreshRunsList = useCallback(async () => {
@@ -73,6 +73,29 @@ export default function DiscoverPage() {
       cancelled = true;
     };
   }, [refreshRunsList, refreshActiveRun]);
+
+  // Phase 12 — yaml-driven dimensions fetched once. Shared by WeightSliders
+  // and CandidateTable so the editor renders inputs in canonical order with
+  // human labels.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await getDiscoveryDimensions();
+        if (cancelled) return;
+        setDimensions(r.dimensions);
+        setDimWarning(r.config_warning);
+      } catch (err) {
+        if (cancelled) return;
+        // Non-fatal — sliders fall back to internal fetch + their own
+        // error UI; table falls back to candidate.scores keys.
+        setDimWarning(err instanceof Error ? err.message : String(err));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (sseRef.current) {
@@ -127,35 +150,28 @@ export default function DiscoverPage() {
     }
   }
 
-  async function onRecompute(weights: Record<WeightDimension, number>) {
-    if (!activeRunId) return;
-    setRecomputing(true);
-    setError(null);
-    try {
-      await recomputeDiscovery(activeRunId, { weights });
-      await refreshActiveRun(activeRunId);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setRecomputing(false);
-    }
-  }
-
   return (
     <div className="space-y-8">
       <div>
         <h1 className="text-2xl font-semibold">Discovery</h1>
         <p className="mt-1 text-sm text-slate-500">
-          RAG 기반 BD 타겟 발굴 — 6차원 점수 + 외부 weights 로 tier 결정. weight
-          슬라이더로 LLM 호출 0원으로 재계산 가능.
+          RAG 기반 BD 타겟 발굴 — Profile 별 가중치를 첫 실행 시 결정. 결과는
+          frozen — 다른 가중치로 보고 싶으면 새 run 을 실행하세요.
         </p>
       </div>
+
+      {dimWarning && (
+        <p className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          ⚠ weights.yaml 로드 경고: {dimWarning}
+        </p>
+      )}
 
       <DiscoveryRunForm
         onRunCreated={onRunCreated}
         disabled={
           activeRun?.status === "queued" || activeRun?.status === "running"
         }
+        dimensions={dimensions}
       />
 
       <hr className="border-slate-200" />
@@ -171,7 +187,7 @@ export default function DiscoverPage() {
             >
               {runs.map((r) => (
                 <option key={r.run_id} value={r.run_id}>
-                  {r.created_at.slice(0, 19).replace("T", " ")} — {r.product} ·{" "}
+                  {r.created_at.slice(0, 19).replace("T", " ")} — {r.profile} ·{" "}
                   {r.candidate_count} cands · {r.status}
                 </option>
               ))}
@@ -202,10 +218,9 @@ export default function DiscoverPage() {
         {activeRun && (
           <RunDetail
             detail={activeRun}
-            onRecompute={onRecompute}
-            recomputing={recomputing}
             onChanged={() => activeRunId && refreshActiveRun(activeRunId)}
             error={error}
+            dimensions={dimensions}
           />
         )}
       </section>
@@ -215,16 +230,14 @@ export default function DiscoverPage() {
 
 function RunDetail({
   detail,
-  onRecompute,
-  recomputing,
   onChanged,
   error,
+  dimensions,
 }: {
   detail: DiscoveryRunDetail;
-  onRecompute: (w: Record<WeightDimension, number>) => Promise<void>;
-  recomputing: boolean;
   onChanged: () => void;
   error: string | null;
+  dimensions: DiscoveryDimension[];
 }) {
   const tiers = ["S", "A", "B", "C"] as const;
   return (
@@ -263,14 +276,47 @@ function RunDetail({
         {detail.status === "failed" && detail.error_message && (
           <p className="mt-2 text-xs text-red-600">{detail.error_message}</p>
         )}
+        <WeightsAppliedRow weights={detail.weights_applied} dimensions={dimensions} />
       </div>
 
       {error && <p className="text-sm text-red-600">{error}</p>}
 
-      <WeightSliders onRecompute={onRecompute} busy={recomputing} />
-
-      <CandidateTable candidates={detail.candidates} onChanged={onChanged} />
+      <CandidateTable
+        candidates={detail.candidates}
+        onChanged={onChanged}
+        dimensions={dimensions.length > 0 ? dimensions : undefined}
+      />
     </div>
+  );
+}
+
+function WeightsAppliedRow({
+  weights,
+  dimensions,
+}: {
+  weights: Record<string, number> | null;
+  dimensions: DiscoveryDimension[];
+}) {
+  if (weights == null) {
+    return (
+      <p className="mt-2 text-xs text-slate-400">
+        snapshot 없음 — 옛 형식 run (가중치는 profile 이름으로만 추정).
+      </p>
+    );
+  }
+  // Render in canonical dimension order; fall back to alphabetical for
+  // legacy runs whose dim set drifted from the current yaml.
+  const keys = dimensions.length
+    ? dimensions.map((d) => d.key).filter((k) => k in weights)
+    : Object.keys(weights);
+  if (keys.length === 0) return null;
+  return (
+    <p className="mt-2 text-xs text-slate-500">
+      <strong>이 run 의 가중치:</strong>{" "}
+      {keys
+        .map((k) => `${dimensions.find((d) => d.key === k)?.label ?? k}=${weights[k].toFixed(2)}`)
+        .join(" · ")}
+    </p>
   );
 }
 
