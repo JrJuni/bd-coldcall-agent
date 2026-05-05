@@ -109,9 +109,9 @@
 
 ### 22. Phase 11 후속 — multi-workspace 마무리 (UI/CLI 격차)
 
-- **상태 (2026-05-02)**: Phase 11 (multi-workspace RAG) merge 됨 — default + 외부 워크스페이스 추가/제거 + ws-prefixed `/rag/*` 라우트 + 3-segment URL 인코딩 + AddWorkspaceModal/RemoveWorkspaceModal 까지 동작. 단 Re-index UI 와 일부 다른 페이지가 여전히 default ws 하드코딩.
+- **상태 (2026-05-04)**: Phase 11 (multi-workspace RAG) merge 됨 — default + 외부 워크스페이스 추가/제거 + ws-prefixed `/rag/*` 라우트 + 3-segment URL 인코딩 + AddWorkspaceModal/RemoveWorkspaceModal 까지 동작. (1) 항목은 `IngestTriggerRequest` 에 workspace/namespace 필드 추가됨 (`src/api/schemas.py:75-76`) + `execute_ingest` argv forwarding 됨 (`src/api/runner.py:368-371`) + 프론트가 `activeWs`/`activeNs` 전달 + ns 미선택 레벨에서 Re-index/Dry run 버튼 disabled. 나머지 (2)~(4) 잔존.
 - **잔여 격차**:
-  1. **Re-index UI 가 default ws 고정** — `triggerIngest` (POST /ingest) 가 `--workspace` 플래그 안 보내므로 외부 ws 인덱싱은 CLI (`python main.py ingest --workspace <slug>` 또는 `--all-workspaces`) 만 가능. `IngestTriggerRequest` 에 `workspace?: string` 또는 `all_workspaces?: bool` 필드 추가 + `src/api/runner.py::execute_ingest` argv forwarding + `/rag` 페이지 Re-index 버튼이 현재 ws_slug 자동 전달
+  1. ~~**Re-index UI 가 default ws 고정**~~ — 2026-05-04 해소. workspace/namespace forwarding + ns-level disabled 게이팅 완료. 서브폴더 단위 부분 reindex 는 별도 항목 (out of scope)
   2. **Discovery / News 탭 namespace 드롭다운 ws 미인지** — `listRagNamespaces()` default 인자로 default ws 만 보여줌. 외부 ws 의 namespace 도 선택 가능하게 ws 드롭다운 + namespace 드롭다운 2단계로 분리하거나, 하나로 묶어 `<ws_slug>/<ns>` 표기
   3. **Dashboard `rag` aggregate 가 default ws 만 집계** — 외부 ws 의 manifest 도 합산. `/dashboard` route 가 `list_workspaces` 순회
   4. **외부 ws 시나리오 백엔드 테스트 5건** — `tests/test_api_rag_docs.py` 에 외부 ws 등록 → upload → tree → AI Summary → delete 흐름. 현재 18건 워크스페이스 테스트는 `/workspaces` CRUD 만 커버

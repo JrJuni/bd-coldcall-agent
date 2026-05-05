@@ -669,14 +669,24 @@ function RagWorkspace() {
                   </ToolbarButton>
                   <ToolbarButton
                     onClick={() => onReindex(true)}
-                    disabled={busy}
+                    disabled={busy || !inside}
+                    title={
+                      !inside
+                        ? "namespace 안에서만 사용 가능 — 좌측 트리에서 namespace 선택"
+                        : "현재 namespace 를 미리보기 (임베딩/저장 없음)"
+                    }
                   >
                     Dry run
                   </ToolbarButton>
                   <ToolbarButton
                     onClick={() => onReindex(false)}
-                    disabled={busy}
+                    disabled={busy || !inside}
                     tone="primary"
+                    title={
+                      !inside
+                        ? "namespace 안에서만 사용 가능 — 좌측 트리에서 namespace 선택"
+                        : "현재 namespace 전체 재인덱싱 (변경된 파일만 처리)"
+                    }
                   >
                     Re-index
                   </ToolbarButton>
@@ -1311,6 +1321,13 @@ function FileRow({
               title="이 폴더 안에 인덱싱되지 않은 파일 또는 수정된 파일이 있습니다"
             >
               Pending
+            </span>
+          ) : entry.needs_reindex === false && (entry.child_count ?? 0) > 0 ? (
+            <span
+              className="rounded-full bg-emerald-100 px-1.5 py-0 text-[10px] text-emerald-800"
+              title="폴더 안의 모든 파일이 인덱싱 완료"
+            >
+              Ready
             </span>
           ) : (
             <span className="text-slate-400">—</span>

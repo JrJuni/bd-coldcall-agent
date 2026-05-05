@@ -367,7 +367,7 @@ GET  /ingest/tasks/{task_id}   → 상태
 - `RagDocumentDropzone` `wsSlug` prop 받음, `uploadAtRoot=nsLevel`
 
 ### 미해결 격차 (backlog 항목 22 로 분리)
-- Re-index UI 가 default ws 고정 (`triggerIngest` 가 `--workspace` 미전달)
+- ~~Re-index UI 가 default ws 고정~~ (2026-05-04 해소: `IngestTriggerRequest` workspace/namespace forwarding + ns 미선택 시 Re-index/Dry run 버튼 disabled)
 - Discovery/News 탭 namespace 드롭다운이 default ws 만 표시
 - Dashboard `rag` aggregate 가 default ws 만 집계
 - 외부 ws 시나리오 백엔드 테스트 5건 추가 필요
