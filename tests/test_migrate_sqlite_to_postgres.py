@@ -1,0 +1,140 @@
+"""Phase 13B M7d - smoke test for the SQLite -> Postgres migration script.
+
+We can't reach Neon from CI, so the test exercises the script's row-copy
+machinery against two SQLite databases. That covers everything except
+the Postgres SERIAL sequence bump (guarded by a dialect check in the
+script itself, so it's a no-op here).
+"""
+from __future__ import annotations
+
+import sqlalchemy as sa
+from sqlalchemy.orm import sessionmaker
+
+from src.api.models.rfp_answer import RfpAnswer
+from src.api.models.target import Target
+from src.api.models.workspace import Workspace
+from src.api.orm import Base, make_engine
+from scripts.migrate_sqlite_to_postgres import COPY_ORDER, _copy_table
+
+
+def test_copy_round_trip(tmp_path):
+    src_url = f"sqlite:///{(tmp_path / 'src.db').as_posix()}"
+    tgt_url = f"sqlite:///{(tmp_path / 'tgt.db').as_posix()}"
+
+    src_engine = make_engine(src_url)
+    tgt_engine = make_engine(tgt_url)
+    Base.metadata.create_all(src_engine)
+    Base.metadata.create_all(tgt_engine)
+
+    SrcSession = sessionmaker(bind=src_engine, future=True)
+    TgtSession = sessionmaker(bind=tgt_engine, future=True)
+
+    # Seed source with one row per table that we care about.
+    ts = "2026-05-19T00:00:00+00:00"
+    with SrcSession() as s:
+        s.add(
+            Workspace(
+                slug="default",
+                label="Project Docs",
+                abs_path="C:/proj/data/company_docs",
+                is_builtin=True,
+                created_at=ts,
+                updated_at=ts,
+            )
+        )
+        s.add(
+            Target(
+                name="Acme",
+                industry="semiconductor",
+                aliases_json='["ACME","Acme Corp"]',
+                stage="planned",
+                created_from="manual",
+                created_at=ts,
+                updated_at=ts,
+            )
+        )
+        s.add(
+            RfpAnswer(
+                id="rfp-1",
+                run_id="run-1",
+                question="Is the product SOC 2 compliant?",
+                retrieved_chunks=[{"id": "c1"}],
+                generated_answer="Yes.",
+                citations=[{"chunk_id": "c1"}],
+                evidence_quality="high",
+                confidence=0.91,
+                model_version="claude-sonnet-4-6",
+                prompt_version="rfp_answer.v1",
+                status="draft",
+            )
+        )
+        s.commit()
+
+    # Run the copy.
+    totals_src = 0
+    totals_ins = 0
+    with SrcSession() as src, TgtSession() as tgt:
+        for model in COPY_ORDER:
+            src_n, ins_n = _copy_table(
+                src, tgt, model, apply=True, force_empty_target=False
+            )
+            totals_src += src_n
+            totals_ins += ins_n
+
+    assert totals_src == 3
+    assert totals_ins == 3
+
+    with TgtSession() as t:
+        ws = t.scalar(sa.select(Workspace).where(Workspace.slug == "default"))
+        assert ws is not None
+        assert ws.is_builtin is True
+
+        tgt_targets = t.scalars(sa.select(Target)).all()
+        assert len(tgt_targets) == 1
+        assert tgt_targets[0].name == "Acme"
+        assert tgt_targets[0].aliases_json == '["ACME","Acme Corp"]'
+
+        tgt_rfp = t.scalars(sa.select(RfpAnswer)).all()
+        assert len(tgt_rfp) == 1
+        assert tgt_rfp[0].id == "rfp-1"
+        assert tgt_rfp[0].retrieved_chunks == [{"id": "c1"}]
+        assert tgt_rfp[0].evidence_quality == "high"
+
+
+def test_dry_run_does_not_insert(tmp_path):
+    src_url = f"sqlite:///{(tmp_path / 'src2.db').as_posix()}"
+    tgt_url = f"sqlite:///{(tmp_path / 'tgt2.db').as_posix()}"
+
+    src_engine = make_engine(src_url)
+    tgt_engine = make_engine(tgt_url)
+    Base.metadata.create_all(src_engine)
+    Base.metadata.create_all(tgt_engine)
+
+    SrcSession = sessionmaker(bind=src_engine, future=True)
+    TgtSession = sessionmaker(bind=tgt_engine, future=True)
+
+    ts = "2026-05-19T00:00:00+00:00"
+    with SrcSession() as s:
+        s.add(
+            Workspace(
+                slug="w1",
+                label="w1",
+                abs_path="C:/somewhere",
+                is_builtin=False,
+                created_at=ts,
+                updated_at=ts,
+            )
+        )
+        s.commit()
+
+    with SrcSession() as src, TgtSession() as tgt:
+        for model in COPY_ORDER:
+            src_n, ins_n = _copy_table(
+                src, tgt, model, apply=False, force_empty_target=False
+            )
+            # Even when the source has rows, dry-run reports 0 insertions.
+            assert ins_n == 0
+
+    # Target stays empty.
+    with TgtSession() as t:
+        assert t.scalar(sa.select(sa.func.count()).select_from(Workspace)) == 0

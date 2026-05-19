@@ -27,6 +27,9 @@ config/targets.yaml
 config/competitors.yaml
 config/intent_tiers.yaml
 config/sector_leaders.yaml
+# Phase 13A — non-secret Notion ids (root_page_id, database_id). Tokens
+# stay in .env. The committed template is `config/notion.example.yaml`.
+config/notion.yaml
 
 # Data & outputs
 data/vectorstore/
@@ -49,7 +52,10 @@ web/data/
 
 # Model caches
 .cache/
-models/
+# Root-level HF / Exaone weight dumps — NOT src/api/models/ which is the
+# SQLAlchemy ORM package (anchor to root with leading slash so the rule
+# only matches `./models/` not arbitrary `models/` further down the tree).
+/models/
 .huggingface/
 
 # IDE / OS

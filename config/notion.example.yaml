@@ -1,0 +1,27 @@
+# Phase 13A - Notion workspace ids (non-secret).
+#
+# Copy this file to config/notion.yaml (gitignored) and fill in the
+# real ids. Tokens stay in .env (NOTION_TEAMSPACE_TOKEN,
+# NOTION_PUBLICSPACE_TOKEN), not here.
+#
+# The Notion API uses 32-char hex ids with no dashes, OR the 36-char
+# dashed UUID form - both work. Copy whichever Notion shows you in the
+# page URL (...workspace-365b5106a4a780e1a87df08587aa293e -> id is the
+# 32-char hex after the slug).
+#
+# Bootstrap flow:
+#   1. Add the integration to the BDINT root pages in Notion (see
+#      docs/phase13.md).
+#   2. Set teamspace.root_page_id (and publicspace.root_page_id when
+#      needed for Phase 13.5).
+#   3. Run `python scripts/bootstrap_notion.py` - it creates the RFP Q&A
+#      Evaluation database under the root page if absent and writes the
+#      database_id back into this file.
+
+workspaces:
+  teamspace:
+    root_page_id: "REPLACE_ME_32_HEX"
+    rfp_qa_database_id: ""  # filled in by bootstrap_notion.py
+  publicspace:
+    root_page_id: "REPLACE_ME_32_HEX"
+    rfp_qa_database_id: ""  # filled in by bootstrap_notion.py (13.5)

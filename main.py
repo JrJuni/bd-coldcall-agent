@@ -231,6 +231,19 @@ def discover_cmd(
     typer.echo(f"[OK] report        -> {md_rel}")
 
 
+@app.command("mcp")
+def mcp_cmd() -> None:
+    """Phase 13A - launch the FastMCP stdio server for Claude Desktop / Codex.
+
+    The server registers every tool under `src/mcp/tools/` and speaks
+    JSON-RPC over stdio. Wire it into Claude Desktop's
+    claude_desktop_config.json - see docs/phase13.md for the snippet.
+    """
+    from src.mcp.server import main as mcp_main
+
+    mcp_main()
+
+
 @app.command("ingest")
 def ingest_cmd(
     workspace: str = typer.Option(

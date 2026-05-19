@@ -9,6 +9,17 @@
 
 ---
 
+## Phase 13 narrative shift — scope reframe (2026-05-19)
+
+Phase 13 에서 프로젝트 narrative 를 "Web UI 중심 CRM" → "Agent-first MCP + Notion workspace + Web UI as observability" 로 전환했음 (`docs/phase13.md` 참고). 아래 backlog 항목들은 이 narrative 아래에서 재해석한다:
+
+- **CRM-shaped Web UI 항목** (Targets / Interactions 의 신규 컬럼·필터·인라인 편집 등): 모두 **deprecated** 로 본다. Notion workspace (BDINT_Teamspace / BDINT_Publicspace) 가 entity 들의 system of record 이며, Web UI 는 observability layer (legacy 배지 표기). 이 영역의 새 작업은 Phase 14+ 의 MCP tool / Notion DB 모듈로 흡수한다.
+- **새 entity 모듈** (Accounts / Contacts / Meetings / Signals / Opportunities / PoC Plans / Product Feedback): Phase 14+ 마이크로아키텍처 단위로 각각 (a) ORM 모델 + Alembic, (b) `notion_sync_map` 기반 Notion DB upsert, (c) 해당 entity 의 MCP tool 한 쌍 (create / search) 로 추가. 한 phase 에 한 entity씩.
+- **Promote workflow (Teamspace → Publicspace)**: Phase 13.5 로 분리되어 있음. Reviewer notes + status 전환 + Publicspace 쓰기를 묶어서 처리.
+- **Web UI 의 정체성**: dashboard / cost / RAG / settings / run history 만 active 로 본다. `/targets` / `/interactions` 는 legacy 라벨로 유지 (Phase 13B M7b 완료).
+
+---
+
 ## P1 — Phase 9 직후 우선 착수 후보
 
 ### 23. Discovery dimension snapshot 정책 ⚠️ 부분 흡수

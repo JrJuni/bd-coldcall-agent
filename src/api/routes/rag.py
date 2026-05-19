@@ -38,7 +38,7 @@ from typing import NamedTuple
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 
-from src.api import db as _db
+from src.api import store as _store
 from src.api.schemas import (
     RagDocumentListResponse,
     RagDocumentSummary,
@@ -370,31 +370,25 @@ def _folder_last_indexed_at(
     return best
 
 
-# ── Summary cache (SQLite) ──────────────────────────────────────────────
+# ── Summary cache (ORM-backed via RagSummaryStore) ──────────────────────
+#
+# Phase 13B M7a — these helpers used to talk to SQLite directly through
+# `src/api/db.py::connect`; they now delegate to the ORM-native
+# `RagSummaryStore`. Routes / tests reach the same data without dialect-
+# specific SQL, which is what makes the Phase 13B Postgres cutover safe.
 
 
-def _app_db_path() -> Path:
-    """Resolve the app DB path lazily — kept as a tiny accessor so tests
-    that override `API_APP_DB` get a fresh path on each call."""
-    from src.api.config import get_api_settings
-
-    return Path(get_api_settings().app_db)
-
-
-def _row_to_summary(row) -> RagSummaryResponse:
-    usage_raw = row["usage_json"] or "{}"
-    try:
-        usage = json.loads(usage_raw)
-    except (TypeError, json.JSONDecodeError):
-        usage = {}
+def _row_dict_to_summary(row: dict | None) -> RagSummaryResponse | None:
+    if row is None:
+        return None
     return RagSummaryResponse(
         namespace=row["namespace"],
         path=row["path"],
         chunk_count=int(row["chunk_count"] or 0),
         chunks_in_namespace=int(row["chunks_in_namespace"] or 0),
         summary=row["summary"] or "",
-        model=row["model"],
-        usage=usage if isinstance(usage, dict) else {},
+        model=row.get("model"),
+        usage=row.get("usage") or {},
         generated_at=row["generated_at"],
     )
 
@@ -402,16 +396,11 @@ def _row_to_summary(row) -> RagSummaryResponse:
 def _get_cached_summary(
     ws_slug: str, namespace: str, path: str
 ) -> tuple[RagSummaryResponse | None, str | None]:
-    """Return (cached summary, indexed_at_at_generation) for the row, or (None, None)."""
-    with _db.connect(_app_db_path()) as conn:
-        row = conn.execute(
-            "SELECT * FROM rag_summaries"
-            " WHERE ws_slug = ? AND namespace = ? AND path = ?",
-            (ws_slug, namespace, path),
-        ).fetchone()
-    if row is None:
-        return None, None
-    return _row_to_summary(row), row["indexed_at_at_generation"]
+    """Return (cached summary, indexed_at_at_generation) or (None, None)."""
+    row, indexed_at_at_gen = _store.get_rag_summary_store().get(
+        ws_slug, namespace, path
+    )
+    return _row_dict_to_summary(row), indexed_at_at_gen
 
 
 def _upsert_summary(
@@ -421,46 +410,23 @@ def _upsert_summary(
     lang: str,
     indexed_at_at_generation: str | None,
 ) -> None:
-    with _db.connect(_app_db_path()) as conn:
-        # First DELETE the existing row (if any) — INSERT OR REPLACE
-        # would honor the original (namespace, path) PK on databases
-        # that pre-date the ws_slug column, accidentally clobbering
-        # another workspace's row with the same (ns, path).
-        conn.execute(
-            "DELETE FROM rag_summaries"
-            " WHERE ws_slug = ? AND namespace = ? AND path = ?",
-            (ws_slug, summary.namespace, summary.path),
-        )
-        conn.execute(
-            """
-            INSERT INTO rag_summaries (
-                ws_slug, namespace, path, summary, lang, model, usage_json,
-                chunk_count, chunks_in_namespace,
-                indexed_at_at_generation, generated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                ws_slug,
-                summary.namespace,
-                summary.path,
-                summary.summary,
-                lang,
-                summary.model,
-                json.dumps(summary.usage or {}, ensure_ascii=False),
-                summary.chunk_count,
-                summary.chunks_in_namespace,
-                indexed_at_at_generation,
-                summary.generated_at,
-            ),
-        )
+    _store.get_rag_summary_store().upsert(
+        ws_slug=ws_slug,
+        namespace=summary.namespace,
+        path=summary.path,
+        summary=summary.summary,
+        lang=lang,
+        model=summary.model,
+        usage=summary.usage or {},
+        chunk_count=summary.chunk_count,
+        chunks_in_namespace=summary.chunks_in_namespace,
+        indexed_at_at_generation=indexed_at_at_generation,
+        generated_at=summary.generated_at,
+    )
 
 
 def _delete_namespace_summaries(ws_slug: str, namespace: str) -> None:
-    with _db.connect(_app_db_path()) as conn:
-        conn.execute(
-            "DELETE FROM rag_summaries WHERE ws_slug = ? AND namespace = ?",
-            (ws_slug, namespace),
-        )
+    _store.get_rag_summary_store().delete_namespace(ws_slug, namespace)
 
 
 # ── Namespace endpoints ─────────────────────────────────────────────────

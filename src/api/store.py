@@ -13,14 +13,17 @@ from __future__ import annotations
 
 import json
 import re
-import sqlite3
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from src.api import db as _db
+import sqlalchemy as sa
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session, sessionmaker
+
+from src.api import orm as _orm
 
 
 def _now_iso() -> str:
@@ -107,10 +110,34 @@ class RunRecord:
             return [ev for ev in self.events if ev.seq > since_seq]
 
 
+_TERMINAL_STATUSES = frozenset({"completed", "failed"})
+
+
 class RunStore:
-    def __init__(self) -> None:
+    """In-flight run dict + (Phase 13C M9) terminal-snapshot persistence.
+
+    Why hybrid:
+      Option (a) "full persistence to DB" would have meant a new table
+      backing the entire event log + per-record locks — a lot of new
+      surface for a feature (run resume after restart) that Phase 13's
+      agent-first narrative doesn't actually need. Option (b) "scope
+      reduction" would have made the /runs history page empty after
+      every restart, which felt regressive after the 13B dual-engine
+      ORM investment. (c) writes the snapshot fields to the new `runs`
+      table when a run reaches a terminal status. The in-memory dict
+      still owns in-flight state + event logs; persistence only fires
+      once a run has settled, so concurrent SSE consumers never see a
+      half-written row.
+
+    The session_factory is optional — when None, RunStore behaves
+    exactly like the pre-Phase-13C in-memory-only version. Tests
+    construct it without a factory and skip the persistence path.
+    """
+
+    def __init__(self, session_factory: Any | None = None) -> None:
         self._runs: dict[str, RunRecord] = {}
         self._lock = threading.Lock()
+        self._sf = session_factory
 
     def create(
         self,
@@ -146,7 +173,135 @@ class RunStore:
         with record._lock:
             for k, v in fields.items():
                 setattr(record, k, v)
+        # Persist on terminal transition. Failures here don't bubble —
+        # the in-memory record is authoritative; the DB row is purely
+        # for the run-history page surviving a restart.
+        if (
+            self._sf is not None
+            and record.status in _TERMINAL_STATUSES
+        ):
+            try:
+                self._persist_snapshot(record)
+            except Exception:  # noqa: BLE001
+                import logging
+
+                logging.getLogger(__name__).exception(
+                    "RunStore: terminal snapshot write failed (run=%s)",
+                    record.run_id,
+                )
         return record
+
+    def _persist_snapshot(self, record: RunRecord) -> None:
+        """Upsert the terminal snapshot row for `record`.
+
+        Uses DELETE-then-INSERT (rather than `INSERT OR REPLACE` /
+        merge) so the helper stays dialect-agnostic across SQLite and
+        Postgres.
+        """
+        from src.api.models.run import Run
+
+        with self._sf() as session:
+            session.execute(
+                sa.delete(Run).where(Run.run_id == record.run_id)
+            )
+            session.add(
+                Run(
+                    run_id=record.run_id,
+                    company=record.company,
+                    industry=record.industry,
+                    lang=record.lang,
+                    status=record.status,
+                    current_stage=record.current_stage,
+                    failed_stage=record.failed_stage,
+                    created_at=record.created_at,
+                    started_at=record.started_at,
+                    ended_at=record.ended_at,
+                    duration_s=record.duration_s,
+                    errors_json=(
+                        json.dumps(record.errors, ensure_ascii=False)
+                        if record.errors
+                        else None
+                    ),
+                    usage_json=(
+                        json.dumps(record.usage, ensure_ascii=False)
+                        if record.usage
+                        else None
+                    ),
+                    article_counts_json=(
+                        json.dumps(
+                            record.article_counts, ensure_ascii=False
+                        )
+                        if record.article_counts
+                        else None
+                    ),
+                    proposal_points_count=record.proposal_points_count,
+                    proposal_md=record.proposal_md,
+                    output_dir=record.output_dir,
+                    claude_model=record.claude_model,
+                )
+            )
+            session.commit()
+
+    def list_persisted(self, *, limit: int = 200) -> list[dict[str, Any]]:
+        """Return the terminal-run snapshots from the DB (newest first).
+
+        Returns `[]` when the store isn't wired to a session factory
+        (CLI / unit-test mode). The Web UI is expected to merge this
+        with `self.list()` for the run-history page; that merge lives
+        at the route layer, not here.
+        """
+        if self._sf is None:
+            return []
+        from src.api.models.run import Run
+
+        with self._sf() as session:
+            rows = session.scalars(
+                sa.select(Run)
+                .order_by(Run.created_at.desc())
+                .limit(limit)
+            ).all()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            try:
+                errors = json.loads(r.errors_json) if r.errors_json else []
+            except json.JSONDecodeError:
+                errors = []
+            try:
+                usage = json.loads(r.usage_json) if r.usage_json else {}
+            except json.JSONDecodeError:
+                usage = {}
+            try:
+                article_counts = (
+                    json.loads(r.article_counts_json)
+                    if r.article_counts_json
+                    else {}
+                )
+            except json.JSONDecodeError:
+                article_counts = {}
+            out.append(
+                {
+                    "run_id": r.run_id,
+                    "company": r.company,
+                    "industry": r.industry,
+                    "lang": r.lang,
+                    "status": r.status,
+                    "current_stage": r.current_stage,
+                    "failed_stage": r.failed_stage,
+                    "created_at": r.created_at,
+                    "started_at": r.started_at,
+                    "ended_at": r.ended_at,
+                    "duration_s": r.duration_s,
+                    "errors": errors,
+                    "usage": usage,
+                    "article_counts": article_counts,
+                    "proposal_points_count": r.proposal_points_count,
+                    "proposal_md": r.proposal_md,
+                    "output_dir": r.output_dir,
+                    "claude_model": r.claude_model,
+                    "_source": "persisted",
+                }
+            )
+        return out
 
 
 @dataclass
@@ -183,43 +338,48 @@ class IngestStore:
 
 
 class TargetStore:
-    """SQLite-backed CRUD over the `targets` table.
+    """Phase 13B M7b — ORM-backed CRUD over the `targets` table.
 
-    Stateless except for the DB path — every method opens its own
-    short-lived connection via `db.connect()` so the store is safe to
-    share across worker threads (FastAPI BackgroundTasks pool) without
-    extra locking.
+    Public method shapes preserved from Phase 10 P10-1: every call still
+    returns a `dict[str, Any]` with `aliases` already decoded from the
+    `aliases_json` TEXT column. Routes and Web UI don't change.
+
+    Stateless except for the session factory — every method opens its
+    own short-lived Session, mirroring the original "connection per
+    call" pattern so the store stays safe to share across worker threads.
     """
 
-    def __init__(self, db_path: Path | str) -> None:
-        self._db_path = Path(db_path)
+    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+        self._sf = session_factory
 
     @staticmethod
     def _row_to_dict(row: Any) -> dict[str, Any]:
-        aliases_raw = row["aliases_json"]
+        aliases_raw = row.aliases_json
         try:
             aliases = json.loads(aliases_raw) if aliases_raw else []
         except json.JSONDecodeError:
             aliases = []
         return {
-            "id": row["id"],
-            "name": row["name"],
-            "industry": row["industry"],
+            "id": row.id,
+            "name": row.name,
+            "industry": row.industry,
             "aliases": aliases,
-            "notes": row["notes"],
-            "stage": row["stage"],
-            "created_from": row["created_from"],
-            "discovery_candidate_id": row["discovery_candidate_id"],
-            "last_run_id": row["last_run_id"],
-            "created_at": row["created_at"],
-            "updated_at": row["updated_at"],
+            "notes": row.notes,
+            "stage": row.stage,
+            "created_from": row.created_from,
+            "discovery_candidate_id": row.discovery_candidate_id,
+            "last_run_id": row.last_run_id,
+            "created_at": row.created_at,
+            "updated_at": row.updated_at,
         }
 
     def list(self) -> list[dict[str, Any]]:
-        with _db.connect(self._db_path) as conn:
-            rows = conn.execute(
-                "SELECT * FROM targets ORDER BY id DESC"
-            ).fetchall()
+        from src.api.models.target import Target
+
+        with self._sf() as session:
+            rows = session.scalars(
+                sa.select(Target).order_by(Target.id.desc())
+            ).all()
         return [self._row_to_dict(r) for r in rows]
 
     def create(
@@ -234,34 +394,38 @@ class TargetStore:
         discovery_candidate_id: int | None = None,
         last_run_id: str | None = None,
     ) -> dict[str, Any]:
+        from src.api.models.target import Target
+
         ts = _now_iso()
         aliases_json = json.dumps(aliases or [], ensure_ascii=False)
-        with _db.connect(self._db_path) as conn:
-            cur = conn.execute(
-                "INSERT INTO targets("
-                " name, industry, aliases_json, notes, stage, created_from,"
-                " discovery_candidate_id, last_run_id, created_at, updated_at)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?)",
-                (
-                    name, industry, aliases_json, notes, stage, created_from,
-                    discovery_candidate_id, last_run_id, ts, ts,
-                ),
+        with self._sf() as session:
+            t = Target(
+                name=name,
+                industry=industry,
+                aliases_json=aliases_json,
+                notes=notes,
+                stage=stage,
+                created_from=created_from,
+                discovery_candidate_id=discovery_candidate_id,
+                last_run_id=last_run_id,
+                created_at=ts,
+                updated_at=ts,
             )
-            new_id = cur.lastrowid
-            row = conn.execute(
-                "SELECT * FROM targets WHERE id=?", (new_id,)
-            ).fetchone()
-        return self._row_to_dict(row)
+            session.add(t)
+            session.commit()
+            session.refresh(t)
+            return self._row_to_dict(t)
 
     def get(self, target_id: int) -> dict[str, Any] | None:
-        with _db.connect(self._db_path) as conn:
-            row = conn.execute(
-                "SELECT * FROM targets WHERE id=?", (target_id,)
-            ).fetchone()
-        return self._row_to_dict(row) if row else None
+        from src.api.models.target import Target
+
+        with self._sf() as session:
+            t = session.get(Target, target_id)
+            return self._row_to_dict(t) if t else None
 
     def update(self, target_id: int, **fields: Any) -> dict[str, Any] | None:
-        # Only known columns are accepted; aliases is a list → JSON.
+        from src.api.models.target import Target
+
         col_map: dict[str, Any] = {}
         for key in ("name", "industry", "notes", "stage", "last_run_id"):
             if key in fields and fields[key] is not None:
@@ -273,38 +437,40 @@ class TargetStore:
         if not col_map:
             return self.get(target_id)
         col_map["updated_at"] = _now_iso()
-        sets = ", ".join(f"{k}=?" for k in col_map.keys())
-        params = list(col_map.values()) + [target_id]
-        with _db.connect(self._db_path) as conn:
-            cur = conn.execute(
-                f"UPDATE targets SET {sets} WHERE id=?", params
-            )
-            if cur.rowcount == 0:
+        with self._sf() as session:
+            t = session.get(Target, target_id)
+            if t is None:
                 return None
-            row = conn.execute(
-                "SELECT * FROM targets WHERE id=?", (target_id,)
-            ).fetchone()
-        return self._row_to_dict(row) if row else None
+            for k, v in col_map.items():
+                setattr(t, k, v)
+            session.commit()
+            session.refresh(t)
+            return self._row_to_dict(t)
 
     def delete(self, target_id: int) -> bool:
-        with _db.connect(self._db_path) as conn:
-            cur = conn.execute(
-                "DELETE FROM targets WHERE id=?", (target_id,)
-            )
-            return cur.rowcount > 0
+        from src.api.models.target import Target
+
+        with self._sf() as session:
+            t = session.get(Target, target_id)
+            if t is None:
+                return False
+            session.delete(t)
+            session.commit()
+            return True
 
 
 class DiscoveryStore:
-    """SQLite-backed discovery_runs + discovery_candidates CRUD.
+    """Phase 13B M7c — ORM-backed discovery_runs + discovery_candidates CRUD.
 
-    Mirrors `TargetStore` for persistence (every method opens its own
-    short-lived connection) but adds an in-memory event log keyed by
-    run_id, like `RunStore`. The event log is what SSE consumers poll;
-    the SQLite tables hold authoritative state for any new HTTP request.
+    In-memory event log preserved verbatim (it's still the SSE-polled
+    source for in-flight runs); only the SQLite paths move to ORM.
+    `regions` round-trip via `_encode_regions_column` / `_decode_regions_column`
+    so the legacy compat shim for "any"/"ko"/"us"/"eu"/"global" values is
+    unchanged.
     """
 
-    def __init__(self, db_path: Path | str) -> None:
-        self._db_path = Path(db_path)
+    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+        self._sf = session_factory
         self._events: dict[str, list[RunEvent]] = {}
         self._event_lock = threading.Lock()
 
@@ -329,79 +495,74 @@ class DiscoveryStore:
 
     @staticmethod
     def _run_row_to_dict(row: Any) -> dict[str, Any]:
-        usage_raw = row["usage_json"] if "usage_json" in row.keys() else None
         try:
-            usage = json.loads(usage_raw) if usage_raw else {}
+            usage = json.loads(row.usage_json) if row.usage_json else {}
         except json.JSONDecodeError:
             usage = {}
-        keys = row.keys()
-        # Phase 12 — `region` column now stores a comma-joined list of ISO
-        # alpha-2 codes (or "global"). Pre-Phase-12 rows hold a single
-        # legacy enum ("any"/"ko"/"us"/"eu"/"global") which we map back to
-        # a list at read time so the wire format stays consistent.
-        regions = _decode_regions_column(row["region"])
-        # Phase 12 follow-up (B5) — weight snapshot stored on run completion.
-        # NULL for pre-B5 runs → API surfaces as `weights_applied=None`.
+        regions = _decode_regions_column(row.region)
         weights_applied: dict[str, float] | None = None
-        if "weights_snapshot_json" in keys:
-            raw = row["weights_snapshot_json"]
-            if raw:
-                try:
-                    parsed = json.loads(raw)
-                    if isinstance(parsed, dict):
-                        weights_applied = {
-                            str(k): float(v) for k, v in parsed.items()
-                        }
-                except (json.JSONDecodeError, TypeError, ValueError):
-                    weights_applied = None
+        if row.weights_snapshot_json:
+            try:
+                parsed = json.loads(row.weights_snapshot_json)
+                if isinstance(parsed, dict):
+                    weights_applied = {
+                        str(k): float(v) for k, v in parsed.items()
+                    }
+            except (json.JSONDecodeError, TypeError, ValueError):
+                weights_applied = None
         return {
-            "run_id": row["run_id"],
-            "generated_at": row["generated_at"],
-            "seed_doc_count": row["seed_doc_count"] or 0,
-            "seed_chunk_count": row["seed_chunk_count"] or 0,
-            "seed_summary": row["seed_summary"],
-            "profile": row["profile"] or "",
+            "run_id": row.run_id,
+            "generated_at": row.generated_at,
+            "seed_doc_count": row.seed_doc_count or 0,
+            "seed_chunk_count": row.seed_chunk_count or 0,
+            "seed_summary": row.seed_summary,
+            "profile": row.profile or "",
             "regions": regions,
-            "lang": row["lang"] or "en",
-            "namespace": row["namespace"] or "default",
-            "status": row["status"] or "queued",
-            "started_at": row["started_at"],
-            "ended_at": row["ended_at"],
-            "failed_stage": row["failed_stage"],
-            "error_message": row["error_message"],
-            "source_yaml_path": row["source_yaml_path"],
-            "claude_model": row["claude_model"] if "claude_model" in keys else None,
+            "lang": row.lang or "en",
+            "namespace": row.namespace or "default",
+            "status": row.status or "queued",
+            "started_at": row.started_at,
+            "ended_at": row.ended_at,
+            "failed_stage": row.failed_stage,
+            "error_message": row.error_message,
+            "source_yaml_path": row.source_yaml_path,
+            "claude_model": row.claude_model,
             "weights_applied": weights_applied,
             "usage": usage,
-            "created_at": row["created_at"],
+            "created_at": row.created_at,
         }
 
     def list_runs(self) -> list[dict[str, Any]]:
-        with _db.connect(self._db_path) as conn:
-            rows = conn.execute(
-                "SELECT * FROM discovery_runs ORDER BY created_at DESC"
-            ).fetchall()
+        from src.api.models.discovery import DiscoveryCandidate, DiscoveryRun
+
+        with self._sf() as session:
+            rows = session.scalars(
+                sa.select(DiscoveryRun).order_by(DiscoveryRun.created_at.desc())
+            ).all()
             results: list[dict[str, Any]] = []
             for r in rows:
                 d = self._run_row_to_dict(r)
-                cand_rows = conn.execute(
-                    "SELECT tier, COUNT(*) as n FROM discovery_candidates "
-                    "WHERE run_id=? GROUP BY tier",
-                    (d["run_id"],),
-                ).fetchall()
-                d["candidate_count"] = sum(int(cr["n"]) for cr in cand_rows)
+                tier_rows = session.execute(
+                    sa.select(
+                        DiscoveryCandidate.tier,
+                        sa.func.count().label("n"),
+                    )
+                    .where(DiscoveryCandidate.run_id == d["run_id"])
+                    .group_by(DiscoveryCandidate.tier)
+                ).all()
+                d["candidate_count"] = sum(int(cr.n) for cr in tier_rows)
                 d["tier_distribution"] = {
-                    cr["tier"]: int(cr["n"]) for cr in cand_rows
+                    cr.tier: int(cr.n) for cr in tier_rows
                 }
                 results.append(d)
         return results
 
     def get_run(self, run_id: str) -> dict[str, Any] | None:
-        with _db.connect(self._db_path) as conn:
-            row = conn.execute(
-                "SELECT * FROM discovery_runs WHERE run_id=?", (run_id,)
-            ).fetchone()
-        return self._run_row_to_dict(row) if row else None
+        from src.api.models.discovery import DiscoveryRun
+
+        with self._sf() as session:
+            r = session.get(DiscoveryRun, run_id)
+            return self._run_row_to_dict(r) if r else None
 
     def create_run(
         self,
@@ -415,45 +576,53 @@ class DiscoveryStore:
         seed_summary: str | None,
         claude_model: str | None = None,
     ) -> dict[str, Any]:
+        from src.api.models.discovery import DiscoveryRun
+
         ts = _now_iso()
         region_blob = _encode_regions_column(regions)
-        with _db.connect(self._db_path) as conn:
-            conn.execute(
-                "INSERT INTO discovery_runs("
-                " run_id, generated_at, namespace, profile, region, lang,"
-                " seed_summary, status, usage_json, claude_model, created_at)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    run_id, generated_at, namespace, profile, region_blob, lang,
-                    seed_summary, "queued", "{}", claude_model, ts,
-                ),
+        with self._sf() as session:
+            r = DiscoveryRun(
+                run_id=run_id,
+                generated_at=generated_at,
+                namespace=namespace,
+                profile=profile,
+                region=region_blob,
+                lang=lang,
+                seed_summary=seed_summary,
+                status="queued",
+                usage_json="{}",
+                claude_model=claude_model,
+                created_at=ts,
             )
-            row = conn.execute(
-                "SELECT * FROM discovery_runs WHERE run_id=?", (run_id,)
-            ).fetchone()
-        return self._run_row_to_dict(row)
+            session.add(r)
+            session.commit()
+            session.refresh(r)
+            return self._run_row_to_dict(r)
 
     def update_weights_snapshot(
         self, run_id: str, weights: dict[str, float]
     ) -> None:
-        """Phase 12 follow-up (B5) — persist normalized weight vector.
+        """Persist the normalized weight vector after final scoring.
 
-        Called by the runner after final scoring is done. Failures don't
-        propagate (warn log only) — candidates are already stored, the
-        snapshot is a nice-to-have for past-run audit. UI shows
-        "snapshot 없음" if NULL.
+        Failures don't propagate — candidates are already stored, the
+        snapshot is a nice-to-have for past-run audit.
         """
+        from src.api.models.discovery import DiscoveryRun
+
         try:
             blob = json.dumps(weights, separators=(",", ":"))
         except (TypeError, ValueError):
             return
-        with _db.connect(self._db_path) as conn:
-            conn.execute(
-                "UPDATE discovery_runs SET weights_snapshot_json=? WHERE run_id=?",
-                (blob, run_id),
-            )
+        with self._sf() as session:
+            r = session.get(DiscoveryRun, run_id)
+            if r is None:
+                return
+            r.weights_snapshot_json = blob
+            session.commit()
 
     def update_run(self, run_id: str, **fields: Any) -> dict[str, Any] | None:
+        from src.api.models.discovery import DiscoveryRun
+
         col_map: dict[str, Any] = {}
         for key in (
             "status", "started_at", "ended_at", "failed_stage",
@@ -468,96 +637,101 @@ class DiscoveryStore:
             )
         if not col_map:
             return self.get_run(run_id)
-        sets = ", ".join(f"{k}=?" for k in col_map.keys())
-        params = list(col_map.values()) + [run_id]
-        with _db.connect(self._db_path) as conn:
-            cur = conn.execute(
-                f"UPDATE discovery_runs SET {sets} WHERE run_id=?", params
-            )
-            if cur.rowcount == 0:
+        with self._sf() as session:
+            r = session.get(DiscoveryRun, run_id)
+            if r is None:
                 return None
-            row = conn.execute(
-                "SELECT * FROM discovery_runs WHERE run_id=?", (run_id,)
-            ).fetchone()
-        return self._run_row_to_dict(row) if row else None
+            for k, v in col_map.items():
+                setattr(r, k, v)
+            session.commit()
+            session.refresh(r)
+            return self._run_row_to_dict(r)
 
     def delete_run(self, run_id: str) -> bool:
-        with _db.connect(self._db_path) as conn:
-            cur = conn.execute(
-                "DELETE FROM discovery_runs WHERE run_id=?", (run_id,)
-            )
-            return cur.rowcount > 0
+        from src.api.models.discovery import DiscoveryRun
+
+        with self._sf() as session:
+            r = session.get(DiscoveryRun, run_id)
+            if r is None:
+                return False
+            session.delete(r)
+            session.commit()
+            return True
 
     # ── Candidates ────────────────────────────────────────────────────
 
     @staticmethod
     def _cand_row_to_dict(row: Any) -> dict[str, Any]:
         try:
-            scores = json.loads(row["scores_json"]) if row["scores_json"] else {}
+            scores = json.loads(row.scores_json) if row.scores_json else {}
         except json.JSONDecodeError:
             scores = {}
         return {
-            "id": row["id"],
-            "run_id": row["run_id"],
-            "name": row["name"],
-            "industry": row["industry"],
+            "id": row.id,
+            "run_id": row.run_id,
+            "name": row.name,
+            "industry": row.industry,
             "scores": scores,
-            "final_score": float(row["final_score"] or 0.0),
-            "tier": row["tier"] or "C",
-            "rationale": row["rationale"],
-            "status": row["status"] or "active",
-            "updated_at": row["updated_at"],
+            "final_score": float(row.final_score or 0.0),
+            "tier": row.tier or "C",
+            "rationale": row.rationale,
+            "status": row.status or "active",
+            "updated_at": row.updated_at,
         }
 
     def list_candidates(self, run_id: str) -> list[dict[str, Any]]:
-        with _db.connect(self._db_path) as conn:
-            rows = conn.execute(
-                "SELECT * FROM discovery_candidates"
-                " WHERE run_id=? ORDER BY final_score DESC, id ASC",
-                (run_id,),
-            ).fetchall()
+        from src.api.models.discovery import DiscoveryCandidate
+
+        with self._sf() as session:
+            rows = session.scalars(
+                sa.select(DiscoveryCandidate)
+                .where(DiscoveryCandidate.run_id == run_id)
+                .order_by(
+                    DiscoveryCandidate.final_score.desc(),
+                    DiscoveryCandidate.id.asc(),
+                )
+            ).all()
         return [self._cand_row_to_dict(r) for r in rows]
 
     def get_candidate(self, candidate_id: int) -> dict[str, Any] | None:
-        with _db.connect(self._db_path) as conn:
-            row = conn.execute(
-                "SELECT * FROM discovery_candidates WHERE id=?", (candidate_id,)
-            ).fetchone()
-        return self._cand_row_to_dict(row) if row else None
+        from src.api.models.discovery import DiscoveryCandidate
+
+        with self._sf() as session:
+            c = session.get(DiscoveryCandidate, candidate_id)
+            return self._cand_row_to_dict(c) if c else None
 
     def insert_candidates(
         self, run_id: str, candidates: list[dict[str, Any]]
     ) -> None:
+        from src.api.models.discovery import DiscoveryCandidate
+
         if not candidates:
             return
         ts = _now_iso()
-        rows = []
-        for c in candidates:
-            rows.append(
-                (
-                    run_id,
-                    c["name"],
-                    c["industry"],
-                    json.dumps(c.get("scores", {}), ensure_ascii=False),
-                    float(c.get("final_score", 0.0)),
-                    c.get("tier", "C"),
-                    c.get("rationale"),
-                    c.get("status", "active"),
-                    ts,
+        with self._sf() as session:
+            for c in candidates:
+                session.add(
+                    DiscoveryCandidate(
+                        run_id=run_id,
+                        name=c["name"],
+                        industry=c["industry"],
+                        scores_json=json.dumps(
+                            c.get("scores", {}), ensure_ascii=False
+                        ),
+                        final_score=float(c.get("final_score", 0.0)),
+                        tier=c.get("tier", "C"),
+                        rationale=c.get("rationale"),
+                        status=c.get("status", "active"),
+                        updated_at=ts,
+                    )
                 )
-            )
-        with _db.connect(self._db_path) as conn:
-            conn.executemany(
-                "INSERT INTO discovery_candidates("
-                " run_id, name, industry, scores_json, final_score, tier,"
-                " rationale, status, updated_at)"
-                " VALUES (?,?,?,?,?,?,?,?,?)",
-                rows,
-            )
+            session.commit()
 
     def update_candidate(
         self, candidate_id: int, **fields: Any
     ) -> dict[str, Any] | None:
+        from src.api.models.discovery import DiscoveryCandidate
+
         col_map: dict[str, Any] = {}
         for key in ("name", "industry", "rationale", "status", "tier"):
             if key in fields and fields[key] is not None:
@@ -571,44 +745,49 @@ class DiscoveryStore:
         if not col_map:
             return self.get_candidate(candidate_id)
         col_map["updated_at"] = _now_iso()
-        sets = ", ".join(f"{k}=?" for k in col_map.keys())
-        params = list(col_map.values()) + [candidate_id]
-        with _db.connect(self._db_path) as conn:
-            cur = conn.execute(
-                f"UPDATE discovery_candidates SET {sets} WHERE id=?", params
-            )
-            if cur.rowcount == 0:
+        with self._sf() as session:
+            c = session.get(DiscoveryCandidate, candidate_id)
+            if c is None:
                 return None
-            row = conn.execute(
-                "SELECT * FROM discovery_candidates WHERE id=?", (candidate_id,)
-            ).fetchone()
-        return self._cand_row_to_dict(row) if row else None
+            for k, v in col_map.items():
+                setattr(c, k, v)
+            session.commit()
+            session.refresh(c)
+            return self._cand_row_to_dict(c)
 
     def delete_candidate(self, candidate_id: int) -> bool:
-        with _db.connect(self._db_path) as conn:
-            cur = conn.execute(
-                "DELETE FROM discovery_candidates WHERE id=?", (candidate_id,)
-            )
-            return cur.rowcount > 0
+        from src.api.models.discovery import DiscoveryCandidate
+
+        with self._sf() as session:
+            c = session.get(DiscoveryCandidate, candidate_id)
+            if c is None:
+                return False
+            session.delete(c)
+            session.commit()
+            return True
 
     def bulk_update_tiers(
         self,
         updates: list[tuple[int, float, str]],  # (id, final_score, tier)
     ) -> None:
+        from src.api.models.discovery import DiscoveryCandidate
+
         if not updates:
             return
         ts = _now_iso()
-        rows = [(score, tier, ts, cid) for cid, score, tier in updates]
-        with _db.connect(self._db_path) as conn:
-            conn.executemany(
-                "UPDATE discovery_candidates"
-                " SET final_score=?, tier=?, updated_at=? WHERE id=?",
-                rows,
-            )
+        with self._sf() as session:
+            for cid, score, tier in updates:
+                c = session.get(DiscoveryCandidate, cid)
+                if c is None:
+                    continue
+                c.final_score = score
+                c.tier = tier
+                c.updated_at = ts
+            session.commit()
 
 
 class InteractionStore:
-    """SQLite-backed CRUD + LIKE search over the `interactions` table.
+    """Phase 13B M7b — ORM-backed CRUD + LIKE search over `interactions`.
 
     Captured BD touchpoints (call/meeting/email/note) live here. The
     schema lets `target_id` be NULL so a free-text "I called Acme today"
@@ -617,21 +796,21 @@ class InteractionStore:
     "find every interaction that mentions Stripe" works without joins.
     """
 
-    def __init__(self, db_path: Path | str) -> None:
-        self._db_path = Path(db_path)
+    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+        self._sf = session_factory
 
     @staticmethod
     def _row_to_dict(row: Any) -> dict[str, Any]:
         return {
-            "id": row["id"],
-            "target_id": row["target_id"],
-            "company_name": row["company_name"],
-            "kind": row["kind"],
-            "occurred_at": row["occurred_at"],
-            "outcome": row["outcome"],
-            "raw_text": row["raw_text"],
-            "contact_role": row["contact_role"],
-            "created_at": row["created_at"],
+            "id": row.id,
+            "target_id": row.target_id,
+            "company_name": row.company_name,
+            "kind": row.kind,
+            "occurred_at": row.occurred_at,
+            "outcome": row.outcome,
+            "raw_text": row.raw_text,
+            "contact_role": row.contact_role,
+            "created_at": row.created_at,
         }
 
     def create(
@@ -645,36 +824,31 @@ class InteractionStore:
         raw_text: str | None = None,
         contact_role: str | None = None,
     ) -> dict[str, Any]:
+        from src.api.models.interaction import Interaction
+
         ts = _now_iso()
-        with _db.connect(self._db_path) as conn:
-            cur = conn.execute(
-                "INSERT INTO interactions("
-                " target_id, company_name, kind, occurred_at, outcome,"
-                " raw_text, contact_role, created_at)"
-                " VALUES (?,?,?,?,?,?,?,?)",
-                (
-                    target_id,
-                    company_name,
-                    kind,
-                    occurred_at,
-                    outcome,
-                    raw_text,
-                    contact_role,
-                    ts,
-                ),
+        with self._sf() as session:
+            i = Interaction(
+                target_id=target_id,
+                company_name=company_name,
+                kind=kind,
+                occurred_at=occurred_at,
+                outcome=outcome,
+                raw_text=raw_text,
+                contact_role=contact_role,
+                created_at=ts,
             )
-            new_id = cur.lastrowid
-            row = conn.execute(
-                "SELECT * FROM interactions WHERE id=?", (new_id,)
-            ).fetchone()
-        return self._row_to_dict(row)
+            session.add(i)
+            session.commit()
+            session.refresh(i)
+            return self._row_to_dict(i)
 
     def get(self, interaction_id: int) -> dict[str, Any] | None:
-        with _db.connect(self._db_path) as conn:
-            row = conn.execute(
-                "SELECT * FROM interactions WHERE id=?", (interaction_id,)
-            ).fetchone()
-        return self._row_to_dict(row) if row else None
+        from src.api.models.interaction import Interaction
+
+        with self._sf() as session:
+            i = session.get(Interaction, interaction_id)
+            return self._row_to_dict(i) if i else None
 
     def list(
         self,
@@ -684,33 +858,34 @@ class InteractionStore:
         q: str | None = None,
         limit: int = 200,
     ) -> list[dict[str, Any]]:
-        clauses: list[str] = []
-        params: list[Any] = []
+        from src.api.models.interaction import Interaction
+
+        stmt = sa.select(Interaction)
         if company:
-            clauses.append("company_name = ?")
-            params.append(company)
+            stmt = stmt.where(Interaction.company_name == company)
         if target_id is not None:
-            clauses.append("target_id = ?")
-            params.append(target_id)
+            stmt = stmt.where(Interaction.target_id == target_id)
         if q:
             like = f"%{q}%"
-            clauses.append(
-                "(company_name LIKE ? OR raw_text LIKE ? OR contact_role LIKE ?)"
+            stmt = stmt.where(
+                sa.or_(
+                    Interaction.company_name.like(like),
+                    Interaction.raw_text.like(like),
+                    Interaction.contact_role.like(like),
+                )
             )
-            params.extend([like, like, like])
-        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
-        sql = (
-            "SELECT * FROM interactions"
-            f"{where} ORDER BY occurred_at DESC, id DESC LIMIT ?"
-        )
-        params.append(limit)
-        with _db.connect(self._db_path) as conn:
-            rows = conn.execute(sql, params).fetchall()
+        stmt = stmt.order_by(
+            Interaction.occurred_at.desc(), Interaction.id.desc()
+        ).limit(limit)
+        with self._sf() as session:
+            rows = session.scalars(stmt).all()
         return [self._row_to_dict(r) for r in rows]
 
     def update(
         self, interaction_id: int, **fields: Any
     ) -> dict[str, Any] | None:
+        from src.api.models.interaction import Interaction
+
         col_map: dict[str, Any] = {}
         for key in (
             "company_name",
@@ -725,67 +900,69 @@ class InteractionStore:
                 col_map[key] = fields[key]
         if not col_map:
             return self.get(interaction_id)
-        sets = ", ".join(f"{k}=?" for k in col_map.keys())
-        params = list(col_map.values()) + [interaction_id]
-        with _db.connect(self._db_path) as conn:
-            cur = conn.execute(
-                f"UPDATE interactions SET {sets} WHERE id=?", params
-            )
-            if cur.rowcount == 0:
+        with self._sf() as session:
+            i = session.get(Interaction, interaction_id)
+            if i is None:
                 return None
-            row = conn.execute(
-                "SELECT * FROM interactions WHERE id=?", (interaction_id,)
-            ).fetchone()
-        return self._row_to_dict(row)
+            for k, v in col_map.items():
+                setattr(i, k, v)
+            session.commit()
+            session.refresh(i)
+            return self._row_to_dict(i)
 
     def delete(self, interaction_id: int) -> bool:
-        with _db.connect(self._db_path) as conn:
-            cur = conn.execute(
-                "DELETE FROM interactions WHERE id=?", (interaction_id,)
-            )
-        return cur.rowcount > 0
+        from src.api.models.interaction import Interaction
+
+        with self._sf() as session:
+            i = session.get(Interaction, interaction_id)
+            if i is None:
+                return False
+            session.delete(i)
+            session.commit()
+            return True
 
 
 class NewsStore:
-    """SQLite-backed CRUD over the `news_runs` table.
+    """Phase 13B M7c — ORM-backed CRUD over `news_runs`.
 
-    One row per refresh task: queued/running/completed/failed status with
-    cached `articles_json` blob (raw Brave hits + per-article meta). The
-    UI reads `latest_for_namespace()` for the cache hit on /news/today,
-    and `get(task_id)` for the polling hook after POST /news/refresh.
+    One row per refresh task: queued / running / completed / failed
+    status with cached `articles_json` blob (raw Brave hits + per-article
+    meta). The UI reads `latest_for_namespace()` for the cache hit on
+    `/news/today`, and `get(task_id)` for the polling hook after
+    `POST /news/refresh`.
     """
 
-    def __init__(self, db_path: Path | str) -> None:
-        self._db_path = Path(db_path)
+    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+        self._sf = session_factory
 
     @staticmethod
     def _row_to_dict(row: Any) -> dict[str, Any]:
         try:
-            articles = json.loads(row["articles_json"] or "[]")
+            articles = json.loads(row.articles_json or "[]")
         except (TypeError, json.JSONDecodeError):
             articles = []
         try:
-            usage = json.loads(row["usage_json"] or "{}")
+            usage = json.loads(row.usage_json or "{}")
         except (TypeError, json.JSONDecodeError):
             usage = {}
         return {
-            "task_id": row["task_id"],
-            "namespace": row["namespace"],
-            "generated_at": row["generated_at"],
-            "seed_summary": row["seed_summary"],
-            "seed_query": row["seed_query"],
-            "lang": row["lang"],
-            "days": row["days"],
-            "status": row["status"],
-            "article_count": row["article_count"],
-            "started_at": row["started_at"],
-            "ended_at": row["ended_at"],
-            "error_message": row["error_message"],
-            "sonnet_summary": row["sonnet_summary"],
-            "ttl_hours": row["ttl_hours"],
+            "task_id": row.task_id,
+            "namespace": row.namespace,
+            "generated_at": row.generated_at,
+            "seed_summary": row.seed_summary,
+            "seed_query": row.seed_query,
+            "lang": row.lang,
+            "days": row.days,
+            "status": row.status,
+            "article_count": row.article_count,
+            "started_at": row.started_at,
+            "ended_at": row.ended_at,
+            "error_message": row.error_message,
+            "sonnet_summary": row.sonnet_summary,
+            "ttl_hours": row.ttl_hours,
             "articles": articles,
             "usage": usage,
-            "created_at": row["created_at"] if "created_at" in row.keys() else None,
+            "created_at": row.created_at,
         }
 
     def create(
@@ -799,35 +976,32 @@ class NewsStore:
         days: int,
         ttl_hours: int = 12,
     ) -> dict[str, Any]:
+        from src.api.models.news_run import NewsRun
+
         ts = _now_iso()
-        with _db.connect(self._db_path) as conn:
-            conn.execute(
-                "INSERT INTO news_runs("
-                " task_id, namespace, generated_at, seed_summary, seed_query,"
-                " articles_json, lang, days, status, article_count,"
-                " ttl_hours, started_at, ended_at, error_message, created_at)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    task_id,
-                    namespace,
-                    ts,
-                    seed_summary,
-                    seed_query,
-                    "[]",
-                    lang,
-                    days,
-                    "queued",
-                    0,
-                    ttl_hours,
-                    None,
-                    None,
-                    None,
-                    ts,
-                ),
+        with self._sf() as session:
+            r = NewsRun(
+                task_id=task_id,
+                namespace=namespace,
+                generated_at=ts,
+                seed_summary=seed_summary,
+                seed_query=seed_query,
+                articles_json="[]",
+                lang=lang,
+                days=days,
+                status="queued",
+                article_count=0,
+                ttl_hours=ttl_hours,
+                created_at=ts,
             )
-        return self.get(task_id)  # type: ignore[return-value]
+            session.add(r)
+            session.commit()
+            session.refresh(r)
+            return self._row_to_dict(r)
 
     def update(self, task_id: str, **fields: Any) -> dict[str, Any] | None:
+        from src.api.models.news_run import NewsRun
+
         if not fields:
             return self.get(task_id)
         col_map = dict(fields)
@@ -839,55 +1013,57 @@ class NewsStore:
             col_map["usage_json"] = json.dumps(
                 col_map.pop("usage") or {}, ensure_ascii=False
             )
-        cols = list(col_map.keys())
-        set_clause = ", ".join(f"{c}=?" for c in cols)
-        values = [col_map[c] for c in cols] + [task_id]
-        with _db.connect(self._db_path) as conn:
-            cur = conn.execute(
-                f"UPDATE news_runs SET {set_clause} WHERE task_id=?",
-                values,
-            )
-            if cur.rowcount == 0:
+        with self._sf() as session:
+            r = session.get(NewsRun, task_id)
+            if r is None:
                 return None
-        return self.get(task_id)
+            for k, v in col_map.items():
+                setattr(r, k, v)
+            session.commit()
+            session.refresh(r)
+            return self._row_to_dict(r)
 
     def get(self, task_id: str) -> dict[str, Any] | None:
-        with _db.connect(self._db_path) as conn:
-            row = conn.execute(
-                "SELECT * FROM news_runs WHERE task_id=?", (task_id,)
-            ).fetchone()
-        return self._row_to_dict(row) if row else None
+        from src.api.models.news_run import NewsRun
+
+        with self._sf() as session:
+            r = session.get(NewsRun, task_id)
+            return self._row_to_dict(r) if r else None
 
     def latest_for_namespace(
         self, namespace: str, *, status: str | None = "completed"
     ) -> dict[str, Any] | None:
-        sql = "SELECT * FROM news_runs WHERE namespace=?"
-        params: list[Any] = [namespace]
+        from src.api.models.news_run import NewsRun
+
+        stmt = sa.select(NewsRun).where(NewsRun.namespace == namespace)
         if status:
-            sql += " AND status=?"
-            params.append(status)
-        sql += " ORDER BY generated_at DESC LIMIT 1"
-        with _db.connect(self._db_path) as conn:
-            row = conn.execute(sql, params).fetchone()
-        return self._row_to_dict(row) if row else None
+            stmt = stmt.where(NewsRun.status == status)
+        stmt = stmt.order_by(NewsRun.generated_at.desc()).limit(1)
+        with self._sf() as session:
+            r = session.scalar(stmt)
+            return self._row_to_dict(r) if r else None
 
     def list(
         self, *, namespace: str | None = None, limit: int = 20
     ) -> list[dict[str, Any]]:
-        sql = "SELECT * FROM news_runs"
-        params: list[Any] = []
+        from src.api.models.news_run import NewsRun
+
+        stmt = sa.select(NewsRun)
         if namespace:
-            sql += " WHERE namespace=?"
-            params.append(namespace)
-        sql += " ORDER BY generated_at DESC LIMIT ?"
-        params.append(limit)
-        with _db.connect(self._db_path) as conn:
-            rows = conn.execute(sql, params).fetchall()
+            stmt = stmt.where(NewsRun.namespace == namespace)
+        stmt = stmt.order_by(NewsRun.generated_at.desc()).limit(limit)
+        with self._sf() as session:
+            rows = session.scalars(stmt).all()
         return [self._row_to_dict(r) for r in rows]
 
 
 class WorkspaceStore:
-    """Phase 11 P11-0 — SQLite-backed CRUD over the `workspaces` table.
+    """Phase 13B M7a — ORM-backed CRUD over the `workspaces` table.
+
+    Ports the Phase 11 raw-sqlite WorkspaceStore to SQLAlchemy so the
+    same code can target Postgres in Phase 13B. Public method shapes are
+    unchanged — every method still returns `dict[str, Any]` rows so
+    routes / `src/rag/workspaces.py` don't need to change.
 
     The built-in `default` workspace is seeded by `init_db` and protected
     from deletion. External workspaces let users register arbitrary local
@@ -899,19 +1075,31 @@ class WorkspaceStore:
     label can be patched.
     """
 
-    def __init__(self, db_path: Path | str) -> None:
-        self._db_path = Path(db_path)
+    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+        self._sf = session_factory
 
     @staticmethod
     def _row_to_dict(row: Any) -> dict[str, Any]:
+        # Accept both ORM model instances and bare result rows.
+        if hasattr(row, "_mapping"):
+            m = row._mapping
+            return {
+                "id": m["id"],
+                "slug": m["slug"],
+                "label": m["label"],
+                "abs_path": m["abs_path"],
+                "is_builtin": bool(m["is_builtin"]),
+                "created_at": m["created_at"],
+                "updated_at": m["updated_at"],
+            }
         return {
-            "id": row["id"],
-            "slug": row["slug"],
-            "label": row["label"],
-            "abs_path": row["abs_path"],
-            "is_builtin": bool(row["is_builtin"]),
-            "created_at": row["created_at"],
-            "updated_at": row["updated_at"],
+            "id": row.id,
+            "slug": row.slug,
+            "label": row.label,
+            "abs_path": row.abs_path,
+            "is_builtin": bool(row.is_builtin),
+            "created_at": row.created_at,
+            "updated_at": row.updated_at,
         }
 
     @staticmethod
@@ -955,7 +1143,9 @@ class WorkspaceStore:
             )
         return resolved
 
-    def _next_slug(self, conn: sqlite3.Connection, label: str) -> str:
+    def _next_slug(self, session: Session, label: str) -> str:
+        from src.api.models.workspace import Workspace
+
         base = self._slugify(label)
         candidate = base
         n = 2
@@ -966,10 +1156,10 @@ class WorkspaceStore:
         # slugs and auto-suffix on collision (same UX as slug-vs-slug).
         reserved_ns = self._default_ws_namespace_names()
         while True:
-            row = conn.execute(
-                "SELECT id FROM workspaces WHERE slug=?", (candidate,)
-            ).fetchone()
-            if row is None and candidate not in reserved_ns:
+            exists = session.scalar(
+                sa.select(Workspace.id).where(Workspace.slug == candidate)
+            )
+            if exists is None and candidate not in reserved_ns:
                 return candidate
             candidate = f"{base}-{n}"
             n += 1
@@ -995,71 +1185,79 @@ class WorkspaceStore:
             return set()
 
     def list(self) -> list[dict[str, Any]]:
-        with _db.connect(self._db_path) as conn:
-            rows = conn.execute(
-                "SELECT * FROM workspaces"
-                " ORDER BY is_builtin DESC, id ASC"
-            ).fetchall()
+        from src.api.models.workspace import Workspace
+
+        with self._sf() as session:
+            rows = session.scalars(
+                sa.select(Workspace).order_by(
+                    Workspace.is_builtin.desc(), Workspace.id.asc()
+                )
+            ).all()
         return [self._row_to_dict(r) for r in rows]
 
     def create(self, *, label: str, abs_path: str) -> dict[str, Any]:
+        from src.api.models.workspace import Workspace
+
         resolved = self._validate_abs_path(abs_path)
         ts = _now_iso()
-        with _db.connect(self._db_path) as conn:
-            slug = self._next_slug(conn, label)
+        with self._sf() as session:
+            slug = self._next_slug(session, label)
+            ws = Workspace(
+                slug=slug,
+                label=label,
+                abs_path=str(resolved),
+                is_builtin=False,
+                created_at=ts,
+                updated_at=ts,
+            )
+            session.add(ws)
             try:
-                cur = conn.execute(
-                    "INSERT INTO workspaces"
-                    " (slug, label, abs_path, is_builtin, created_at, updated_at)"
-                    " VALUES (?,?,?,?,?,?)",
-                    (slug, label, str(resolved), 0, ts, ts),
-                )
-            except sqlite3.IntegrityError as e:
+                session.commit()
+            except IntegrityError as e:
+                session.rollback()
                 # abs_path UNIQUE collision — another workspace already
                 # registered this exact directory.
                 raise ValueError(
                     f"abs_path is already registered as a workspace: {abs_path}"
                 ) from e
-            new_id = cur.lastrowid
-            row = conn.execute(
-                "SELECT * FROM workspaces WHERE id=?", (new_id,)
-            ).fetchone()
-        return self._row_to_dict(row)
+            session.refresh(ws)
+            return self._row_to_dict(ws)
 
     def get(self, workspace_id: int) -> dict[str, Any] | None:
-        with _db.connect(self._db_path) as conn:
-            row = conn.execute(
-                "SELECT * FROM workspaces WHERE id=?", (workspace_id,)
-            ).fetchone()
-        return self._row_to_dict(row) if row else None
+        from src.api.models.workspace import Workspace
+
+        with self._sf() as session:
+            ws = session.get(Workspace, workspace_id)
+            return self._row_to_dict(ws) if ws else None
 
     def get_by_slug(self, slug: str) -> dict[str, Any] | None:
-        with _db.connect(self._db_path) as conn:
-            row = conn.execute(
-                "SELECT * FROM workspaces WHERE slug=?", (slug,)
-            ).fetchone()
-        return self._row_to_dict(row) if row else None
+        from src.api.models.workspace import Workspace
+
+        with self._sf() as session:
+            ws = session.scalar(
+                sa.select(Workspace).where(Workspace.slug == slug)
+            )
+            return self._row_to_dict(ws) if ws else None
 
     def update(
         self, workspace_id: int, *, label: str | None = None
     ) -> dict[str, Any] | None:
+        from src.api.models.workspace import Workspace
+
         # Only label is mutable. abs_path is intentionally immutable —
         # changing it would orphan the workspace's vectorstore directory
         # and confuse existing manifests.
         if label is None:
             return self.get(workspace_id)
-        ts = _now_iso()
-        with _db.connect(self._db_path) as conn:
-            cur = conn.execute(
-                "UPDATE workspaces SET label=?, updated_at=? WHERE id=?",
-                (label, ts, workspace_id),
-            )
-            if cur.rowcount == 0:
+        with self._sf() as session:
+            ws = session.get(Workspace, workspace_id)
+            if ws is None:
                 return None
-            row = conn.execute(
-                "SELECT * FROM workspaces WHERE id=?", (workspace_id,)
-            ).fetchone()
-        return self._row_to_dict(row) if row else None
+            ws.label = label
+            ws.updated_at = _now_iso()
+            session.commit()
+            session.refresh(ws)
+            return self._row_to_dict(ws)
 
     def delete(self, workspace_id: int, *, wipe_index: bool = False) -> bool:
         """Remove the workspace registration.
@@ -1075,29 +1273,30 @@ class WorkspaceStore:
         """
         import shutil
 
-        with _db.connect(self._db_path) as conn:
-            row = conn.execute(
-                "SELECT slug, is_builtin FROM workspaces WHERE id=?",
-                (workspace_id,),
-            ).fetchone()
-            if row is None:
+        from src.api.models.rag_summary import RagSummary
+        from src.api.models.workspace import Workspace
+
+        slug: str | None = None
+        removed = False
+        with self._sf() as session:
+            ws = session.get(Workspace, workspace_id)
+            if ws is None:
                 return False
-            if row["is_builtin"]:
+            if ws.is_builtin:
                 raise ValueError(
                     "the built-in `default` workspace cannot be deleted"
                 )
-            slug = row["slug"]
+            slug = ws.slug
             if wipe_index:
-                conn.execute(
-                    "DELETE FROM rag_summaries WHERE ws_slug=?", (slug,)
+                session.execute(
+                    sa.delete(RagSummary).where(RagSummary.ws_slug == slug)
                 )
-            cur = conn.execute(
-                "DELETE FROM workspaces WHERE id=?", (workspace_id,)
-            )
-            removed = cur.rowcount > 0
+            session.delete(ws)
+            session.commit()
+            removed = True
         # Wipe the vectorstore on-disk AFTER the DB commit so a tree-walk
         # failure never leaves the registry pointing at a half-removed dir.
-        if removed and wipe_index:
+        if removed and wipe_index and slug is not None:
             from src.rag.workspaces import _resolve_vectorstore_root
 
             try:
@@ -1111,6 +1310,123 @@ class WorkspaceStore:
         return removed
 
 
+class RagSummaryStore:
+    """Phase 13B M7a — ORM-backed CRUD over `rag_summaries`.
+
+    Replaces the inline raw-sqlite helpers that lived in `routes/rag.py`
+    (`_get_cached_summary`, `_upsert_summary`, `_delete_namespace_summaries`).
+    The route module now goes through this store so legacy SQLite databases
+    and Phase 13B+ Postgres databases speak the same dialect.
+
+    Upsert uses DELETE-then-INSERT rather than `INSERT OR REPLACE` because
+    legacy databases (pre-P11-2) still hold the original `(namespace, path)`
+    PK — `INSERT OR REPLACE` would honor that PK and clobber other
+    workspaces' rows for the same (ns, path). The DELETE narrows to the
+    triple (ws_slug, namespace, path), matching the post-P11-2 PK shape.
+    """
+
+    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+        self._sf = session_factory
+
+    def get(
+        self, ws_slug: str, namespace: str, path: str
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        """Return (row_as_dict, indexed_at_at_generation) or (None, None)."""
+        from src.api.models.rag_summary import RagSummary
+
+        with self._sf() as session:
+            row = session.scalar(
+                sa.select(RagSummary).where(
+                    RagSummary.ws_slug == ws_slug,
+                    RagSummary.namespace == namespace,
+                    RagSummary.path == path,
+                )
+            )
+            if row is None:
+                return None, None
+            return self._row_to_dict(row), row.indexed_at_at_generation
+
+    def upsert(
+        self,
+        *,
+        ws_slug: str,
+        namespace: str,
+        path: str,
+        summary: str,
+        lang: str,
+        model: str | None,
+        usage: dict[str, int] | None,
+        chunk_count: int,
+        chunks_in_namespace: int,
+        indexed_at_at_generation: str | None,
+        generated_at: str,
+    ) -> None:
+        from src.api.models.rag_summary import RagSummary
+
+        usage_blob = (
+            json.dumps(usage or {}, ensure_ascii=False)
+            if usage is not None
+            else None
+        )
+        with self._sf() as session:
+            session.execute(
+                sa.delete(RagSummary).where(
+                    RagSummary.ws_slug == ws_slug,
+                    RagSummary.namespace == namespace,
+                    RagSummary.path == path,
+                )
+            )
+            session.add(
+                RagSummary(
+                    ws_slug=ws_slug,
+                    namespace=namespace,
+                    path=path,
+                    summary=summary,
+                    lang=lang,
+                    model=model,
+                    usage_json=usage_blob,
+                    chunk_count=chunk_count,
+                    chunks_in_namespace=chunks_in_namespace,
+                    indexed_at_at_generation=indexed_at_at_generation,
+                    generated_at=generated_at,
+                )
+            )
+            session.commit()
+
+    def delete_namespace(self, ws_slug: str, namespace: str) -> None:
+        from src.api.models.rag_summary import RagSummary
+
+        with self._sf() as session:
+            session.execute(
+                sa.delete(RagSummary).where(
+                    RagSummary.ws_slug == ws_slug,
+                    RagSummary.namespace == namespace,
+                )
+            )
+            session.commit()
+
+    @staticmethod
+    def _row_to_dict(row: Any) -> dict[str, Any]:
+        usage_raw = row.usage_json or "{}"
+        try:
+            usage = json.loads(usage_raw)
+        except (TypeError, json.JSONDecodeError):
+            usage = {}
+        return {
+            "ws_slug": row.ws_slug,
+            "namespace": row.namespace,
+            "path": row.path,
+            "summary": row.summary or "",
+            "lang": row.lang,
+            "model": row.model,
+            "usage": usage if isinstance(usage, dict) else {},
+            "chunk_count": int(row.chunk_count or 0),
+            "chunks_in_namespace": int(row.chunks_in_namespace or 0),
+            "indexed_at_at_generation": row.indexed_at_at_generation,
+            "generated_at": row.generated_at,
+        }
+
+
 _run_store: RunStore | None = None
 _ingest_store: IngestStore | None = None
 _target_store: TargetStore | None = None
@@ -1118,12 +1434,19 @@ _discovery_store: DiscoveryStore | None = None
 _news_store: NewsStore | None = None
 _interaction_store: InteractionStore | None = None
 _workspace_store: WorkspaceStore | None = None
+_rag_summary_store: "RagSummaryStore | None" = None
 
 
 def get_run_store() -> RunStore:
+    """Return the process-wide RunStore.
+
+    Phase 13C M9 — wired to the same ORM session factory as the other
+    stores so terminal runs get a metadata snapshot persisted in the
+    `runs` table. The in-memory dict + event log behavior is unchanged.
+    """
     global _run_store
     if _run_store is None:
-        _run_store = RunStore()
+        _run_store = RunStore(_orm.get_session_factory())
     return _run_store
 
 
@@ -1135,63 +1458,81 @@ def get_ingest_store() -> IngestStore:
 
 
 def get_target_store() -> TargetStore:
-    """Return a TargetStore bound to the configured app DB path.
+    """Return a TargetStore bound to the configured database URL.
 
-    Resolved lazily so tests that override `API_APP_DB` (and call
-    `reset_api_settings_cache`) get a fresh store after `reset_stores()`.
+    Phase 13B M7b — switched to an ORM session factory keyed by
+    `settings.database_url`. Tests should follow the standard
+    `reset_api_settings_cache()` + `reset_stores()` pattern.
     """
     global _target_store
     if _target_store is None:
-        from src.api.config import get_api_settings
-
-        _target_store = TargetStore(get_api_settings().app_db)
+        _target_store = TargetStore(_orm.get_session_factory())
     return _target_store
 
 
 def get_discovery_store() -> DiscoveryStore:
-    """Return a DiscoveryStore bound to the configured app DB path."""
+    """Return a DiscoveryStore bound to the configured database URL.
+
+    Phase 13B M7c — ORM session factory; in-memory event log lives on
+    the singleton so the legacy SSE consumer behavior is preserved
+    across the port.
+    """
     global _discovery_store
     if _discovery_store is None:
-        from src.api.config import get_api_settings
-
-        _discovery_store = DiscoveryStore(get_api_settings().app_db)
+        _discovery_store = DiscoveryStore(_orm.get_session_factory())
     return _discovery_store
 
 
 def get_news_store() -> NewsStore:
-    """Return a NewsStore bound to the configured app DB path."""
+    """Return a NewsStore bound to the configured database URL.
+
+    Phase 13B M7c — ORM session factory.
+    """
     global _news_store
     if _news_store is None:
-        from src.api.config import get_api_settings
-
-        _news_store = NewsStore(get_api_settings().app_db)
+        _news_store = NewsStore(_orm.get_session_factory())
     return _news_store
 
 
 def get_interaction_store() -> InteractionStore:
-    """Return an InteractionStore bound to the configured app DB path."""
+    """Return an InteractionStore bound to the configured database URL.
+
+    Phase 13B M7b — ORM session factory; see `get_target_store`.
+    """
     global _interaction_store
     if _interaction_store is None:
-        from src.api.config import get_api_settings
-
-        _interaction_store = InteractionStore(get_api_settings().app_db)
+        _interaction_store = InteractionStore(_orm.get_session_factory())
     return _interaction_store
 
 
 def get_workspace_store() -> WorkspaceStore:
-    """Return a WorkspaceStore bound to the configured app DB path."""
+    """Return a WorkspaceStore bound to the configured database URL.
+
+    Phase 13B M7a — switched from raw-sqlite path to an ORM session
+    factory keyed by `settings.database_url`. Tests that swap
+    `API_APP_DB` / `DATABASE_URL` should call `reset_stores()` after
+    `reset_api_settings_cache()` so the next access rebuilds the
+    singleton against the new URL.
+    """
     global _workspace_store
     if _workspace_store is None:
-        from src.api.config import get_api_settings
-
-        _workspace_store = WorkspaceStore(get_api_settings().app_db)
+        _workspace_store = WorkspaceStore(_orm.get_session_factory())
     return _workspace_store
+
+
+def get_rag_summary_store() -> RagSummaryStore:
+    """Return a RagSummaryStore bound to the configured database URL."""
+    global _rag_summary_store
+    if _rag_summary_store is None:
+        _rag_summary_store = RagSummaryStore(_orm.get_session_factory())
+    return _rag_summary_store
 
 
 def reset_stores() -> None:
     """Test hook — drop cached singletons so each test starts empty."""
     global _run_store, _ingest_store, _target_store, _discovery_store
     global _news_store, _interaction_store, _workspace_store
+    global _rag_summary_store
     _run_store = None
     _ingest_store = None
     _target_store = None
@@ -1199,3 +1540,7 @@ def reset_stores() -> None:
     _news_store = None
     _interaction_store = None
     _workspace_store = None
+    _rag_summary_store = None
+    # Also drop cached ORM session factories so the next get_*_store()
+    # picks up a fresh API_APP_DB / DATABASE_URL.
+    _orm.reset_session_factories()

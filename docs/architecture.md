@@ -1,5 +1,69 @@
 # Architecture
 
+## Surfaces (Phase 13)
+
+There are three surfaces that share the same orchestration core:
+
+```
+        ┌────────────────────────────────────────────────┐
+        │  Claude Desktop / Codex                        │   (primary)
+        │     ├─ version()                               │
+        │     ├─ query_rag(query, ws_slug, ns, top_k)    │
+        │     └─ answer_rfp_question(question, ...)      │
+        └─────────────────────┬──────────────────────────┘
+                              │  MCP stdio
+                              ▼
+        ┌────────────────────────────────────────────────┐
+        │  src/mcp/server.py (FastMCP)                   │
+        └─────────────────────┬──────────────────────────┘
+                              │
+              ┌───────────────┼────────────────┐
+              ▼               ▼                ▼
+        src/rag/retriever  src/llm/rfp_answer  src/notion/writer
+              │               │                │
+              ▼               ▼                ▼
+       ChromaDB         Claude Sonnet 4.6   BDINT_Teamspace
+                                            (RFP Q&A DB)
+
+        ┌────────────────────────────────────────────────┐
+        │  FastAPI (uvicorn)                             │   (durable + observability)
+        │   src/api/app.py + routes/*                    │
+        │   ↳ ORM session factory (SQLite ↔ Postgres)    │
+        │   ↳ LangGraph checkpointer (Sqlite ↔ Postgres) │
+        └─────────────────────┬──────────────────────────┘
+                              │
+              ┌───────────────┼────────────────┐
+              ▼               ▼                ▼
+         App DB         data/checkpoints.db   Web UI (Next.js 15)
+                          / Postgres          observability console
+                                              `/targets` `/interactions`
+                                              labeled "legacy"
+```
+
+The MCP surface is the day-to-day driver (Phase 13's "agent-first" pivot). The Notion workspace pair (`BDINT_Teamspace` / `BDINT_Publicspace`) is the durable knowledge layer. The FastAPI + Next.js Web UI is observability for runs, RAG documents, cost, and the legacy CRM-shaped tables.
+
+The CLI (`main.py run ...`) and the Web UI (`POST /runs`) drive the same six-stage LangGraph pipeline described below.
+
+## ORM seam (Phase 13B)
+
+Every app DB store is on SQLAlchemy 2.x via `src/api/orm.py`:
+
+- `make_engine(url)` — `sqlite:///` and `postgresql+psycopg://` both supported; SQLite engines get a `PRAGMA foreign_keys = ON` listener so legacy `ON DELETE CASCADE` constraints keep firing.
+- `get_session_factory(url=None)` — process-wide cached session factory keyed by URL. Stores (`WorkspaceStore`, `TargetStore`, `InteractionStore`, `DiscoveryStore`, `NewsStore`, `RagSummaryStore`, `RunStore`) all use this factory, so the same singleton works from FastAPI requests, the Typer CLI, the MCP server, and background threads.
+- Alembic chain: `0001_rfp_tables` (Phase 13A) → `0002_workspaces_rag` → `0003_targets_interactions` → `0004_discovery_news` → `0005_runs`. Each migration is idempotent (skips creation when `init_db()` already seeded the table) so existing SQLite dev boxes apply cleanly.
+- Cutover: `scripts/migrate_sqlite_to_postgres.py` does dependency-ordered copy with SERIAL sequence bumps.
+
+## LangGraph checkpointer (Phase 13C M8)
+
+`src/api/checkpoint.py::build_checkpointer` dispatches on `settings.database_url`:
+
+- `sqlite://` → `SqliteSaver(sqlite3.connect(settings.checkpoint_db))`. Separate file because langgraph wants exclusive ownership of its schema.
+- `postgresql+psycopg://` → `PostgresSaver.from_conn_string` (URL normalized to bare `postgresql://` for psycopg). Tables (`checkpoints`, `checkpoint_writes`, `checkpoint_blobs`) live in the same Neon DB as the app data.
+
+## RunStore (Phase 13C M9)
+
+In-flight runs live in the process-local `RunStore` dict + per-record event log. Terminal transitions (`completed` / `failed`) write a metadata snapshot to the `runs` table via the ORM session factory. The Web UI run-history page reads via `GET /runs/history`; the in-flight `GET /runs` is unchanged. Full rationale: `docs/phase13.md#runstore-persistence-decision-m9`.
+
 ## 6-stage LangGraph Pipeline
 
 ```

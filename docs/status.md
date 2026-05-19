@@ -6,6 +6,15 @@
 
 ## 완료
 
+- **Phase 13** — Agent-first MCP + Notion workspace + Postgres migration
+  - **13A — RFP vertical 완료.** FastMCP stdio 서버 (`src/mcp/server.py`)에서 `version` / `query_rag` / `answer_rfp_question` 세 tool 노출. `rfp_answers` + `notion_sync_map` ORM-native 테이블 (Alembic 0001). Notion writer (`src/notion/writer.py`) 의 `upsert_via_sync_map` 으로 idempotent page 작성. RFP 답변 prompt (`src/prompts/{en,ko}/rfp_answer.txt`) 와 synthesize 로직 (`src/llm/rfp_answer.py`). end-to-end 테스트 13건 + 4건 신규 = Phase 12 555 → 13A 종료 568. Plan: `.claude/plans/frolicking-growing-bubble.md`.
+  - **13B — Postgres 마이그레이션 완료.** 4 store (Workspaces+RagSummary / Targets+Interactions / Discovery+News / RunStore 직전까지) 를 store-by-store 로 ORM 포팅 (Alembic 0002 ~ 0004 idempotent). `src/api/store.py` 에서 raw `sqlite3` import 완전 제거. `_db.connect` 는 더 이상 호출되지 않음. SQLite 엔진은 `PRAGMA foreign_keys = ON` 리스너 추가로 legacy `ON DELETE CASCADE` 가 그대로 동작. Web UI nav 에 `/targets` / `/interactions` `legacy` 배지. `scripts/migrate_sqlite_to_postgres.py` (dependency-ordered copy + SERIAL sequence bump) + SQLite→SQLite round-trip 테스트 2건. `.env.example` 에 Neon cutover 절차 명시. 568 → 13B 종료 574.
+  - **13C — LangGraph checkpointer + RunStore 결정 완료.**
+    - M8: `src/api/checkpoint.py::build_checkpointer` 가 `settings.database_url` scheme 으로 `SqliteSaver` / `PostgresSaver` 분기. `postgresql+psycopg://` 는 psycopg 가 받지 않으므로 bare `postgresql://` 로 정규화 후 `PostgresSaver.from_conn_string` 컨텍스트 매니저를 lifespan 동안 보존. `langgraph-checkpoint-postgres` 의존성 추가. 3건 dispatch 테스트.
+    - M9: RunStore 처리 방향은 **Option (c) Hybrid** 으로 결정. In-flight 는 process-local dict 유지, terminal 전환 (`completed` / `failed`) 시 `runs` 테이블에 metadata snapshot 작성. 새 `Run` ORM 모델 + Alembic 0005. `RunStore.update` 안에 persistence hook, 실패는 best-effort (in-memory 가 authoritative). `GET /runs/history?limit=N` 새 엔드포인트로 persisted 행을 newest-first 로 노출. 6건 persistence 테스트.
+    - M10: README / docs/architecture / docs/status / docs/phase13 / `.env.example` / CLAUDE.md 를 agent-first narrative 로 정리.
+    - 574 → 13C 종료 **583 tests passing**.
+
 - **Phase 0** — 프로젝트 스캐폴딩
 - **Phase 1** — Brave Search API 연동 + 설정 3단 구조
   - `.env` (secrets) / `config/settings.yaml` (defaults, 커밋) / `config/targets.yaml` (user data, gitignored)

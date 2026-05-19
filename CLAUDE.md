@@ -86,14 +86,23 @@ Why this split: 7.8B-class models hallucinate on BD reasoning tasks, and funneli
 
 CLI flags override `settings.yaml`, which overrides schema defaults. This split is enforced by `src/config/schemas.py` (`Secrets` via pydantic-settings, `Settings` / `Targets` via plain BaseModel) and loaded by `src/config/loader.py`. Do not put LLM/search/RAG settings back into `.env` — that mixes secret lifecycle with config lifecycle and was intentionally undone.
 
-### Shared core, multiple entry points
+### Shared core, three entry points (Phase 13)
 
-`src/core/orchestrator.run(company, industry, lang, ...)` is the shared entry point. Both consumers call it:
+`src/core/orchestrator.run(company, industry, lang, ...)` is the shared entry point. Three consumers call it:
 
-- **CLI** (`main.py`, Typer — Phase 6 done) — `main.py run` wraps `orchestrator.run()`, `main.py ingest` forwards to `src.rag.indexer.main()`.
-- **Web UI** (Phase 7 done — `src/api/` FastAPI backend + `web/` Next.js 15 frontend) — Exaone + bge-m3 loaded once in the FastAPI `lifespan` event, `SqliteSaver` checkpointer persists runs across restarts, and the API exposes `orchestrator.run_streaming()` to drive SSE progress via the `status` / `current_stage` fields on `AgentState`. Frontend binds `EventSource` to `/runs/{id}/events` and refetches `/runs/{id}` on each tick for authoritative state.
+- **CLI** (`main.py`, Typer — Phase 6) — `main.py run` wraps `orchestrator.run()`, `main.py ingest` forwards to `src.rag.indexer.main()`, `main.py mcp` boots the FastMCP stdio server (Phase 13A).
+- **MCP** (Phase 13A — primary surface) — `src/mcp/server.py` exposes `version` / `query_rag` / `answer_rfp_question` over stdio for Claude Desktop and Codex. `answer_rfp_question` orchestrates retrieval → Sonnet draft → SQLite/Postgres insert → Notion Teamspace page in one tool call.
+- **Web UI** (Phase 7 — observability) — `src/api/` FastAPI backend + `web/` Next.js 15 frontend. Exaone + bge-m3 loaded once in the FastAPI `lifespan`. The checkpointer is now URL-dispatched: `SqliteSaver` for sqlite URLs, `PostgresSaver` for postgresql URLs (Phase 13C M8). `/targets` and `/interactions` are labeled "legacy" — Notion is the durable workspace for those entities.
 
-When adding a new pipeline stage, wire it in `src/graph/` so both entry points get it for free. Don't duplicate orchestration logic in the CLI or API routes.
+When adding a new pipeline stage, wire it in `src/graph/` so all three entry points get it for free. Don't duplicate orchestration logic in the CLI / MCP / API routes.
+
+### Phase 13 ORM seam
+
+App DB access goes through SQLAlchemy 2.x (`src/api/orm.py`). Engines are keyed by `settings.database_url`; the same code targets SQLite for dev and Postgres / Neon for production. SQLite engines get a `PRAGMA foreign_keys = ON` listener so legacy `ON DELETE CASCADE` from the pre-13B `init_db()` SQL keeps firing.
+
+Stores (`WorkspaceStore`, `TargetStore`, `InteractionStore`, `DiscoveryStore`, `NewsStore`, `RagSummaryStore`, `RunStore`) all consume `_orm.get_session_factory()`. Do NOT introduce new raw `sqlite3.connect` paths — anything new goes through the ORM. The Alembic chain is `0001 → 0005`; new tables get their own idempotent migration. The cutover from SQLite to Neon is automated by `scripts/migrate_sqlite_to_postgres.py`.
+
+Terminal runs persist a metadata snapshot to the `runs` table (Phase 13C M9 hybrid choice). In-flight state + event log stay in the process-local `RunStore` dict. See `docs/phase13.md` for the option-(c) rationale.
 
 ### Language policy
 

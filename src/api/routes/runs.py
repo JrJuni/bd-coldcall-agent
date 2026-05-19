@@ -127,6 +127,20 @@ async def list_runs() -> RunListResponse:
     )
 
 
+@router.get("/runs/history")
+async def list_runs_history(limit: int = 50) -> dict:
+    """Phase 13C M9 — terminal-run snapshots persisted to the `runs` table.
+
+    Survives a process restart, unlike `GET /runs` (which only shows
+    runs still in the in-memory store). The two are intentionally
+    separate routes so existing SSE-following clients aren't surprised
+    by historical entries showing up in the in-flight list.
+    """
+    store = get_run_store()
+    rows = store.list_persisted(limit=max(1, min(limit, 500)))
+    return {"runs": rows}
+
+
 @router.get("/runs/{run_id}", response_model=RunSummary)
 async def get_run(run_id: str) -> RunSummary:
     store = get_run_store()

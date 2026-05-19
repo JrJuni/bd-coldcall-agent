@@ -26,8 +26,23 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 sse-starlette>=2.1.0
 langgraph-checkpoint-sqlite>=2.0.0
+# Phase 13C M8 — Postgres-backed LangGraph checkpointer. Installed
+# unconditionally; the saver itself is only constructed when DATABASE_URL
+# is a postgresql:// URL, so SQLite-only boxes pay nothing at runtime.
+langgraph-checkpoint-postgres>=2.0.0
 # Phase 10 P10-3 — multipart/form-data uploads (UploadFile)
 python-multipart>=0.0.9
+
+# Phase 13A — ORM seam (dual-engine SQLite ↔ Postgres)
+sqlalchemy>=2.0.0
+alembic>=1.13.0
+# psycopg3 — only the binary distribution is needed for Postgres support;
+# SQLite-only dev boxes still work fine because the dialect is registered
+# lazily when DATABASE_URL starts with postgresql://.
+psycopg[binary]>=3.2.0
+
+# Phase 13A — MCP server (stdio for Claude Desktop)
+mcp>=1.0.0
 
 # Test
 pytest>=8.0.0

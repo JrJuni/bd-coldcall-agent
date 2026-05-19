@@ -25,9 +25,10 @@ import anyio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.api.checkpoint import build_sqlite_checkpointer, close_checkpointer
+from src.api.checkpoint import build_checkpointer, close_checkpointer
 from src.api.config import get_api_settings
 from src.api.db import init_db
+from src.api.orm import make_engine, make_session_factory
 from src.api.routes import cost as cost_routes
 from src.api.routes import dashboard as dashboard_routes
 from src.api.routes import discovery as discovery_routes
@@ -45,6 +46,16 @@ from src.api.routes import workspaces as workspaces_routes
 _LOGGER = logging.getLogger(__name__)
 
 
+def _redact_url(url: str) -> str:
+    """Hide the password component of a SQLAlchemy URL for log lines."""
+    if "@" not in url or "://" not in url:
+        return url
+    scheme, rest = url.split("://", 1)
+    creds, host = rest.rsplit("@", 1)
+    user = creds.split(":", 1)[0] if ":" in creds else creds
+    return f"{scheme}://{user}:***@{host}"
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_api_settings()
@@ -55,13 +66,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.checkpointer = None
 
     try:
-        app.state.checkpointer = build_sqlite_checkpointer(settings.checkpoint_db)
-        _LOGGER.info(
-            "lifespan: sqlite checkpointer ready at %s", settings.checkpoint_db
-        )
+        app.state.checkpointer = build_checkpointer(settings)
+        _LOGGER.info("lifespan: checkpointer ready")
     except Exception:
         _LOGGER.exception(
-            "lifespan: sqlite checkpointer init failed — falling back to in-memory"
+            "lifespan: checkpointer init failed — falling back to in-memory"
         )
         app.state.checkpointer = None
 
@@ -72,6 +81,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception:
         _LOGGER.exception("lifespan: app db init failed (continuing)")
         app.state.app_db_path = None
+
+    # Phase 13A — ORM engine for new tables (rfp_answers, notion_sync_map).
+    # Existing 7 tables still use raw sqlite3 in `src/api/db.py` until
+    # Phase 13B ports them store-by-store. The engine here is harmless on
+    # boxes that only ever touch SQLite, but enables Postgres when
+    # DATABASE_URL is set.
+    try:
+        engine = make_engine(settings.database_url)
+        app.state.db_engine = engine
+        app.state.db_session_factory = make_session_factory(engine)
+        _LOGGER.info("lifespan: ORM engine ready (%s)", _redact_url(settings.database_url))
+    except Exception:
+        _LOGGER.exception("lifespan: ORM engine init failed (continuing)")
+        app.state.db_engine = None
+        app.state.db_session_factory = None
 
     try:
         from pathlib import Path
@@ -117,6 +141,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if app.state.checkpointer is not None:
             close_checkpointer(app.state.checkpointer)
             app.state.checkpointer = None
+        engine = getattr(app.state, "db_engine", None)
+        if engine is not None:
+            engine.dispose()
+            app.state.db_engine = None
+            app.state.db_session_factory = None
 
 
 def create_app() -> FastAPI:
