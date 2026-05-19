@@ -1,8 +1,9 @@
 """Meeting Intelligence database models.
 
-Kept under a module-local SQLAlchemy base so this phase can be developed
-without touching the shared `src/api/db.py` or the ongoing app-wide ORM
-registration until the module is stable.
+Phase M / M0: these tables now register on the canonical
+`src.api.orm::Base` (shared with the rest of the app's ORM seam).
+Schema delivery still goes through `create_meeting_schema(engine)` for
+now — M1 retires it in favor of the Alembic 0006 migration.
 """
 from __future__ import annotations
 
@@ -10,18 +11,16 @@ from datetime import datetime, timezone
 
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column
+
+from src.api.orm import Base
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-class MeetingBase(DeclarativeBase):
-    pass
-
-
-class Meeting(MeetingBase):
+class Meeting(Base):
     __tablename__ = "meetings"
 
     id: Mapped[int] = mapped_column(sa.Integer, primary_key=True, autoincrement=True)
@@ -38,7 +37,7 @@ class Meeting(MeetingBase):
     )
 
 
-class MeetingParticipant(MeetingBase):
+class MeetingParticipant(Base):
     __tablename__ = "meeting_participants"
 
     id: Mapped[int] = mapped_column(sa.Integer, primary_key=True, autoincrement=True)
@@ -58,7 +57,7 @@ class MeetingParticipant(MeetingBase):
     )
 
 
-class MeetingInsight(MeetingBase):
+class MeetingInsight(Base):
     __tablename__ = "meeting_insights"
 
     id: Mapped[int] = mapped_column(sa.Integer, primary_key=True, autoincrement=True)
@@ -78,7 +77,7 @@ class MeetingInsight(MeetingBase):
     )
 
 
-class MeetingActionItem(MeetingBase):
+class MeetingActionItem(Base):
     __tablename__ = "meeting_action_items"
 
     id: Mapped[int] = mapped_column(sa.Integer, primary_key=True, autoincrement=True)
@@ -102,7 +101,7 @@ class MeetingActionItem(MeetingBase):
     )
 
 
-class MeetingSemanticEvent(MeetingBase):
+class MeetingSemanticEvent(Base):
     __tablename__ = "meeting_semantic_events"
 
     id: Mapped[int] = mapped_column(sa.Integer, primary_key=True, autoincrement=True)
@@ -125,7 +124,7 @@ class MeetingSemanticEvent(MeetingBase):
     )
 
 
-class SemanticEntity(MeetingBase):
+class SemanticEntity(Base):
     __tablename__ = "semantic_entities"
     __table_args__ = (
         sa.UniqueConstraint(
@@ -146,7 +145,7 @@ class SemanticEntity(MeetingBase):
     )
 
 
-class SemanticEntityMention(MeetingBase):
+class SemanticEntityMention(Base):
     __tablename__ = "semantic_entity_mentions"
 
     id: Mapped[int] = mapped_column(sa.Integer, primary_key=True, autoincrement=True)
@@ -176,7 +175,7 @@ class SemanticEntityMention(MeetingBase):
     )
 
 
-class SemanticRelationship(MeetingBase):
+class SemanticRelationship(Base):
     __tablename__ = "semantic_relationships"
 
     id: Mapped[int] = mapped_column(sa.Integer, primary_key=True, autoincrement=True)
@@ -226,5 +225,21 @@ MEETING_TABLES = (
 
 
 def create_meeting_schema(engine: Engine) -> None:
-    """Create only the Meeting Intelligence tables on the given engine."""
-    MeetingBase.metadata.create_all(engine)
+    """Create only the Meeting Intelligence tables on the given engine.
+
+    Pulls them off the shared `src.api.orm::Base.metadata` so Phase 13
+    tables registered on the same Base are not touched.
+    """
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            Meeting.__table__,
+            MeetingParticipant.__table__,
+            MeetingInsight.__table__,
+            MeetingActionItem.__table__,
+            MeetingSemanticEvent.__table__,
+            SemanticEntity.__table__,
+            SemanticEntityMention.__table__,
+            SemanticRelationship.__table__,
+        ],
+    )
