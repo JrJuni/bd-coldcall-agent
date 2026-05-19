@@ -4,10 +4,22 @@ Revision ID: 0006_meeting_intelligence
 Revises: 0005_runs
 Create Date: 2026-05-19
 
-Creates the summary-first Meeting Intelligence persistence layer. The
-module code stays under `src/meeting_intelligence/` for now; this migration
-only adds the shared DB surface so SQLite/Postgres deployments can prepare
-the tables before API/MCP wiring is enabled.
+Creates the summary-first Meeting Intelligence persistence layer.
+
+Dual-engine: every column type (sa.Text / sa.String(N) / sa.Integer /
+sa.Float / sa.Boolean), every server_default (sa.text("'en'"),
+sa.true(), sa.text("0")), the autoincrement integer PKs (SQLite
+ROWID-aliased, Postgres SERIAL), the FK CASCADE, and the unique
+constraint `uq_semantic_entities_name_type` all render identically on
+SQLite and Postgres. The migration is idempotent via inspector
+(`_existing_tables()`) so re-runs against a partly-migrated DB are
+safe.
+
+`metadata_json` columns are sa.Text — JSON is stored as a serialized
+string for parity with 0005_runs.*_json. If a Postgres deployment
+later wants JSONB semantics, that's a separate ALTER migration; the
+data round-trips as-is during the SQLite -> Postgres cutover (see
+scripts/migrate_sqlite_to_postgres.py).
 """
 from __future__ import annotations
 

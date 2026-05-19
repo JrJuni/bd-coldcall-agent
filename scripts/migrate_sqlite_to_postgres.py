@@ -45,6 +45,16 @@ from src.api.models.rfp_answer import RfpAnswer  # noqa: F401
 from src.api.models.target import Target  # noqa: F401
 from src.api.models.workspace import Workspace  # noqa: F401
 from src.api.orm import Base, make_engine
+from src.meeting_intelligence.models import (  # noqa: F401
+    Meeting,
+    MeetingActionItem,
+    MeetingInsight,
+    MeetingParticipant,
+    MeetingSemanticEvent,
+    SemanticEntity,
+    SemanticEntityMention,
+    SemanticRelationship,
+)
 
 
 _LOGGER = logging.getLogger("migrate_sqlite_to_postgres")
@@ -65,6 +75,19 @@ COPY_ORDER: list[Type[DeclarativeBase]] = [
     NewsRun,
     RfpAnswer,
     NotionSyncMap,
+    # Phase M — Meeting Intelligence. Topological order on FK edges:
+    # Meeting + SemanticEntity are roots; the children of Meeting come
+    # next; SemanticEntityMention and SemanticRelationship are
+    # join-style rows depending on Meeting + SemanticEntity +
+    # MeetingSemanticEvent, so they go last.
+    Meeting,
+    SemanticEntity,
+    MeetingParticipant,
+    MeetingInsight,
+    MeetingActionItem,
+    MeetingSemanticEvent,
+    SemanticEntityMention,
+    SemanticRelationship,
 ]
 
 

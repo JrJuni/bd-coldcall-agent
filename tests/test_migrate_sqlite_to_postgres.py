@@ -14,6 +14,13 @@ from src.api.models.rfp_answer import RfpAnswer
 from src.api.models.target import Target
 from src.api.models.workspace import Workspace
 from src.api.orm import Base, make_engine
+from src.meeting_intelligence.models import (
+    Meeting,
+    MeetingParticipant,
+    MeetingSemanticEvent,
+    SemanticEntity,
+    SemanticEntityMention,
+)
 from scripts.migrate_sqlite_to_postgres import COPY_ORDER, _copy_table
 
 
@@ -70,6 +77,62 @@ def test_copy_round_trip(tmp_path):
         )
         s.commit()
 
+    # Seed Meeting Intelligence — exercise the FK chain so the copy order
+    # is verified end-to-end (parent before children before joins).
+    with SrcSession() as s:
+        meeting = Meeting(
+            company_name="Acme",
+            summary="SOC 2 is required before production.",
+            source_type="summary",
+            lang="en",
+            created_at=ts,
+        )
+        s.add(meeting)
+        s.flush()
+        meeting_id = meeting.id
+
+        s.add(
+            MeetingParticipant(
+                meeting_id=meeting_id,
+                name="Dana",
+                role="Director",
+                company="Acme",
+                is_customer=True,
+                created_at=ts,
+            )
+        )
+        event = MeetingSemanticEvent(
+            meeting_id=meeting_id,
+            type="security_requirement",
+            subject="SOC 2",
+            summary="SOC 2 is a gate.",
+            evidence_text="SOC 2 is required before production.",
+            severity="high",
+            confidence=0.94,
+            created_at=ts,
+        )
+        s.add(event)
+        entity = SemanticEntity(
+            name="SOC 2",
+            normalized_name="soc 2",
+            entity_type="compliance_requirement",
+            created_at=ts,
+            updated_at=ts,
+        )
+        s.add(entity)
+        s.flush()
+        s.add(
+            SemanticEntityMention(
+                entity_id=entity.id,
+                meeting_id=meeting_id,
+                event_id=event.id,
+                evidence_text="SOC 2 is required before production.",
+                confidence=0.94,
+                created_at=ts,
+            )
+        )
+        s.commit()
+
     # Run the copy.
     totals_src = 0
     totals_ins = 0
@@ -81,8 +144,9 @@ def test_copy_round_trip(tmp_path):
             totals_src += src_n
             totals_ins += ins_n
 
-    assert totals_src == 3
-    assert totals_ins == 3
+    # 3 Phase-13 rows + 5 meeting rows.
+    assert totals_src == 8
+    assert totals_ins == 8
 
     with TgtSession() as t:
         ws = t.scalar(sa.select(Workspace).where(Workspace.slug == "default"))
@@ -99,6 +163,18 @@ def test_copy_round_trip(tmp_path):
         assert tgt_rfp[0].id == "rfp-1"
         assert tgt_rfp[0].retrieved_chunks == [{"id": "c1"}]
         assert tgt_rfp[0].evidence_quality == "high"
+
+        # Meeting FK graph survived the copy: the join row still points at
+        # the right meeting + event + entity (all PKs preserved by the
+        # migration script via explicit id columns).
+        mention = t.scalars(sa.select(SemanticEntityMention)).one()
+        meeting = t.scalars(sa.select(Meeting)).one()
+        event = t.scalars(sa.select(MeetingSemanticEvent)).one()
+        entity = t.scalars(sa.select(SemanticEntity)).one()
+        assert mention.meeting_id == meeting.id
+        assert mention.event_id == event.id
+        assert mention.entity_id == entity.id
+        assert entity.normalized_name == "soc 2"
 
 
 def test_dry_run_does_not_insert(tmp_path):
