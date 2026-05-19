@@ -50,7 +50,7 @@ Every app DB store is on SQLAlchemy 2.x via `src/api/orm.py`:
 
 - `make_engine(url)` — `sqlite:///` and `postgresql+psycopg://` both supported; SQLite engines get a `PRAGMA foreign_keys = ON` listener so legacy `ON DELETE CASCADE` constraints keep firing.
 - `get_session_factory(url=None)` — process-wide cached session factory keyed by URL. Stores (`WorkspaceStore`, `TargetStore`, `InteractionStore`, `DiscoveryStore`, `NewsStore`, `RagSummaryStore`, `RunStore`) all use this factory, so the same singleton works from FastAPI requests, the Typer CLI, the MCP server, and background threads.
-- Alembic chain: `0001_rfp_tables` (Phase 13A) → `0002_workspaces_rag` → `0003_targets_interactions` → `0004_discovery_news` → `0005_runs`. Each migration is idempotent (skips creation when `init_db()` already seeded the table) so existing SQLite dev boxes apply cleanly.
+- Alembic chain: `0001_rfp_tables` (Phase 13A) → `0002_workspaces_rag` → `0003_targets_interactions` → `0004_discovery_news` → `0005_runs` → `0006_meeting_intelligence` (Phase M). Each migration is idempotent (skips creation when `init_db()` already seeded the table) so existing SQLite dev boxes apply cleanly.
 - Cutover: `scripts/migrate_sqlite_to_postgres.py` does dependency-ordered copy with SERIAL sequence bumps.
 
 ## LangGraph checkpointer (Phase 13C M8)
@@ -508,3 +508,67 @@ Anthropic SDK response.usage (4 token types)
   → /cost/summary SELECTs from all 3 sources × pricing.yaml multiplication → USD
   → frontend KpiCards/Trend/Breakdown/PerUnit/Budget/RecentRuns surface
 ```
+
+---
+
+## Phase M — Meeting Intelligence (2026-05-19)
+
+The Meeting Intelligence module started life in a parallel worktree with its own `MeetingBase(DeclarativeBase)`, its own `_FACTORY_CACHE`, and a runtime `create_meeting_schema(engine)` helper. Phase M folds it into the canonical Phase 13 ORM seam without changing what the module *does*; it just makes the module a normal citizen of `src.api.orm`.
+
+### Data model
+
+`src/meeting_intelligence/models.py` defines 8 ORM classes, all `Base` subclasses (`src/api/orm.py::Base`):
+
+```
+meetings
+  ├─ meeting_participants                (FK meetings.id ON DELETE CASCADE)
+  ├─ meeting_insights                    (FK meetings.id ON DELETE CASCADE, UNIQUE 1:1)
+  ├─ meeting_action_items                (FK meetings.id ON DELETE CASCADE)
+  └─ meeting_semantic_events             (FK meetings.id ON DELETE CASCADE)
+
+semantic_entities
+  └─ semantic_entity_mentions            (FK semantic_entities.id, meetings.id, meeting_semantic_events.id ON DELETE CASCADE)
+  UNIQUE(normalized_name, entity_type)   uq_semantic_entities_name_type
+
+semantic_relationships                   (FK source/target entity, FK source meeting_semantic_event)
+```
+
+Schema delivery has two paths:
+
+- **Tests / dev fixtures** — `Base.metadata.create_all(engine)` against an in-memory SQLite engine (StaticPool when a `TestClient` is involved so worker threads share one connection).
+- **Production** — Alembic `0006_meeting_intelligence` (idempotent via `_existing_tables()` inspector guard). Adds nothing else to the chain — meeting tables coexist with Phase 13 tables in the same DB.
+
+### Route surface
+
+`src/meeting_intelligence/routes.py` mounts on the production FastAPI app via `app.include_router(meeting_routes.router, tags=["meetings"])`. Two prefixes are registered:
+
+| Prefix | Endpoints |
+|---|---|
+| `/meetings` | `POST /meetings/analyze` (LLM-driven persist), `GET /meetings/{id}` |
+| `/semantic` | `GET /semantic/meetings/recent`, `GET /semantic/meetings/{id}/brief`, `GET /semantic/action-items/open`, `GET /semantic/product-feedback/candidates`, `GET /semantic/objections/by_category`, `GET /semantic/topics/top` |
+
+`get_meeting_repository()` consumes `src.api.orm.get_session_factory()` directly — same factory cache the rest of the app DB stores use. No standalone session/schema bootstrap at request time anymore.
+
+### Where it fits — entity-module comparison
+
+The project now has four content surfaces with distinct lifecycles. They share infrastructure (ORM, ChromaDB, Sonnet via `claude_client`) but read different inputs and write to different durable layers.
+
+| Surface | Input | Persistence | Notion writer | MCP tool | Test count |
+|---|---|---|---|---|---|
+| **RFP** (Phase 13A) | Question text + RAG context | `rfp_answers` + `notion_sync_map` (Alembic 0001) | BDINT_Teamspace RFP Q&A DB via `notion_sync_map` upsert | `answer_rfp_question` (stdio) | covered under Phase 13 |
+| **Discovery** (Phase 9 / 9.1 / 12) | Profile + region + RAG seed | `discovery_runs` + `discovery_candidates` (Alembic 0004) | not yet (P3 backlog) | not yet | covered under Phase 12 |
+| **News** (Phase 8 / 9) | Search query (Brave) | `news_runs` (Alembic 0004) | not yet | not yet | covered under Phase 9 |
+| **Meetings** (Phase M) | Summary string (no raw transcript) | 8 tables on Alembic 0006 — meetings, participants, insights, action items, semantic events, entities, entity mentions, relationships | not yet (Phase 13.5 "Notion writer wave" backlog) | not yet (Phase 14+ wrap of `analyze_meeting` / `search_meetings` / `list_action_items`) | 14 (6 module + 6 route + 2 migration round-trip) |
+
+The bigger picture: RFP and Meetings both treat one external interaction as the unit, but Meetings persists a *graph* (events → entities → relationships) whereas RFP persists a *single Q&A row + sync map*. Discovery operates over the RAG seed without an external interaction. News operates over Brave search results. Phase M is the first entity module where the LLM analysis is the *graph extractor*, not a draft writer.
+
+### Test scaffold pattern (subsequent entity modules should copy)
+
+`tests/test_meeting_routes.py` is the reference implementation for "TestClient-against-production-app with isolated DB + LLM stub":
+
+1. `_reset_env` autouse fixture — `API_SKIP_WARMUP=1`, `API_CHECKPOINT_DB=tmp/ck.db`, `API_APP_DB=tmp/app.db`, `reset_api_settings_cache()`, `_store.reset_stores()` on both sides of `yield`. Mirror of `tests/test_api_workspaces.py`.
+2. `client` fixture — local StaticPool `:memory:` SQLite engine + `PRAGMA foreign_keys = ON` listener + `Base.metadata.create_all(engine)` + `monkeypatch.setattr(_orm, "get_session_factory", lambda *a, **k: factory)` to swap the session factory the route handlers see.
+3. LLM stub — `monkeypatch.setattr(ma, "analyze_meeting_summary", lambda *a, **k: (sample_analysis(), {}, "test-model"))`.
+4. Assertions on structural fields only (status, source_type, evidence presence, action-item shape, `relationship.source_event_id` provenance). No LLM-prose golden comparisons.
+
+The pattern keeps the production app wiring honest (router actually mounted, lifespan actually runs) without paying for warmup or real LLM calls.

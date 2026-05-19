@@ -33,6 +33,10 @@ The same agent also still drives the original cold-call research pipeline: given
 
 Add the server to Claude Desktop's `claude_desktop_config.json` (see `docs/phase13.md` for the snippet) and the tools appear under `bd-coldcall-agent`. Stdio transport, no separate server process; HTTP/SSE is a Phase 14 follow-up.
 
+### Meeting Intelligence (Phase M)
+
+A summary-first analyzer for sales conversations. Drop a meeting summary string at `POST /meetings/analyze` and the route persists a graph: participants, an insight block, action items, semantic events (security_requirement / technical_objection / incumbent_solution / product_feedback / …), entities (companies, integrations, competitors, compliance requirements), entity mentions, and inter-entity relationships — all linked back to the originating event for evidence provenance. Read surfaces (`GET /semantic/action-items/open`, `/semantic/product-feedback/candidates`, `/semantic/objections/by_category`, `/semantic/topics/top`, `/semantic/meetings/recent`, `/semantic/meetings/{id}/brief`) expose visualization-ready aggregations. Schema is Alembic `0006_meeting_intelligence`. The MCP tool wrap (`analyze_meeting` / `search_meetings` / `list_action_items`) is Phase 14+ follow-up.
+
 ### Dual-engine ORM (SQLite ↔ Postgres)
 
 Phase 13B ported every store (`workspaces`, `rag_summaries`, `targets`, `interactions`, `discovery_runs`, `discovery_candidates`, `news_runs`, `rfp_answers`, `notion_sync_map`, `runs`) onto SQLAlchemy 2.x. The schema runs unmodified on either engine because JSON columns use `sa.JSON().with_variant(JSONB, "postgresql")`. Cutover script: `scripts/migrate_sqlite_to_postgres.py`.
