@@ -1,8 +1,9 @@
-"""Phase M - Meeting Intelligence tests.
+"""Phase M - Meeting Intelligence module-level tests.
 
 Schema is delivered through `src.api.orm::Base.metadata.create_all` for
-in-memory fixtures, or through Alembic for migration tests. The module
-no longer owns its own session-factory cache or schema creation helper.
+in-memory fixtures, or through Alembic for migration tests. The HTTP
+route surface is exercised separately in `tests/test_meeting_routes.py`
+via `TestClient(create_app())`.
 """
 from __future__ import annotations
 
@@ -10,17 +11,13 @@ import json
 
 import pytest
 import sqlalchemy as sa
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
-import src.api.orm as _orm
 from src.api.orm import Base, make_engine, make_session_factory
 from src.llm import meeting_analysis as ma
 from src.meeting_intelligence import service
 from src.meeting_intelligence.indexing import build_meeting_index_payload
 from src.meeting_intelligence.models import MEETING_TABLES
 from src.meeting_intelligence.repository import MeetingRepository
-from src.meeting_intelligence.routes import router
 
 
 SUMMARY = (
@@ -213,63 +210,6 @@ def test_m4_semantic_aggregations_are_visualization_ready(repo, monkeypatch):
 
     topics = service.top_topics(repo)
     assert any(t["topic"] == "Salesforce integration" for t in topics)
-
-
-def test_m4_mountable_routes_and_transcript_scope_guard(monkeypatch):
-    # FastAPI's TestClient may run handlers on a worker thread; a default
-    # SQLite engine would hand each thread its own :memory: DB. StaticPool
-    # forces all callers onto the same in-memory connection so the schema
-    # we create below is visible to the route handlers.
-    from sqlalchemy.pool import StaticPool
-
-    engine = sa.create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-        future=True,
-    )
-
-    @sa.event.listens_for(engine, "connect")
-    def _enable_sqlite_fk(dbapi_connection, _conn_record):  # type: ignore[no-untyped-def]
-        cursor = dbapi_connection.cursor()
-        try:
-            cursor.execute("PRAGMA foreign_keys = ON")
-        finally:
-            cursor.close()
-
-    Base.metadata.create_all(engine)
-    factory = make_session_factory(engine)
-    monkeypatch.setattr(_orm, "get_session_factory", lambda *a, **k: factory)
-    monkeypatch.setattr(
-        ma,
-        "analyze_meeting_summary",
-        lambda *args, **kwargs: (_analysis(), {}, "test-model"),
-    )
-
-    app = FastAPI()
-    app.include_router(router)
-    with TestClient(app) as client:
-        rejected = client.post(
-            "/meetings/analyze",
-            json={
-                "company_name": "Acme",
-                "summary": SUMMARY,
-                "transcript": "raw transcript is out of scope",
-            },
-        )
-        assert rejected.status_code == 422
-
-        created = client.post(
-            "/meetings/analyze",
-            json={"company_name": "Acme", "summary": SUMMARY, "lang": "en"},
-        )
-        assert created.status_code == 200, created.text
-        meeting_id = created.json()["meeting_id"]
-        brief = client.get(f"/semantic/meetings/{meeting_id}/brief")
-        assert brief.status_code == 200
-        assert brief.json()["meeting"]["summary"] == SUMMARY
-        recent = client.get("/semantic/meetings/recent")
-        assert recent.json()["meetings"][0]["company_name"] == "Acme"
 
 
 def test_m5_builds_chroma_ready_index_payload(repo, monkeypatch):
