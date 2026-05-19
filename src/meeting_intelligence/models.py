@@ -1,16 +1,15 @@
 """Meeting Intelligence database models.
 
-Phase M / M0: these tables now register on the canonical
-`src.api.orm::Base` (shared with the rest of the app's ORM seam).
-Schema delivery still goes through `create_meeting_schema(engine)` for
-now — M1 retires it in favor of the Alembic 0006 migration.
+These tables register on the canonical `src.api.orm::Base` (Phase M / M0),
+and schema delivery is owned by Alembic (`0006_meeting_intelligence`,
+Phase M / M1). Tests that need an ad-hoc schema use
+`Base.metadata.create_all(engine)` against a private engine.
 """
 from __future__ import annotations
 
 from datetime import datetime, timezone
 
 import sqlalchemy as sa
-from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.api.orm import Base
@@ -222,24 +221,3 @@ MEETING_TABLES = (
     "semantic_entity_mentions",
     "semantic_relationships",
 )
-
-
-def create_meeting_schema(engine: Engine) -> None:
-    """Create only the Meeting Intelligence tables on the given engine.
-
-    Pulls them off the shared `src.api.orm::Base.metadata` so Phase 13
-    tables registered on the same Base are not touched.
-    """
-    Base.metadata.create_all(
-        engine,
-        tables=[
-            Meeting.__table__,
-            MeetingParticipant.__table__,
-            MeetingInsight.__table__,
-            MeetingActionItem.__table__,
-            MeetingSemanticEvent.__table__,
-            SemanticEntity.__table__,
-            SemanticEntityMention.__table__,
-            SemanticRelationship.__table__,
-        ],
-    )

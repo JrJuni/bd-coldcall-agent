@@ -16,7 +16,7 @@ from alembic.config import Config
 
 from src.meeting_intelligence.models import MEETING_TABLES
 from src.meeting_intelligence.repository import MeetingRepository
-from src.meeting_intelligence.database import make_engine, make_session_factory
+from src.api.orm import make_engine, make_session_factory
 from tests.meeting_intelligence_samples import sample_analysis, sample_summary
 
 

@@ -11,9 +11,8 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.api import orm as _orm
 from src.meeting_intelligence import service as _service
-from src.meeting_intelligence import database as _database
-from src.meeting_intelligence.models import create_meeting_schema
 from src.meeting_intelligence.repository import MeetingRepository
 
 
@@ -53,11 +52,7 @@ router = APIRouter()
 
 
 def get_meeting_repository() -> MeetingRepository:
-    factory = _database.get_session_factory()
-    engine = factory.kw.get("bind") if hasattr(factory, "kw") else None
-    if engine is not None:
-        create_meeting_schema(engine)
-    return MeetingRepository(factory)
+    return MeetingRepository(_orm.get_session_factory())
 
 
 @router.post("/meetings/analyze", response_model=MeetingAnalyzeResponse)

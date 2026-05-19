@@ -1,8 +1,8 @@
-"""Phase M - Meeting Intelligence standalone module tests.
+"""Phase M - Meeting Intelligence tests.
 
-These tests intentionally mount/use the module directly instead of editing
-the main FastAPI app or `src/api/db.py`. That keeps the feature isolated
-while the production API/DB refactor is in flight.
+Schema is delivered through `src.api.orm::Base.metadata.create_all` for
+in-memory fixtures, or through Alembic for migration tests. The module
+no longer owns its own session-factory cache or schema creation helper.
 """
 from __future__ import annotations
 
@@ -13,15 +13,12 @@ import sqlalchemy as sa
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import src.api.orm as _orm
+from src.api.orm import Base, make_engine, make_session_factory
 from src.llm import meeting_analysis as ma
 from src.meeting_intelligence import service
-from src.meeting_intelligence.database import (
-    make_engine,
-    make_session_factory,
-    reset_session_factories,
-)
 from src.meeting_intelligence.indexing import build_meeting_index_payload
-from src.meeting_intelligence.models import MEETING_TABLES, create_meeting_schema
+from src.meeting_intelligence.models import MEETING_TABLES
 from src.meeting_intelligence.repository import MeetingRepository
 from src.meeting_intelligence.routes import router
 
@@ -131,13 +128,13 @@ def _analysis() -> ma.MeetingAnalysisResult:
 @pytest.fixture
 def repo() -> MeetingRepository:
     engine = make_engine("sqlite:///:memory:")
-    create_meeting_schema(engine)
+    Base.metadata.create_all(engine)
     return MeetingRepository(make_session_factory(engine))
 
 
 def test_m1_schema_creates_all_tables():
     engine = make_engine("sqlite:///:memory:")
-    create_meeting_schema(engine)
+    Base.metadata.create_all(engine)
     inspector = sa.inspect(engine)
     names = set(inspector.get_table_names())
     assert set(MEETING_TABLES).issubset(names)
@@ -219,8 +216,30 @@ def test_m4_semantic_aggregations_are_visualization_ready(repo, monkeypatch):
 
 
 def test_m4_mountable_routes_and_transcript_scope_guard(monkeypatch):
-    monkeypatch.setenv("MEETING_INTELLIGENCE_DATABASE_URL", "sqlite:///:memory:")
-    reset_session_factories()
+    # FastAPI's TestClient may run handlers on a worker thread; a default
+    # SQLite engine would hand each thread its own :memory: DB. StaticPool
+    # forces all callers onto the same in-memory connection so the schema
+    # we create below is visible to the route handlers.
+    from sqlalchemy.pool import StaticPool
+
+    engine = sa.create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+        future=True,
+    )
+
+    @sa.event.listens_for(engine, "connect")
+    def _enable_sqlite_fk(dbapi_connection, _conn_record):  # type: ignore[no-untyped-def]
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA foreign_keys = ON")
+        finally:
+            cursor.close()
+
+    Base.metadata.create_all(engine)
+    factory = make_session_factory(engine)
+    monkeypatch.setattr(_orm, "get_session_factory", lambda *a, **k: factory)
     monkeypatch.setattr(
         ma,
         "analyze_meeting_summary",
@@ -251,8 +270,6 @@ def test_m4_mountable_routes_and_transcript_scope_guard(monkeypatch):
         assert brief.json()["meeting"]["summary"] == SUMMARY
         recent = client.get("/semantic/meetings/recent")
         assert recent.json()["meetings"][0]["company_name"] == "Acme"
-
-    reset_session_factories()
 
 
 def test_m5_builds_chroma_ready_index_payload(repo, monkeypatch):

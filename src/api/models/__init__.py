@@ -14,3 +14,8 @@ from src.api.models import rfp_answer as _rfp_answer  # noqa: F401
 from src.api.models import run as _run  # noqa: F401
 from src.api.models import target as _target  # noqa: F401
 from src.api.models import workspace as _workspace  # noqa: F401
+
+# Meeting Intelligence tables live under src/meeting_intelligence/ but share
+# the canonical Base; importing here registers them on Base.metadata for
+# Alembic autogenerate (Phase M / M1).
+from src.meeting_intelligence import models as _meeting_models  # noqa: F401
